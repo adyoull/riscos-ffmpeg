@@ -63,7 +63,7 @@ if [ ! -f ffbuild/config.mak ] || [ -n "${RECONFIGURE:-}" ]; then
     --disable-v4l2-m2m --disable-libdrm \
     --enable-ffmpeg --enable-ffprobe \
     --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages \
-    --extra-version=riscos3 \
+    --extra-version=riscos4 \
     > "$SRC/ffmpeg-configure.log"
   tail -n +1 "$SRC/ffmpeg-configure.log" | sed -n '1,200p' | grep -E "^(ARCH|big-endian|NEON|runtime|pthreads|External libraries:)" || true
 fi

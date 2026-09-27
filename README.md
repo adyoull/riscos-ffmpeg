@@ -74,7 +74,7 @@ and the ARM assembly in FFmpeg, dav1d and x264 relies on that.
   (`tests/qemu`).
   - FFmpeg, dav1d and x264's own asm test suites pass under it (881 +
     2039 checks + x264's).
-  - So do 110 decode/encode/scale jobs, whose NEON output equals the C
+  - So do 128 decode/encode/scale jobs (including clips with lots of motion), whose NEON output equals the C
     output bit for bit wherever the code is meant to be bit-exact.
 
 ## Building

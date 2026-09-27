@@ -1,10 +1,33 @@
 # Changes
 
+## 5.1.10-riscos4 (2026-09-27)
+
+- **The real cause of the Pi crash** ("abort on data transfer", which
+  `*Where` placed in VFPSupport; an EMT trap in `hl_motion` in the log):
+  - FFmpeg's `ff_put_h264_chroma_mc2_neon` copied 2x2 chroma pixels with
+    `ldrh` from a source that can be at an odd address. That happens in
+    H.264 4x4 sub-partitions at whole-pixel chroma positions.
+  - Big Buck Bunny 720p hits it within the first frames; the old test clips
+    never used 4x4 partitions.
+  - Byte loads now (patch 0014). Single-threaded ffmpeg crashed the same
+    way, so it was never a thread or TaskWindow problem.
+- **New "motion" test clips** (`tests/qemu/samples/mv_*`). They scroll and
+  zoom, and are encoded with every partition size, B-frames, weighted
+  prediction, MBAFF, CAVLC, 10-bit and 4:2:2 (H.264), plus HEVC, VP8, VP9,
+  AV1, MPEG-4 qpel/4MV, interlaced MPEG-2, Theora, WMV2 and H.263.
+  - All decode under the alignment-trapping QEMU with NEON output equal
+    to C.
+  - The fixed mc2 was compared with an x86 ffmpeg frame by frame.
+- riscos3's change (switching the VFP context off around `Wimp_StartTask`)
+  stays: UnixLib does the same, and it's correct. But it wasn't this
+  crash.
+
 ## 5.1.10-riscos3 (2026-09-27)
 
 - **ffplay from a TaskWindow crashed on the Pi** ("Internal error: abort on
   data transfer" in VFPSupport; the new ffplay's log showed an EMT trap in
-  its video decoder thread). The ffplay in the TaskWindow started the new
+  its video decoder thread). *Note (riscos4): the explanation below was
+  wrong; the crash was the unaligned `ldrh` fixed in riscos4.* The ffplay in the TaskWindow started the new
   task with its own VFP (floating point) context still active. VFPSupport
   later saved that context to its old stack address, which by then
   belonged to the new ffplay, and corrupted it. ffplay now switches its

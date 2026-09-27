@@ -66,14 +66,14 @@ for f in "$HERE"/samples/*; do
   b=$(basename "$f")
   case "$b" in
     aac*|ac3*|eac3*|vorbis*|opus*|wmav2*|mp3*|mp2*|h264_aac*) loose=1 ;;
-    mpeg4*|mpeg2*|mjpeg*|wmv2*|h263*|dv_*|theora*) loose=1 ;;  # IDCT choice, see README
+    mpeg4*|mpeg2*|mjpeg*|wmv2*|h263*|dv_*|theora*|mv_mpeg4*|mv_mpeg2*|mv_wmv2*|mv_h263*|mv_theora*) loose=1 ;;  # IDCT choice, see README
     *) loose=0 ;;
   esac
   job "dec-$b" $loose -i "$f"
 done
 
 # --- the same decoders with the IDCT pinned, so NEON == C must hold
-for f in "$HERE"/samples/{mpeg4,mpeg2,mjpeg,wmv2,h263}*; do
+for f in "$HERE"/samples/{mpeg4,mpeg2,mjpeg,wmv2,h263,mv_mpeg4,mv_mpeg2,mv_wmv2,mv_h263}*; do
   [ -e "$f" ] || continue
   job "dec-idctsimple-$(basename "$f")" 0 -idct simple -i "$f"
 done

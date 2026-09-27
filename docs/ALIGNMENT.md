@@ -63,6 +63,8 @@ Notes on the rewrite:
 - **Callers that pass lanes through such a macro** were written out by
   hand so the tool can see them:
   - FFmpeg `ff_hevc_put_qpel_uw_pixels_w4/w12` (patch 0008);
+  - (not a NEON instruction, but also asm) FFmpeg's H.264 chroma mc2
+    `ldrh` from an odd source (patch 0014, byte loads);
   - x264 `pixel_avg_weight_w4_*` (`patches/x264`).
 
   FFmpeg's checkasm caught the first of these.
@@ -119,14 +121,24 @@ Results:
   knows).
 - **dav1d checkasm:** 2039/2039 pass (built with `-Dtrim_dsp=false`).
 - **x264 checkasm** (8 and 10 bit): "All tests passed".
-- **`run.sh`:** 110 ffmpeg jobs.
-  - Decoding (46 files): H.264 8/10-bit/4:2:2, HEVC 8/10-bit, VP8, VP9,
+- **`run.sh`:** 128 ffmpeg jobs.
+  - Decoding (60 files, 14 of them `mv_*` motion clips): H.264 8/10-bit/4:2:2, HEVC 8/10-bit, VP8, VP9,
     AV1, MPEG-2/4, H.263, MJPEG, Theora, WMV2, ProRes, DV, FFV1, AAC,
     MP3, MP2, AC-3, E-AC-3, Vorbis, Opus, FLAC, ALAC, WMA.
   - Encoding: x264 8/10-bit, MPEG-4, MPEG-2, MJPEG, H.263, DV, ProRes,
     FFV1, HuffYUV, LAME, MP2, AC-3, AAC, Opus, Vorbis, FLAC, ALAC, SBC,
     TrueHD.
   - swscale (YUV→RGB in 8 formats, scalers) and swresample.
+- **What the first test clips missed.** They were static `testsrc2`
+  pictures, so H.264 never used 4×4 partitions. FFmpeg's
+  `ff_put_h264_chroma_mc2_neon` then kept an `ldrh` from an odd source
+  address in its whole-pixel path, and a Pi playing Big Buck Bunny found
+  it (riscos2/3; patch 0014 loads bytes).
+  - The `mv_*` clips scroll and zoom, and use every partition, B-frames,
+    weighted prediction, MBAFF, CAVLC, 10-bit, 4:2:2, qpel/4MV and
+    interlacing.
+  - A new clip type that moves differently is the first thing to add if
+    another decoder path is suspected.
 
   Each job runs twice (NEON, then `-cpuflags 0`). The outputs are equal
   packet for packet except where FFmpeg's NEON is not meant to be

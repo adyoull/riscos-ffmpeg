@@ -12,3 +12,7 @@
 /tests/host/fake/EGL/
 /tests/host/fake/KHR/
 src-host/
+
+# Handoff notes to other ports live outside the repo (RiscOS/FFmpeg/handoffs)
+handoffs/
+*handoff*.md

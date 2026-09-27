@@ -1,0 +1,47 @@
+From 4765a195e553258403224b48ea3598117f9e7885 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 14:12:11 +0100
+Subject: [PATCH] h264chroma arm: mc2 put, integer position: byte loads of the
+ source
+
+ff_put_h264_chroma_mc2_neon's x = y = 0 path copied 2x2 pixels with ldrh
+from src, which can be at an odd address (4x4 sub-partitions): an
+alignment abort where unaligned accesses trap (RISC OS; seen on a Pi 4
+decoding Big Buck Bunny 720p). Without HAVE_FAST_UNALIGNED, load bytes.
+dst stays halfword-aligned (the avg path already assumes it with :16).
+
+---
+ libavcodec/arm/h264cmc_neon.S | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/libavcodec/arm/h264cmc_neon.S b/libavcodec/arm/h264cmc_neon.S
+index 3687b02..6f7f6da 100644
+--- a/libavcodec/arm/h264cmc_neon.S
++++ b/libavcodec/arm/h264cmc_neon.S
+@@ -416,10 +416,23 @@ function ff_\type\()_h264_chroma_mc2_neon, export=1
+         pop             {r4-r6, pc}
+ 2:
+   .ifc \type,put
++#if HAVE_FAST_UNALIGNED
+         ldrh_post       r5,  r1,  r2
+         strh_post       r5,  r0,  r2
+         ldrh_post       r6,  r1,  r2
+         strh_post       r6,  r0,  r2
++#else
++        /* src can be at an odd address: byte loads (the halfword ldrh
++           faults where unaligned accesses trap, e.g. on RISC OS) */
++        ldrb            r4,  [r1, #1]
++        ldrb            r5,  [r1], r2
++        ldrb            r12, [r1, #1]
++        ldrb            r6,  [r1], r2
++        orr             r5,  r5,  r4,  lsl #8
++        orr             r6,  r6,  r12, lsl #8
++        strh_post       r5,  r0,  r2
++        strh_post       r6,  r0,  r2
++#endif
+   .else
+         vld1.16         {d16[0]}, [r1], r2
+         vld1.16         {d16[1]}, [r1], r2
+-- 
+2.43.0
+
