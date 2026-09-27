@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                           0.7
+!Reel - a video player for RISC OS                           0.8
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -29,11 +29,37 @@ Keys (click in the window first):
   F             full screen on and off
   Escape        leave full screen
   Q             close the video
+  I             the media info window on and off
 
 The window can be resized: the picture keeps its shape. Menu on the
-window: File info (codec, size, frame rate, sound, and how many late
-frames were skipped), Full screen, Loop, Close. Menu on the icon: Info,
+window: Media info, Full screen, Loop, Close. Menu on the icon: Info,
 Loop, Log, Quit.
+
+Media info
+----------
+A window (it stays open while you watch; I or the window menu) with,
+at the top, "stats for nerds", updated every second while playing:
+
+  Position, Clock   where the picture is, and the clock it follows (the
+                    sound, or a timer), with how far apart they are
+  Pictures shown    a second, against the video's own frame rate, and
+                    how many were skipped as late
+  Decoded           pictures decoded a second, the time each took, and
+                    how many times faster than real time that is
+  Decoding load     the share of the time spent decoding
+  Frame skipping    whether Reel is skipping frames to keep up
+  Converting        swscale's time a picture (colours and scaling)
+  Drawing           the time to put each picture on the screen
+  Waiting           pictures decoded and packets read but not yet used
+  Sound             the sound output and how much is queued
+  Reading           how fast the file is being read
+  Desktop           null events a second, and the screen mode
+
+and below that what's in the file: the container, length, size and bit
+rate; the video's codec, profile, level, size, aspect, frame rate, pixel
+format and colours; the sound's codec and profile (e.g. HE-AAC),
+channels, sample rate and bit rate; and the sound output used.
+Times are measured with the centisecond clock, so they're averages.
 
 Log
 ---
@@ -69,12 +95,12 @@ Needs
 SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan). For sound:
 SharedSoundBuffer and StreamManager (ssb.zip, from the RDPClient page at
 orac.co.uk), merged into !System: Reel's !Run loads them. Without them
-Reel plays the picture, keeps time itself, and File info says why there
+Reel plays the picture, keeps time itself, and Media info says why there
 is no sound.
 Reel gives the sound straight to SharedSoundBuffer (from 0.5; before,
 it went through SDL). If the stream opens but doesn't play (for about a
 second nothing it was given is used up), Reel carries on without sound;
-File info then says "the sound device isn't playing". To try SDL's sound
+Media info then says "the device isn't playing". To try SDL's sound
 instead: *Set FFEGL_AUDIO sdl before starting Reel.
 
 !ReelEGL

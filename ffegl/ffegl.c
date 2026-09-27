@@ -72,6 +72,11 @@ struct FFEGLVideo {
     int vflushed;                      /* the video decoder has been sent the end */
     int skipping;                      /* behind: non-reference frames aren't decoded */
     unsigned skip_spells;
+
+    /* for ffegl_stats */
+    unsigned n_decoded, n_shown;
+    int64_t t_decode, t_audio, t_convert;   /* microseconds */
+    int conv_w, conv_h;
     AVFrame *cur;                      /* the current frame (NULL before the first) */
     double cur_pts;
     int need_first;                    /* show the next frame at once, and sync to it */
@@ -657,6 +662,161 @@ int ffegl_debug(const FFEGLVideo *v, char *buf, int size)
     return n + snprintf(buf + n, size - n, "; SDL %s, queued %.2f s", v->stalled ? "stalled" : "playing", q);
 }
 
+void ffegl_stats(const FFEGLVideo *v, FFEGLStats *st)
+{
+    FFEGLVideo *w = (FFEGLVideo *)v;
+    memset(st, 0, sizeof(*st));
+    st->position = ffegl_position(v);
+    st->sound_queued = v->dev ? aud_queued(w) / (double)(v->bytes_per_sec ? v->bytes_per_sec : 1) : 0;
+    st->clock_source = v->paused ? 2 : v->audio_clock ? 1 : 0;
+    st->clock = v->paused ? v->pause_pos
+              : v->audio_clock && v->audio_end >= 0 ? v->audio_end - st->sound_queued - v->latency
+              : (av_gettime_relative() - v->t0) / 1e6;
+    st->fps = v->fps;
+    st->decoded = v->n_decoded;
+    st->shown = v->n_shown;
+    st->late = v->dropped;
+    st->decode_time = v->t_decode / 1e6;
+    st->audio_time = v->t_audio / 1e6;
+    st->convert_time = v->t_convert / 1e6;
+    st->convert_w = v->conv_w;
+    st->convert_h = v->conv_h;
+    st->pictures_waiting = v->qn;
+    st->packets_waiting = v->vpk_n;
+    st->packet_bytes = (unsigned)v->vpk_bytes;
+    st->skip_level = v->skipping;
+    st->skip_spells = v->skip_spells;
+    st->sound = !v->dev ? 0 : 2;
+    st->sound_stalled = v->stalled;
+#ifdef USE_SSB
+    if (v->ssb) {
+        st->sound = 1;
+        st->sound_added = v->ssb_stat_added;
+        st->sound_played = v->ssb_stat_played;
+    }
+#endif
+    st->bytes_read = v->fmt && v->fmt->pb ? v->fmt->pb->bytes_read : 0;
+}
+
+#define ADD(...) do { if (n < size) n += snprintf(buf + n, size - n, __VA_ARGS__); } while (0)
+
+static void info_bitrate(char *b, size_t size, int64_t bps)
+{
+    if (bps <= 0)
+        snprintf(b, size, "?");
+    else if (bps >= 1000000)
+        snprintf(b, size, "%.2f Mbit/s", bps / 1e6);
+    else
+        snprintf(b, size, "%lld kbit/s", (long long)(bps / 1000));
+}
+
+static const char *or_q(const char *s) { return s ? s : "?"; }
+
+int ffegl_media_info(const FFEGLVideo *v, char *buf, int size)
+{
+    const AVFormatContext *fc = v->fmt;
+    const AVDictionaryEntry *t;
+    char b[96];
+    int n = 0;
+
+    if (size > 0)
+        buf[0] = 0;
+    ADD("#File\n");
+    if (fc->url) {
+        const char *leaf = strrchr(fc->url, fc->url[0] == '/' ? '/' : '.');
+        ADD("Name\t%s\n", leaf ? leaf + 1 : fc->url);
+    }
+    if ((t = av_dict_get(fc->metadata, "title", NULL, 0)))
+        ADD("Title\t%s\n", t->value);
+    ADD("Container\t%s (%s)\n", or_q(fc->iformat->long_name), fc->iformat->name);
+    if (fc->duration > 0) {
+        int64_t d = fc->duration / AV_TIME_BASE;
+        ADD("Length\t%d:%02d:%02d (%.2f s)\n", (int)(d / 3600), (int)(d / 60 % 60), (int)(d % 60),
+            fc->duration / (double)AV_TIME_BASE);
+    }
+    if (fc->pb && avio_size(fc->pb) > 0)
+        ADD("Size\t%.1f MB (%lld bytes)\n", avio_size(fc->pb) / 1048576.0, (long long)avio_size(fc->pb));
+    info_bitrate(b, sizeof(b), fc->bit_rate);
+    ADD("Bit rate\t%s\n", b);
+    ADD("Streams\t%u\n", fc->nb_streams);
+
+    if (v->vs >= 0) {
+        const AVStream *st = fc->streams[v->vs];
+        const AVCodecParameters *p = st->codecpar;
+        const AVCodecDescriptor *d = avcodec_descriptor_get(p->codec_id);
+        const char *prof = avcodec_profile_name(p->codec_id, p->profile);
+        AVRational dar;
+        ADD("#Video\n");
+        ADD("Codec\t%s (%s)\n", d ? d->long_name : "?", avcodec_get_name(p->codec_id));
+        if (prof)
+            ADD("Profile\t%s%s\n", prof, "");
+        if (p->level > 0)
+            ADD("Level\t%d.%d\n", p->level / 10, p->level % 10);
+        ADD("Size\t%dx%d pixels\n", p->width, p->height);
+        av_reduce(&dar.num, &dar.den, (int64_t)p->width * (p->sample_aspect_ratio.num ? p->sample_aspect_ratio.num : 1),
+                  (int64_t)p->height * (p->sample_aspect_ratio.den ? p->sample_aspect_ratio.den : 1), 1 << 20);
+        ADD("Aspect\t%d:%d (shown %dx%d)\n", dar.num, dar.den, v->w, v->h);
+        if (v->fps > 0)
+            ADD("Frame rate\t%.3f fps\n", v->fps);
+        ADD("Pixels\t%s\n", or_q(av_get_pix_fmt_name(p->format)));
+        if (p->color_space == AVCOL_SPC_UNSPECIFIED && p->color_range == AVCOL_RANGE_UNSPECIFIED)
+            ADD("Colours\tnot given (shown as BT.601, limited range)\n");
+        else
+            ADD("Colours\t%s, %s range, %s primaries, %s transfer\n",
+                or_q(av_color_space_name(p->color_space)), or_q(av_color_range_name(p->color_range)),
+                or_q(av_color_primaries_name(p->color_primaries)), or_q(av_color_transfer_name(p->color_trc)));
+        info_bitrate(b, sizeof(b), p->bit_rate);
+        ADD("Bit rate\t%s\n", b);
+        if (st->nb_frames > 0)
+            ADD("Frames\t%lld\n", (long long)st->nb_frames);
+        ADD("Decoder\t%s, 1 thread\n", v->vdec && v->vdec->codec ? v->vdec->codec->name : "?");
+        if (v->vdec && v->vdec->has_b_frames)
+            ADD("Reordering\t%d frame%s (B-frames)\n", v->vdec->has_b_frames, v->vdec->has_b_frames == 1 ? "" : "s");
+    }
+    if (v->as >= 0) {
+        const AVStream *st = fc->streams[v->as];
+        const AVCodecParameters *p = st->codecpar;
+        const AVCodecDescriptor *d = avcodec_descriptor_get(p->codec_id);
+        const char *prof = avcodec_profile_name(p->codec_id, p->profile);
+        char layout[64];
+        ADD("#Audio\n");
+        ADD("Codec\t%s (%s)\n", d ? d->long_name : "?", avcodec_get_name(p->codec_id));
+        if (v->adec && v->adec->profile != FF_PROFILE_UNKNOWN &&
+            (prof = avcodec_profile_name(p->codec_id, v->adec->profile)) != NULL)
+            ADD("Profile\t%s\n", prof);
+        else if (prof)
+            ADD("Profile\t%s\n", prof);
+        if (av_channel_layout_describe(&p->ch_layout, layout, sizeof(layout)) < 0)
+            snprintf(layout, sizeof(layout), "%d channels", p->ch_layout.nb_channels);
+        ADD("Channels\t%d (%s)\n", p->ch_layout.nb_channels, layout);
+        ADD("Sample rate\t%d Hz\n", p->sample_rate);
+        if (v->adec)
+            ADD("Samples\t%s\n", or_q(av_get_sample_fmt_name(v->adec->sample_fmt)));
+        info_bitrate(b, sizeof(b), p->bit_rate);
+        ADD("Bit rate\t%s\n", b);
+        if ((t = av_dict_get(st->metadata, "language", NULL, 0)))
+            ADD("Language\t%s\n", t->value);
+        ADD("Decoder\t%s\n", v->adec && v->adec->codec ? v->adec->codec->name : "?");
+    }
+    ADD("#Sound output\n");
+    if (!v->dev)
+        ADD("Output\tnone%s%s\n", v->audio_note[0] ? ": " : "", v->audio_note);
+#ifdef USE_SSB
+    else if (v->ssb)
+        ADD("Output\tSharedSoundBuffer (StreamManager), %d Hz 16-bit stereo\n", v->rate);
+#endif
+    else
+        ADD("Output\tSDL (%s), %d Hz 16-bit stereo\n",
+            SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?", v->rate);
+    if (v->dev) {
+        ADD("Kept queued\t%.2f s\n", v->ahead);
+        if (v->stalled)
+            ADD("State\tthe device isn't playing: no sound\n");
+    }
+    return n;
+}
+#undef ADD
+
 static void (*log_fn)(int, const char *);
 
 static void log_callback(void *avcl, int level, const char *fmt, va_list vl)
@@ -753,6 +913,7 @@ static void got_video(FFEGLVideo *v, AVFrame *f)
     }
     v->q[v->qn] = av_frame_clone(f);
     v->qpts[v->qn] = pts;
+    v->n_decoded++;
     if (v->q[v->qn])
         v->qn++;
 }
@@ -838,7 +999,19 @@ static void vpk_clear(FFEGLVideo *v)
 }
 
 /* Sends pkt (NULL = flush) to a decoder and takes all it gives back. */
+static void decode_frames(FFEGLVideo *v, AVCodecContext *dec, AVPacket *pkt, int video);
+
 static void decode(FFEGLVideo *v, AVCodecContext *dec, AVPacket *pkt, int video)
+{
+    int64_t t0 = av_gettime_relative();
+    decode_frames(v, dec, pkt, video);
+    if (video)
+        v->t_decode += av_gettime_relative() - t0;
+    else
+        v->t_audio += av_gettime_relative() - t0;
+}
+
+static void decode_frames(FFEGLVideo *v, AVCodecContext *dec, AVPacket *pkt, int video)
 {
     int ret = avcodec_send_packet(dec, pkt);
     if (ret < 0 && ret != AVERROR_EOF && ret != AVERROR(EAGAIN))
@@ -964,6 +1137,7 @@ int ffegl_update(FFEGLVideo *v)
             v->pause_pos = v->cur_pts;
         else if (!v->audio_clock || v->audio_end < 0)
             timer_set(v, v->cur_pts);
+        v->n_shown++;
         return FFEGL_NEW_FRAME;
     }
     if (v->paused)
@@ -977,6 +1151,7 @@ int ffegl_update(FFEGLVideo *v)
             v->dropped++;
         }
         take_frame(v);
+        v->n_shown++;
         return FFEGL_NEW_FRAME;
     }
 
@@ -1065,8 +1240,14 @@ static int convert(FFEGLVideo *v, uint8_t *dst, int pitch, int w, int h, enum AV
         memcpy(v->cs_key, key, sizeof(key));
     }
     /* (swscale's arm NEON converters used to return 0 lines; only < 0 is an error) */
-    return sws_scale(v->sws, (const uint8_t * const *)f->data, f->linesize, 0, f->height, d, ds) < 0
-           ? AVERROR_EXTERNAL : 0;
+    {
+        int64_t t0 = av_gettime_relative();
+        int ret = sws_scale(v->sws, (const uint8_t * const *)f->data, f->linesize, 0, f->height, d, ds);
+        v->t_convert += av_gettime_relative() - t0;
+        v->conv_w = w;
+        v->conv_h = h;
+        return ret < 0 ? AVERROR_EXTERNAL : 0;
+    }
 }
 
 static void fill_black(uint8_t *p, int pitch, int x, int y, int w, int h)

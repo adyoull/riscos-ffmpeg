@@ -16,6 +16,11 @@
  * Keys (window or full screen): Space pause, Left/Right 10 s, Up/Down 1 min,
  * F full screen on/off, Escape leaves full screen, Q closes the video.
  *
+ * Media info (window menu, or I): a window with what's in the file (codecs,
+ * sizes, rates) and, every second while playing, "stats for nerds": pictures
+ * shown and decoded a second, decoding time and speed, conversion and
+ * drawing time, late and skipped frames, the sound queue, reading speed.
+ *
  * Log: <Wimp$ScrapDir>.ReelLog (ReelEGLLog), written as it goes and
  * started afresh each time Reel starts: the modules and screen found, each
  * file opened, what was done, errors, FFmpeg's messages, and once a second
@@ -72,6 +77,9 @@ int __dynamic_da_max_size = 512 << 20;
 #define Wimp_ReportError       0x400DF
 #define Wimp_SendMessage       0x400E7
 #define Wimp_ResizeIcon        0x400FC
+#define Wimp_SetColour         0x400E6
+#define Wimp_TextOp            0x400F9
+#define OS_Plot                0x45
 #define MimeMap_Translate      0x50B00
 #define TaskManager_EnumerateTasks 0x42681
 
@@ -128,6 +136,10 @@ static struct {
     int vis_w, vis_h;                   /* the window's visible size */
     int last_time_cs;
     int log_cs, log_nulls, log_frames;  /* for the once-a-second log line */
+    int info, info_open;                /* the media info window */
+    char info_title[80];
+    unsigned st_nulls, draw_n;          /* for its stats: null events, pictures drawn ... */
+    unsigned draw_cs;                   /* ... and the time drawing them took */
 #ifdef REEL_EGL
     EGLDisplay dpy;
     EGLConfig cfg;
@@ -826,7 +838,17 @@ static void redraw(int *block)
 #endif
 }
 
+static void show_frame_now(void);
+
 static void show_frame(void)
+{
+    int t0 = now_cs();
+    show_frame_now();
+    S.draw_cs += now_cs() - t0;
+    S.draw_n++;
+}
+
+static void show_frame_now(void)
 {
 #ifdef REEL_EGL
     pic_refresh();                      /* ffegl_draw_surface + eglSwapBuffers */
@@ -883,6 +905,9 @@ static void set_fullscreen(int on)
 
 /* ---- opening and closing a file ------------------------------------------------ */
 
+static void info_new_file(void);
+static void info_close(void);
+
 static void close_video(void)
 {
     _kernel_swi_regs r;
@@ -897,6 +922,7 @@ static void close_video(void)
         r.r[1] = (intptr_t)&S.win;
         swi(Wimp_CloseWindow, &r);
     }
+    info_close();
     ffegl_close(S.v);
     S.v = NULL;
     pic_free();
@@ -936,6 +962,7 @@ static void play_file(const char *file)
         S.log_cs = now_cs();
         S.log_nulls = S.log_frames = 0;
     }
+    info_new_file();
     snprintf(S.file, sizeof(S.file), "%s", file);
     snprintf(S.title, sizeof(S.title), "%s", leaf(file));
     read_screen();
@@ -972,6 +999,335 @@ static void play_file(const char *file)
     force_redraw(S.win, 0, -8192, 8192, 0);
     update_controls(1);
     set_caret(S.win);
+}
+
+/* ---- the media info window ------------------------------------------------ */
+
+#define INFO_ROW      40               /* OS units a line */
+#define INFO_TOP      16
+#define INFO_LABEL_X  32
+#define INFO_VALUE_X  400
+#define INFO_W        1800
+#define INFO_MAX      64
+
+typedef struct { char heading; char label[64]; char value[168]; } info_row_t;
+static info_row_t info_rows[INFO_MAX];
+static int info_n, info_stats_at;       /* rows, and the first of the stats */
+static FFEGLStats info_prev;
+static int info_prev_cs;
+static unsigned info_prev_nulls, info_prev_draw_n, info_prev_draw_cs;
+
+static info_row_t *info_add(int heading, const char *label, const char *value)
+{
+    info_row_t *r;
+    if (info_n >= INFO_MAX)
+        return &info_rows[INFO_MAX - 1];
+    r = &info_rows[info_n++];
+    r->heading = (char)heading;
+    snprintf(r->label, sizeof(r->label), "%s", label);
+    snprintf(r->value, sizeof(r->value), "%s", value ? value : "");
+    return r;
+}
+
+static const char *const stat_labels[] = {
+    "Position", "Clock", "Pictures shown", "Decoded", "Decoding load", "Frame skipping",
+    "Converting", "Drawing", "Waiting", "Sound", "Reading", "Desktop"
+};
+#define N_STATS ((int)(sizeof(stat_labels) / sizeof(stat_labels[0])))
+
+/* The rows: the stats (live, at the top), then the file's details from
+   ffegl_media_info. */
+static void info_build(void)
+{
+    static char text[4096];
+    char *line, *next;
+    info_n = 0;
+    info_add(1, "Stats for nerds (each second, while playing)", NULL);
+    info_stats_at = info_n;
+    for (int i = 0; i < N_STATS; i++)
+        info_add(0, stat_labels[i], "...");
+    ffegl_media_info(S.v, text, sizeof(text));
+    for (line = text; *line; line = next) {
+        char *tab, *nl = strchr(line, '\n');
+        next = nl ? nl + 1 : line + strlen(line);
+        if (nl)
+            *nl = 0;
+        if (line[0] == '#')
+            info_add(1, line + 1, NULL);
+        else if ((tab = strchr(line, '\t')) != NULL) {
+            *tab = 0;
+            info_add(0, line, tab + 1);
+        }
+    }
+}
+
+/* The stats rows from what changed since the last time (about a second). */
+static void info_stats(void)
+{
+    FFEGLStats st;
+    info_row_t *r = &info_rows[info_stats_at];
+    char pos[16], dur[16];
+    int t = now_cs();
+    double dt = (t - info_prev_cs) / 100.0;
+    unsigned dec, shown, late, draws;
+    double dtime;
+
+    if (!S.v || info_stats_at + N_STATS > info_n)
+        return;
+    ffegl_stats(S.v, &st);
+    if (dt <= 0)
+        dt = 0.01;
+    dec = st.decoded - info_prev.decoded;
+    shown = st.shown - info_prev.shown;
+    late = st.late - info_prev.late;
+    dtime = st.decode_time - info_prev.decode_time;
+    draws = S.draw_n - info_prev_draw_n;
+
+    format_time(pos, sizeof(pos), st.position);
+    format_time(dur, sizeof(dur), ffegl_duration(S.v));
+    snprintf(r[0].value, sizeof(r[0].value), "%s of %s (%.2f s)%s", pos, dur, st.position,
+             st.clock_source == 2 ? ", paused" : S.ended ? ", ended" : "");
+    snprintf(r[1].value, sizeof(r[1].value), "%.2f s, from the %s; picture %+d ms", st.clock,
+             st.clock_source == 1 ? "sound" : st.clock_source == 2 ? "pause position" : "timer",
+             (int)((st.position - st.clock) * 1000));
+    snprintf(r[2].value, sizeof(r[2].value), "%.1f a second (the video: %.3g); %u late skipped (%u in all)",
+             shown / dt, st.fps, late, st.late);
+    if (dec && dtime > 0)
+        snprintf(r[3].value, sizeof(r[3].value), "%.1f a second, %.1f ms each: %.2fx real time",
+                 dec / dt, dtime * 1000 / dec, st.fps > 0 ? (dec / st.fps) / dtime : 0);
+    else
+        snprintf(r[3].value, sizeof(r[3].value), "%.1f a second", dec / dt);
+    snprintf(r[4].value, sizeof(r[4].value), "%.0f%% of the time for pictures, %.0f%% for sound",
+             dtime * 100 / dt, (st.audio_time - info_prev.audio_time) * 100 / dt);
+    snprintf(r[5].value, sizeof(r[5].value), "%s; %u time%s so far",
+             st.skip_level == 2 ? "keyframes only" : st.skip_level ? "non-reference frames skipped" : "off",
+             st.skip_spells, st.skip_spells == 1 ? "" : "s");
+    if (dec || shown) {
+        unsigned conv = shown ? shown : dec;
+        snprintf(r[6].value, sizeof(r[6].value), "%.1f ms a picture, to %dx%d (swscale)",
+                 (st.convert_time - info_prev.convert_time) * 1000 / conv, st.convert_w, st.convert_h);
+    }
+    if (draws)
+        snprintf(r[7].value, sizeof(r[7].value), "%.1f ms a picture (%s)",
+                 (S.draw_cs - info_prev_draw_cs) * 10.0 / draws,
+#ifdef REEL_EGL
+                 S.fullscreen ? (S.direct ? "EGL screen surface, direct" : "EGL screen surface")
+                              : "EGL work area surface, with converting"
+#else
+                 "OS_SpriteOp, with converting"
+#endif
+                 );
+    snprintf(r[8].value, sizeof(r[8].value), "%d pictures, %d packets (%u KB)",
+             st.pictures_waiting, st.packets_waiting, st.packet_bytes >> 10);
+    if (st.sound == 0)
+        snprintf(r[9].value, sizeof(r[9].value), "none");
+    else if (st.sound_stalled)
+        snprintf(r[9].value, sizeof(r[9].value), "stalled: the device isn't playing");
+    else if (st.sound == 1)
+        snprintf(r[9].value, sizeof(r[9].value), "SharedSoundBuffer: %.2f s queued, %.1f MB played",
+                 st.sound_queued, st.sound_played / 1048576.0);
+    else
+        snprintf(r[9].value, sizeof(r[9].value), "SDL: %.2f s queued", st.sound_queued);
+    snprintf(r[10].value, sizeof(r[10].value), "%.2f Mbit/s (%.1f MB so far)",
+             (st.bytes_read - info_prev.bytes_read) * 8 / dt / 1e6, st.bytes_read / 1048576.0);
+    snprintf(r[11].value, sizeof(r[11].value), "%.0f null events a second; screen %dx%d, %d bpp, %s%s",
+             (S.st_nulls - info_prev_nulls) / dt, S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1 << S.log2bpp,
+             S.trgb ? "TRGB" : "TBGR", S.fullscreen ? "; full screen" : "");
+
+    info_prev = st;
+    info_prev_cs = t;
+    info_prev_nulls = S.st_nulls;
+    info_prev_draw_n = S.draw_n;
+    info_prev_draw_cs = S.draw_cs;
+}
+
+static void text_colour(unsigned fg)
+{
+    _kernel_swi_regs r;
+    r.r[0] = 0;
+    r.r[1] = (int)fg;                   /* &BBGGRR00 */
+    r.r[2] = (int)0xDDDDDD00u;          /* the window's grey (Wimp colour 1) */
+    swi(Wimp_TextOp, &r);
+}
+
+static void text_plot(const char *t, int x, int y)
+{
+    _kernel_swi_regs r;
+    r.r[0] = 2;
+    r.r[1] = (intptr_t)t;
+    r.r[2] = -1;
+    r.r[3] = -1;
+    r.r[4] = x;
+    r.r[5] = y;
+    swi(Wimp_TextOp, &r);
+}
+
+/* Draws the rows in each rectangle; CLEAR fills the background first (for
+   Wimp_UpdateWindow, which doesn't). */
+static void info_draw(int *b, int more, int clear)
+{
+    _kernel_swi_regs r;
+    while (more) {
+        int ox = b[1] - b[5], oy = b[4] - b[6];      /* screen position of the work area origin */
+        if (clear) {
+            r.r[0] = 1;
+            swi(Wimp_SetColour, &r);
+            r.r[0] = 4; r.r[1] = b[7]; r.r[2] = b[8];
+            swi(OS_Plot, &r);
+            r.r[0] = 96 + 5; r.r[1] = b[9] - 1; r.r[2] = b[10] - 1;
+            swi(OS_Plot, &r);
+        }
+        for (int i = 0; i < info_n; i++) {
+            int top = oy - INFO_TOP - i * INFO_ROW, bottom = top - INFO_ROW;
+            const info_row_t *row = &info_rows[i];
+            if (bottom > b[10] || top < b[8])
+                continue;
+            if (row->heading) {
+                text_colour(0xA0300000u);               /* dark blue */
+                text_plot(row->label, ox + 16, bottom + 12);
+            } else {
+                text_colour(0x55555500u);               /* dark grey */
+                text_plot(row->label, ox + INFO_LABEL_X, bottom + 12);
+                text_colour(0);
+                text_plot(row->value, ox + INFO_VALUE_X, bottom + 12);
+            }
+        }
+        r.r[1] = (intptr_t)b;
+        if (swi(Wimp_GetRectangle, &r))
+            break;
+        more = r.r[0];
+    }
+}
+
+static int info_height(void) { return INFO_TOP * 2 + info_n * INFO_ROW; }
+
+static void info_redraw(int *block)
+{
+    _kernel_swi_regs r;
+    r.r[1] = (intptr_t)block;
+    if (swi(Wimp_RedrawWindow, &r))
+        return;
+    info_draw(block, r.r[0], 0);
+}
+
+/* Redraws just the stats (every second). */
+static void info_update(void)
+{
+    int b[11];
+    _kernel_swi_regs r;
+    if (!S.info_open)
+        return;
+    b[0] = S.info;
+    b[1] = 0;
+    b[2] = -(INFO_TOP + (info_stats_at + N_STATS) * INFO_ROW);
+    b[3] = INFO_W * 2;
+    b[4] = -(INFO_TOP + info_stats_at * INFO_ROW);
+    r.r[1] = (intptr_t)b;
+    if (swi(Wimp_UpdateWindow, &r))
+        return;
+    info_draw(b, r.r[0], 1);
+}
+
+static int info_create(void)
+{
+    struct {
+        box_t vis;
+        int sx, sy, behind, flags;
+        unsigned char tfg, tbg, wfg, wbg, sofg, sibg, tfocus, xflags;
+        box_t ext;
+        int tflags, wbutton, sprites;
+        short minw, minh;
+        ind_t title;
+        int nicons;
+    } w;
+    _kernel_swi_regs r;
+
+    memset(&w, 0, sizeof(w));
+    w.vis.x1 = INFO_W; w.vis.y1 = 600;
+    w.behind = -1;
+    w.flags = (int)0xBF000002u;         /* new format, back, close, title, toggle, v scroll, adjust size, moveable */
+    w.tfg = 7; w.tbg = 2; w.wfg = 7; w.wbg = 1; w.sofg = 3; w.sibg = 1; w.tfocus = 12;
+    w.ext.x0 = 0; w.ext.y0 = -info_height(); w.ext.x1 = INFO_W * 2; w.ext.y1 = 0;
+    w.tflags = IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_COL(7, 2);
+    w.wbutton = 0;                      /* clicks ignored */
+    w.sprites = 1;
+    w.minw = 400; w.minh = 200;
+    w.title.text = S.info_title;
+    w.title.valid = (const char *)-1;
+    w.title.len = sizeof(S.info_title);
+    r.r[1] = (intptr_t)&w;
+    if (swi(Wimp_CreateWindow, &r))
+        return -1;
+    S.info = r.r[0];
+    return 0;
+}
+
+static void info_open(void)
+{
+    int b[8], h;
+    _kernel_swi_regs r;
+    if (!S.v)
+        return;
+    if (!S.info) {
+        snprintf(S.info_title, sizeof(S.info_title), "Media info: %s", S.title);
+        info_build();
+        if (info_create() < 0)
+            return;
+    }
+    info_stats();
+    h = info_height();
+    if (h > S.scr_h * 3 / 4)
+        h = S.scr_h * 3 / 4;
+    b[0] = S.info;
+    if (S.info_open) {                  /* already open: bring it to the front */
+        window_state(S.info, b);
+        b[7] = -1;
+    } else {
+        b[1] = S.scr_w - INFO_W - 96;
+        if (b[1] < 0) b[1] = 0;
+        b[3] = b[1] + INFO_W;
+        b[4] = S.scr_h - 160;
+        b[2] = b[4] - h;
+        b[5] = 0; b[6] = 0; b[7] = -1;
+    }
+    r.r[1] = (intptr_t)b;
+    swi(Wimp_OpenWindow, &r);
+    S.info_open = 1;
+    lg("media info window open");
+}
+
+static void info_close(void)
+{
+    _kernel_swi_regs r;
+    if (!S.info)
+        return;
+    r.r[1] = (intptr_t)&S.info;
+    swi(Wimp_CloseWindow, &r);
+    swi(Wimp_DeleteWindow, &r);         /* made again for the next file */
+    S.info = 0;
+    S.info_open = 0;
+}
+
+/* A new file: fresh rows (and the window again, if it was open). */
+static void info_new_file(void)
+{
+    int was_open = S.info_open;
+    ffegl_stats(S.v, &info_prev);
+    info_prev_cs = now_cs();
+    info_prev_nulls = S.st_nulls;
+    info_prev_draw_n = S.draw_n;
+    info_prev_draw_cs = S.draw_cs;
+    info_close();
+    if (was_open)
+        info_open();
+}
+
+static void info_toggle(void)
+{
+    if (S.info_open)
+        info_close();
+    else
+        info_open();
 }
 
 /* ---- menus -------------------------------------------------------------------- */
@@ -1013,7 +1369,7 @@ static void menu_open(int bar, int x, int y)
         y = 96 + n * 44;
         x -= 64;
     } else {
-        menu_item(0, "File info", 0, 0);
+        menu_item(0, "Media info", S.info_open, 0);
         menu_item(1, "Full screen", S.fullscreen, 0);
         menu_item(2, "Loop", S.loop, 0);
 #ifdef REEL_EGL
@@ -1057,6 +1413,10 @@ static void show_info(void)
 #endif
         return;
     }
+    if (S.v) {                          /* the video's details: the media info window */
+        info_open();
+        return;
+    }
     ffegl_info(S.v, info, sizeof(info));
     format_time(dur, sizeof(dur), ffegl_duration(S.v));
     snprintf(msg, sizeof(msg), "%s: %s; %s long; %u late frames skipped so far.",
@@ -1077,7 +1437,7 @@ static void menu_select(const int *sel)
         }
     } else {
         switch (sel[0]) {
-        case 0: show_info(); break;
+        case 0: info_toggle(); break;
         case 1: set_fullscreen(!S.fullscreen); break;
         case 2: S.loop = !S.loop; break;        /* applies from the next file */
 #ifdef REEL_EGL
@@ -1113,6 +1473,10 @@ static void toggle_pause(void)
     } else
         ffegl_pause(S.v, !ffegl_paused(S.v));
     lg("%s at %.2f", ffegl_paused(S.v) ? "pause" : "play", ffegl_position(S.v));
+    if (S.info_open) {                  /* no null events while paused: show where it stopped */
+        info_stats();
+        info_update();
+    }
     update_controls(1);
 }
 
@@ -1166,6 +1530,7 @@ static void key(int *b)
         if (S.fullscreen) { set_fullscreen(0); return; }
         break;
     case 'q': case 'Q': close_video(); return;
+    case 'i': case 'I': info_toggle(); return;
     }
     r.r[0] = b[6];
     swi(Wimp_ProcessKey, &r);
@@ -1179,6 +1544,7 @@ static void tick(void)
         return;
     r2 = ffegl_update(S.v);
     S.log_nulls++;
+    S.st_nulls++;
     if (r2 == FFEGL_NEW_FRAME) {
         show_frame();
         S.log_frames++;
@@ -1196,6 +1562,10 @@ static void tick(void)
         lg("%s; %d nulls, %d pictures in %.2f s", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0);
         S.log_cs = t;
         S.log_nulls = S.log_frames = 0;
+    }
+    if (t - info_prev_cs >= 100) {        /* the stats: once a second */
+        info_stats();
+        info_update();
     }
     if (t - S.last_time_cs >= 20) {
         S.last_time_cs = t;
@@ -1348,7 +1718,12 @@ int reel_main(int argc, char **argv)
             continue;
         switch (r.r[0]) {
         case 0:  tick(); break;                            /* null */
-        case 1:  redraw(block); break;
+        case 1:
+            if (S.info && block[0] == S.info)
+                info_redraw(block);
+            else
+                redraw(block);
+            break;
         case 2: {                                          /* Open_Window_Request */
             int resized = block[0] == S.win &&
                           (block[3] - block[1] != S.vis_w || block[4] - block[2] != S.vis_h);
@@ -1367,6 +1742,8 @@ int reel_main(int argc, char **argv)
                 close_video();
             else if (block[0] == S.full)
                 set_fullscreen(0);
+            else if (S.info && block[0] == S.info)
+                info_close();
             break;
         case 6:                                            /* Mouse_Click */
             if (block[3] == -2) {

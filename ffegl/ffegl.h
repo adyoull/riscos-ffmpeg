@@ -85,6 +85,38 @@ unsigned ffegl_dropped_frames(const FFEGLVideo *v);
    Returns its length (as snprintf). */
 int ffegl_debug(const FFEGLVideo *v, char *buf, int size);
 
+/* What's in the file, for an information window: lines of "Label\tValue\n",
+   with "#Section\n" lines between (File, Video, Audio, Sound output).
+   Returns the length (as snprintf). */
+int ffegl_media_info(const FFEGLVideo *v, char *buf, int size);
+
+/* Running totals, for "stats for nerds": take two, some time apart, and
+   divide the differences by the time. Times are the processor time spent,
+   in seconds (measured with the centisecond clock on RISC OS, so only
+   right on average over many frames). */
+typedef struct FFEGLStats {
+    double position, clock;
+    int clock_source;                 /* 0 timer, 1 sound, 2 paused */
+    double fps;                       /* the video's own frame rate */
+    unsigned decoded;                 /* pictures decoded */
+    unsigned shown;                   /* pictures handed out (FFEGL_NEW_FRAME) */
+    unsigned late;                    /* pictures skipped as late */
+    double decode_time;               /* decoding pictures */
+    double audio_time;                /* decoding and resampling sound */
+    double convert_time;              /* converting and scaling pictures (swscale) */
+    int convert_w, convert_h;         /* the last conversion's size */
+    int pictures_waiting, packets_waiting;
+    unsigned packet_bytes;
+    int skip_level;                   /* 0 every frame, 1 not non-reference ones, 2 keyframes only */
+    unsigned skip_spells;
+    int sound;                        /* 0 none, 1 SharedSoundBuffer, 2 SDL */
+    int sound_stalled;
+    double sound_queued;              /* seconds */
+    unsigned sound_added, sound_played;   /* StreamManager's counts (SharedSoundBuffer) */
+    long long bytes_read;             /* from the file */
+} FFEGLStats;
+void ffegl_stats(const FFEGLVideo *v, FFEGLStats *st);
+
 /* Sends FFmpeg's (and ffegl's) messages, one line at a time without the
    newline, to FN instead of stderr; VERBOSE adds ffegl's sound details
    (stream opened, started, refused blocks) and FFmpeg's verbose messages.

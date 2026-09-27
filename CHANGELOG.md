@@ -1,5 +1,32 @@
 # Changes
 
+## Reel 0.8 (2026-09-27)
+
+- **Media info window** (window menu "Media info", or I), replacing the
+  File info error box, which stopped the picture while it was open. It
+  stays open while playing and follows the file being played.
+  - At the top, "stats for nerds", every second while playing (and on
+    pause): position and clock (sound or timer) and the gap between
+    them; pictures shown a second against the video's rate, late ones;
+    pictures decoded a second, ms each and times real time; decoding
+    load (pictures and sound); frame skipping; swscale time a picture
+    and its size; drawing time a picture (OS_SpriteOp, or EGL); pictures
+    and packets waiting; the sound output and queue; the reading rate;
+    null events a second and the screen mode.
+  - Below, from `ffegl_media_info()`: file (name, title, container,
+    length, size, bit rate, streams), video (codec, profile, level,
+    size, aspect, frame rate, pixel format, colours, bit rate, frames,
+    decoder, B-frame reordering), audio (codec, profile e.g. HE-AAC,
+    channels and layout, sample rate and format, bit rate, language,
+    decoder) and the sound output.
+  - Drawn with Wimp_TextOp in the desktop font; the stats are redrawn
+    with Wimp_UpdateWindow (no flicker from ForceRedraw).
+- ffegl: `ffegl_media_info()` and `ffegl_stats()` (running totals:
+  pictures decoded and shown, decoding, sound and swscale time, sizes,
+  queues, sound counts, bytes read).
+- Test: reel_test opens the window with I, checks its text (codec,
+  sample rate, the stats after a second of playing) and closes it.
+
 ## Reel 0.7 (2026-09-27)
 
 - **The trailer froze after half a second, now with SharedSoundBuffer.**

@@ -50,18 +50,22 @@ static int fails, step;
 
 #define WIN 0x100
 #define FULL 0x200
+#define INFO 0x300                    /* the media info window */
 #define SCR_W 1920                    /* pixels; eig 1 -> 3840 x 2160 OS units */
 #define SCR_H 1080
 
 static int created, opened_w, opened_h, win_x0, win_y1, full_open, win_open, nicons;
-static int state[2][9];               /* window states: [0] WIN, [1] FULL */
+static int state[3][9];               /* window states: [0] WIN, [1] FULL, [2] INFO */
+static int info_created, info_open, info_updates, info_texts;
+static char info_seen[8192];          /* what Wimp_TextOp drew in the info window */
+static int drawing_info;
 static int plots, plots_full, clip_ok = 1, updates, acks, reports, keys_passed, last_mask;
 static int caret_win;
 static int icon_box[8][4];
 static char title[64];
 static int *title_ptr;
 
-static int *st(int w) { return state[w == FULL]; }
+static int *st(int w) { return state[w == FULL ? 1 : w == INFO ? 2 : 0]; }
 
 static void message(int *b, int action, int window, int icon, int type, const char *name)
 {
@@ -93,7 +97,7 @@ static int script(int *b)
 }
 
 /* the phases after the first drop */
-enum { P_PLAY1, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL, P_UNFULL,
+enum { P_PLAY1, P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL, P_UNFULL,
        P_RESIZE, P_PLAY4, P_DROP2, P_PLAY5, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_CLOSE, P_QUIT };
 static int phase = -1, phase_step;
 static double pos_before;
@@ -126,6 +130,27 @@ static int next_event(int *b)
                 CHECK(px && !bad, "phase %d: sprite %dx%d, %d pixels differ", phase, w, h, bad);
                 free(want);
             }
+            break;
+        case P_INFO:                                                  /* I: the media info window */
+            if (phase_step == 0) { phase_step++; memset(b, 0, 28); b[0] = WIN; b[6] = 'i'; return 8; }
+            if (phase_step++ == 1) { info_seen[0] = 0; memset(b, 0, 44); b[0] = INFO; return 1; }   /* its redraw */
+            CHECK(info_created == 1 && info_open, "I: info window %d made, open %d", info_created, info_open);
+            CHECK(strstr(info_seen, "h264") && strstr(info_seen, "Sample rate") && strstr(info_seen, "Stats for nerds"),
+                  "info window text: %.300s", info_seen);
+            break;
+        case P_INFOPLAY:                                              /* its stats, each second */
+            if (phase_step == 0) info_updates = 0;
+            if (phase_step++ < 70) { fake_time += 0.02; if (phase_step == 1) info_seen[0] = 0; return 0; }
+            CHECK(info_updates >= 1, "stats not updated (%d)", info_updates);
+            /* (decoding takes no fake time, so there's no "ms each" here) */
+            CHECK(strstr(info_seen, "25.0 a second") && (strstr(info_seen, "SharedSoundBuffer: ") || strstr(info_seen, "SDL: ")) &&
+                  strstr(info_seen, "pictures,") && strstr(info_seen, "Mbit/s"),
+                  "stats text: %.400s", info_seen);
+            printf("  info: %s\n", strstr(info_seen, "Stats") ? strstr(info_seen, "Stats") : info_seen);
+            break;
+        case P_INFOCLOSE:
+            if (phase_step++ == 0) { memset(b, 0, 4); b[0] = INFO; return 3; }
+            CHECK(!info_open, "info window didn't close");
             break;
         case P_PAUSE:
             if (phase_step++ == 0) {
@@ -339,6 +364,7 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x400C2: out->r[0] = 1; return NULL;                             /* CreateIcon */
     case 0x400C1:                                                         /* CreateWindow */
         if ((b[7] & 0x80000040) == 0x80000040 && !(b[7] & 0x04000000)) { out->r[0] = FULL; return NULL; }
+        if (b[7] & 0x10000000) { info_created++; out->r[0] = INFO; return NULL; }      /* v scroll: info */
         created++; nicons = b[21];
         title_ptr = (int *)(intptr_t)b[18];
         out->r[0] = WIN;
@@ -351,10 +377,18 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         memcpy(st(b[0]), b, 32);
         st(b[0])[5] = st(b[0])[6] = 0;
         if (b[0] == WIN) { win_open = 1; opened_w = b[3] - b[1]; opened_h = b[4] - b[2]; }
+        else if (b[0] == INFO) info_open = 1;
         else full_open = 1;
         return NULL;
     case 0x400CB: memcpy(b + 1, st(b[0]) + 1, 32); return NULL;           /* GetWindowState */
-    case 0x400C6: if (b[0] == WIN) win_open = 0; else full_open = 0; return NULL;   /* CloseWindow */
+    case 0x400C6: if (b[0] == WIN) win_open = 0; else if (b[0] == INFO) info_open = 0; else full_open = 0; return NULL;   /* CloseWindow */
+    case 0x400F9:                                                         /* Wimp_TextOp */
+        if (in->r[0] == 2 && drawing_info && strlen(info_seen) + strlen((char *)(intptr_t)in->r[1]) + 2 < sizeof(info_seen)) {
+            strcat(info_seen, (char *)(intptr_t)in->r[1]);
+            strcat(info_seen, "|");
+            info_texts++;
+        }
+        return NULL;
     case 0x400D1: case 0x400CD: case 0x400DC: case 0x400D4: return NULL;
     case 0x400D2: caret_win = in->r[0]; return NULL;                      /* SetCaretPosition */
     case 0x400CF: b[2] = 4; return NULL;                                  /* GetPointerInfo: Select */
@@ -369,10 +403,12 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x400C9: case 0x400C8: {                                         /* Update/RedrawWindow */
         int w = b[0], *s = st(w);
         if (swi == 0x400C9) updates++;
+        drawing_info = w == INFO;
+        if (w == INFO && swi == 0x400C9) { info_updates++; info_seen[0] = 0; }
         memcpy(b + 1, s + 1, 24);                                         /* visible box, scroll */
         b[7] = s[1]; b[8] = s[2]; b[9] = s[3]; b[10] = s[4];              /* one rectangle: all of it */
         pending_rect = 1;
-        out->r[0] = (w == WIN && win_open) || (w == FULL && full_open);
+        out->r[0] = (w == WIN && win_open) || (w == FULL && full_open) || (w == INFO && info_open);
         return NULL;
     }
     case 0x400CA: out->r[0] = 0; return NULL;                             /* GetRectangle: no more */
