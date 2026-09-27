@@ -33,6 +33,7 @@ static void advance(void)
 SDL_bool SDL_WasInit(Uint32 f) { return 0; }
 int SDL_InitSubSystem(Uint32 f) { return fake_audio_fail ? -1 : 0; }
 const char *SDL_GetError(void) { return "RISC OS audio: SharedSoundBuffer/StreamManager not loaded (fake)"; }
+const char *SDL_GetCurrentAudioDriver(void) { return "fake"; }
 SDL_AudioDeviceID SDL_OpenAudioDevice(const char *d, int c, const SDL_AudioSpec *w, SDL_AudioSpec *h, int ch)
 {
     if (fake_audio_fail) return 0;

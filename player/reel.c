@@ -16,8 +16,16 @@
  * Keys (window or full screen): Space pause, Left/Right 10 s, Up/Down 1 min,
  * F full screen on/off, Escape leaves full screen, Q closes the video.
  *
+ * Log: <Wimp$ScrapDir>.ReelLog (ReelEGLLog), written as it goes and
+ * started afresh each time Reel starts: the modules and screen found, each
+ * file opened, what was done, errors, FFmpeg's messages, and once a second
+ * while playing, the state of the picture and the sound (ffegl_debug).
+ * Reel$Log (ReelEGL$Log) names another file, or "off". "Log" on the icon
+ * bar menu opens it.
+ *
  * Part of riscos-ffmpeg. GPL v2 or later.
  */
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -119,6 +127,7 @@ static struct {
     box_t pic;                          /* picture area in work area coordinates */
     int vis_w, vis_h;                   /* the window's visible size */
     int last_time_cs;
+    int log_cs, log_nulls, log_frames;  /* for the once-a-second log line */
 #ifdef REEL_EGL
     EGLDisplay dpy;
     EGLConfig cfg;
@@ -133,16 +142,153 @@ static struct {
 
 static _kernel_oserror *swi(int n, _kernel_swi_regs *r) { return _kernel_swi(n, r, r); }
 
+/* ---- the log ------------------------------------------------------------ */
+
+static FILE *logf;
+static char log_path[256];
+static int log_t0;
+static char log_last[300];
+static int log_repeats;
+
+static int now_cs(void)
+{
+    _kernel_swi_regs r;
+    swi(OS_ReadMonotonicTime, &r);
+    return r.r[0];
+}
+
+static void lg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void lg(const char *fmt, ...)
+{
+    va_list ap;
+    int t;
+    if (!logf)
+        return;
+    t = now_cs() - log_t0;
+    fprintf(logf, "%4d.%02d ", t / 100, t % 100);
+    va_start(ap, fmt);
+    vfprintf(logf, fmt, ap);
+    va_end(ap);
+    fputc('\n', logf);
+    fflush(logf);                       /* all there even if we crash */
+}
+
+/* FFmpeg's and ffegl's messages (AV_LOG_ERROR 16, WARNING 24, INFO 32, VERBOSE 40) */
+static void ff_log(int level, const char *line)
+{
+    if (!strcmp(line, log_last)) {      /* e.g. the same decoder warning every frame */
+        log_repeats++;
+        return;
+    }
+    if (log_repeats)
+        lg("  (repeated %d more times)", log_repeats);
+    log_repeats = 0;
+    snprintf(log_last, sizeof(log_last), "%s", line);
+    lg("%s%s", level <= 16 ? "ERROR " : level <= 24 ? "warning " : "", line);
+}
+
+static void log_module(const char *name)
+{
+    _kernel_swi_regs r;
+    memset(&r, 0, sizeof(r));
+    r.r[0] = 18;                        /* OS_Module 18: look up by name */
+    r.r[1] = (intptr_t)name;
+    if (_kernel_swi(0x1E, &r, &r) || !r.r[3]) {
+        lg("module %s: not loaded", name);
+        return;
+    }
+    {
+        const char *base = (const char *)(intptr_t)r.r[3];
+        int off = *(const int *)(base + 0x14);
+        char help[80];
+        int i;
+        for (i = 0; off && i < (int)sizeof(help) - 1; i++) {
+            char c = base[off + i];
+            if (c == 9)
+                c = ' ';                /* help strings line up with tabs */
+            else if (c < ' ')
+                break;
+            help[i] = c;
+        }
+        help[i] = 0;
+        lg("module %s: %s", name, off ? help : "(no help string)");
+    }
+}
+
+static void log_env(const char *name)
+{
+    const char *v = getenv(name);
+    lg("%s = %s", name, v ? v : "(not set)");
+}
+
+static void log_open(void)
+{
+    const char *p = getenv(APP "$Log");
+    if (p && !strcmp(p, "off"))
+        return;
+    if (p && *p)
+        snprintf(log_path, sizeof(log_path), "%s", p);
+    else {
+        const char *scrap = getenv("Wimp$ScrapDir");
+        if (!scrap || !*scrap)
+            return;
+        snprintf(log_path, sizeof(log_path), "%s.%sLog", scrap, APP);
+    }
+    if (!(logf = fopen(log_path, "w"))) {
+        log_path[0] = 0;
+        return;
+    }
+    {
+        _kernel_swi_regs r;             /* OS_File 18: make it a Text file */
+        r.r[0] = 18;
+        r.r[1] = (intptr_t)log_path;
+        r.r[2] = 0xFFF;
+        _kernel_swi(0x08, &r, &r);
+    }
+    log_t0 = now_cs();
+    lg("%s log (built " __DATE__ " " __TIME__ "), times in seconds", APP);
+    log_module("SharedSound");
+    log_module("StreamManager");
+    log_module("SharedSoundBuffer");
+    log_module("SharedUnixLibrary");
+    log_module("VFPSupport");
+    log_env("FFEGL_AUDIO");
+    log_env("SDL_AUDIODRIVER");
+#ifdef REEL_EGL
+    log_env("ReelEGL$NoDirect");
+#endif
+    ffegl_set_log(ff_log, 1);
+}
+
+/* Opens the log in the editor (Filer_Run) */
+static void log_show(void);
+
 static void report(const char *text)
 {
     _kernel_oserror e;
     _kernel_swi_regs r;
     e.errnum = 0;
     snprintf(e.errmess, sizeof(e.errmess), "%s", text);
+    lg("report: %s", text);
     r.r[0] = (intptr_t)&e;
     r.r[1] = 1 | 16;
     r.r[2] = (intptr_t)APP;
     swi(Wimp_ReportError, &r);
+}
+
+static void log_show(void)
+{
+    char cmd[300];
+    _kernel_swi_regs r;
+    if (!logf) {
+        report("There's no log: " APP "$Log is \"off\", or <Wimp$ScrapDir> isn't set.");
+        return;
+    }
+    fflush(logf);
+    snprintf(cmd, sizeof(cmd), "Filer_Run %s", log_path);
+    r.r[0] = (intptr_t)cmd;
+    if (swi(0x400DE /* Wimp_StartTask */, &r))
+        report(log_path);
 }
 
 static int mode_var(int var)
@@ -157,12 +303,18 @@ static int mode_var(int var)
 
 static void read_screen(void)
 {
+    static int logged_w, logged_h, logged_bpp;
     S.xeig = mode_var(4);
     S.yeig = mode_var(5);
     S.log2bpp = mode_var(9);
     S.trgb = S.log2bpp == 5 && (mode_var(0) & 0x4000);
     S.scr_w = (mode_var(11) + 1) << S.xeig;
     S.scr_h = (mode_var(12) + 1) << S.yeig;
+    if (S.scr_w != logged_w || S.scr_h != logged_h || S.log2bpp != logged_bpp) {
+        logged_w = S.scr_w; logged_h = S.scr_h; logged_bpp = S.log2bpp;
+        lg("screen %dx%d pixels (%dx%d OS units), %d bpp, %s", S.scr_w >> S.xeig, S.scr_h >> S.yeig,
+           S.scr_w, S.scr_h, 1 << S.log2bpp, S.trgb ? "TRGB" : "TBGR");
+    }
 }
 
 static __attribute__((unused)) void vdu_clip(int x0, int y0, int x1, int y1)    /* inclusive, OS units */
@@ -296,8 +448,15 @@ static int egl_init(void)
     if (S.dpy)
         return 0;
     S.dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (S.dpy != EGL_NO_DISPLAY) {
+        EGLint major = 0, minor = 0;
+        if (eglInitialize(S.dpy, &major, &minor))
+            lg("EGL %d.%d: %s, %s", (int)major, (int)minor, eglQueryString(S.dpy, EGL_VENDOR),
+               eglQueryString(S.dpy, EGL_VERSION));
+    }
     if (S.dpy == EGL_NO_DISPLAY || !eglInitialize(S.dpy, NULL, NULL) ||
         !eglChooseConfig(S.dpy, attr, &S.cfg, 1, &n) || n < 1) {
+        lg("EGL: display %p, error 0x%x, %d configs", (void *)S.dpy, eglGetError(), (int)n);
         S.dpy = EGL_NO_DISPLAY;
         report("EGL didn't start (riscos-mesa's EGL with EGL_KHR_lock_surface is needed).");
         return -1;
@@ -345,6 +504,7 @@ static void surf_make(int w, int h, int full)
     }
     if (full)
         eglSwapInterval(S.dpy, S.direct ? 0 : 1);
+    lg("EGL surface %dx%d, %s", w, h, !full ? "work area" : S.direct ? "screen, direct (single buffer)" : "screen");
     S.surf_w = w;
     S.surf_h = h;
     S.surf_full = full;
@@ -693,6 +853,7 @@ static void set_fullscreen(int on)
     _kernel_swi_regs r;
     if (on == S.fullscreen || !S.v)
         return;
+    lg("full screen %s", on ? "on" : "off");
     if (on) {
         read_screen();
         if (!S.full && create_full_window() < 0)
@@ -725,6 +886,11 @@ static void set_fullscreen(int on)
 static void close_video(void)
 {
     _kernel_swi_regs r;
+    if (S.v) {
+        char d[300];
+        ffegl_debug(S.v, d, sizeof(d));
+        lg("close: %s", d);
+    }
     if (S.fullscreen)
         set_fullscreen(0);
     if (S.win) {
@@ -749,6 +915,7 @@ static void play_file(const char *file)
     int vw, vh, w, h, maxw, maxh, st[9];
     int was_open = S.v != NULL;
 
+    lg("open %s", file);
     v = ffegl_open(file, S.loop ? FFEGL_LOOP : 0);
     if (!v) {
         char msg[300];
@@ -762,6 +929,13 @@ static void play_file(const char *file)
     }
     S.v = v;
     S.ended = 0;
+    {
+        char info[256];
+        ffegl_info(v, info, sizeof(info));
+        lg("playing: %s; %.1f s", info, ffegl_duration(v));
+        S.log_cs = now_cs();
+        S.log_nulls = S.log_frames = 0;
+    }
     snprintf(S.file, sizeof(S.file), "%s", file);
     snprintf(S.title, sizeof(S.title), "%s", leaf(file));
     read_screen();
@@ -779,6 +953,7 @@ static void play_file(const char *file)
     if (w < MIN_W) w = MIN_W;          /* room for the controls; the picture is letterboxed */
     vw = w;
     vh = h + CH;
+    lg("window %dx%d OS units%s", vw, vh, S.fullscreen ? " (staying full screen)" : "");
     if (S.fullscreen) {                 /* stay full screen; the window follows later */
         pic_make(S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1);
         force_redraw(S.full, 0, -8192, 8192, 0);
@@ -832,8 +1007,9 @@ static void menu_open(int bar, int x, int y)
     if (bar) {
         menu_item(0, "Info", 0, 0);
         menu_item(1, "Loop", S.loop, 0);
-        menu_item(2, "Quit", 0, 1);
-        n = 3;
+        menu_item(2, "Log", 0, 0);
+        menu_item(3, "Quit", 0, 1);
+        n = 4;
         y = 96 + n * 44;
         x -= 64;
     } else {
@@ -862,6 +1038,7 @@ static void quit(void)
 {
     _kernel_swi_regs r;
     close_video();
+    lg("quit");
     r.r[0] = S.task;
     swi(Wimp_CloseDown, &r);
     exit(0);
@@ -895,7 +1072,8 @@ static void menu_select(const int *sel)
         switch (sel[0]) {
         case 0: show_info(); break;
         case 1: S.loop = !S.loop; break;
-        case 2: quit();
+        case 2: log_show(); break;
+        case 3: quit();
         }
     } else {
         switch (sel[0]) {
@@ -934,6 +1112,7 @@ static void toggle_pause(void)
         ffegl_pause(S.v, 0);
     } else
         ffegl_pause(S.v, !ffegl_paused(S.v));
+    lg("%s at %.2f", ffegl_paused(S.v) ? "pause" : "play", ffegl_position(S.v));
     update_controls(1);
 }
 
@@ -947,6 +1126,7 @@ static void seek_by(double d)
     if (p < 0) p = 0;
     if (dur > 0 && p > dur - 1) p = dur - 1;
     S.ended = 0;
+    lg("seek %+.0f s to %.2f", d, p);
     ffegl_seek(S.v, p);
     update_controls(1);
 }
@@ -967,6 +1147,7 @@ static void click_track(int mouse_x)
     if (wx < x0) wx = x0;
     if (wx > x1) wx = x1;
     S.ended = 0;
+    lg("seek (position bar) to %.2f", d * (wx - x0) / (x1 - x0));
     ffegl_seek(S.v, d * (wx - x0) / (x1 - x0));
     update_controls(1);
 }
@@ -997,15 +1178,25 @@ static void tick(void)
     if (!S.v || S.ended)
         return;
     r2 = ffegl_update(S.v);
-    if (r2 == FFEGL_NEW_FRAME)
+    S.log_nulls++;
+    if (r2 == FFEGL_NEW_FRAME) {
         show_frame();
-    else if (r2 == FFEGL_END) {
+        S.log_frames++;
+    } else if (r2 == FFEGL_END) {
+        lg("end of the file");
         S.ended = 1;
         update_controls(1);
         return;
     }
     swi(OS_ReadMonotonicTime, &r);
     t = r.r[0];
+    if (logf && t - S.log_cs >= 100) {    /* once a second */
+        char d[300];
+        ffegl_debug(S.v, d, sizeof(d));
+        lg("%s; %d nulls, %d pictures in %.2f s", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0);
+        S.log_cs = t;
+        S.log_nulls = S.log_frames = 0;
+    }
     if (t - S.last_time_cs >= 20) {
         S.last_time_cs = t;
         if (!S.fullscreen)
@@ -1067,6 +1258,7 @@ static void message(int *b)
         }
         break;
     case MSG_MODECHANGE:
+        lg("mode change");
         read_screen();
         if (S.fullscreen) {
             set_fullscreen(0);
@@ -1142,6 +1334,7 @@ int reel_main(int argc, char **argv)
         swi(Wimp_CloseDown, &r);
         return 0;
     }
+    log_open();
     read_screen();
     iconbar_icon();
     if (argc > 1)

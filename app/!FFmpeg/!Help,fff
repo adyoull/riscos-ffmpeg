@@ -17,8 +17,9 @@ Getting started
 ---------------
 Double-click !FFmpeg: its icon appears on the icon bar. Drop a video (or
 sound) file on the icon to play it with ffplay, in a window of its own.
-The icon's menu has Info, Full screen (tick it to play full screen) and
-Quit. ffplay's messages go to the file ffplay/log in the scrap directory.
+The icon's menu has Info, Full screen (tick it to play full screen), Log
+and Quit. ffplay's messages (verbose: including the sound driver it
+used) go to the file ffplay/log in the scrap directory; Log opens it.
 
 For everything else, use the commands.
 Let the Filer see !FFmpeg (open the directory it is in), or double-click

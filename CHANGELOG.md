@@ -1,5 +1,30 @@
 # Changes
 
+## Reel 0.6, !FFmpeg front end log (2026-09-27)
+
+- **Reel and ReelEGL write a log**: `<Wimp$ScrapDir>.ReelLog`
+  (`ReelEGLLog`), started afresh at each start and flushed line by line.
+  - Start: the build, the versions of SharedSound, StreamManager,
+    SharedSoundBuffer, SharedUnixLibrary and VFPSupport (from their help
+    strings, or "not loaded"), `FFEGL_AUDIO`, `SDL_AUDIODRIVER`, the
+    screen mode; ReelEGL adds EGL's version and each surface made.
+  - Each file opened (`ffegl_info`), the window size, pause, seek, full
+    screen, mode changes, the end, close, quit, and every error box.
+  - FFmpeg's messages at verbose level, with repeats folded.
+  - Once a second while playing: `ffegl_debug()` (position, clock and
+    which one, pictures waiting, late frames; the sound output, queued
+    time, StreamManager's added/played counts, bytes waiting, refused
+    blocks), plus null events and pictures shown.
+  - `Reel$Log` / `ReelEGL$Log` names another file, or `off`. "Log" on
+    the icon bar menu opens it (Filer_Run).
+- ffegl: new `ffegl_debug()` and `ffegl_set_log()`; SharedSoundBuffer
+  events (stream opened, sound starts, first refused block, reopen
+  failures) and SDL's driver name are logged at verbose level; the
+  stall warning includes the `ffegl_debug()` line.
+- !FFmpeg: ffplay runs with `-loglevel verbose` into
+  `<Wimp$ScrapDir>.ffplay/log`, and the icon's menu has "Log" to open it.
+- Tests: `reel_ssb_test` and `reelegl_test` check the log's contents.
+
 ## Reel 0.5 (2026-09-27)
 
 - **Still no sound on the Pi with the modules loaded.** With SharedSound,

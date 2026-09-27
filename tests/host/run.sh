@@ -62,8 +62,16 @@ $CC -DFAKE_SSB -I$S/include -I$DEVKIT/include -I$TOP/ffegl -I$HERE -c "$HERE/ree
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reel_ssb_test" "$O/reel_ssb_test.o" "$O/reel.o" \
   "$O/ffegl_ssb.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
 echo "== reel_ssb_test (the player, sound through SharedSoundBuffer)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/reel_ssb_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
+rm -f "$O/reel_ssb.log"
+env 'Reel$Log'="$O/reel_ssb.log" "$TOP/tests/qemu/aligntrap.sh" "$O/reel_ssb_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
   grep -v "swscaler\|ffegl: " || bad=1
+# the log (Reel$Log): what was opened, the sound stream, the once-a-second lines, quit
+for want in "Reel log" "module SharedSoundBuffer" "open .*long_h264_aac_322_184" "playing: h264" \
+            "SharedSoundBuffer stream" "sound starts" "SSB playing" "nulls, .* pictures in" "full screen on" \
+            "report: That's a directory" "close: pos" "quit"; do
+  grep -q "$want" "$O/reel_ssb.log" || { echo "  the log has no \"$want\""; bad=1; }
+done
+echo "  log: $(wc -l < "$O/reel_ssb.log") lines"
 
 # ReelEGL: the same player drawing through (fake) EGL surfaces
 $CC -DFFEGL_NO_TEXTURE -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_notex.o"
@@ -73,8 +81,12 @@ $CC -DREEL_EGL -I$HERE/fake -I$S/include -I$DEVKIT/include -I$TOP/ffegl -I$HERE 
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reelegl_test" "$O/reelegl_test.o" "$O/reelegl.o" \
   "$O/ffegl_notex.o" "$O/fake_sdl_only.o" "$O/fake_egl_only.o" $LIBS 2>/dev/null
 echo "== reelegl_test (the EGL build of the player, scripted desktop, fake EGL)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/reelegl_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
+rm -f "$O/reelegl.log"
+env 'ReelEGL$Log'="$O/reelegl.log" "$TOP/tests/qemu/aligntrap.sh" "$O/reelegl_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
   grep -v "swscaler\|ffegl: " || bad=1
+for want in "ReelEGL log" "EGL surface .*work area" "EGL surface .*screen" "SDL audio driver"; do
+  grep -q "$want" "$O/reelegl.log" || { echo "  the log has no \"$want\""; bad=1; }
+done
 
 echo "== fffront_test (the icon bar front end, on this host)"
 gcc -O1 -DFFFRONT_NO_MAIN -I"$HERE/fake" "$TOP/frontend/fffront.c" "$HERE/fffront_test.c" \

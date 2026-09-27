@@ -83,7 +83,10 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
 #endif
 
 EGLDisplay eglGetDisplay(EGLNativeDisplayType d) { return (EGLDisplay)1; }
-EGLBoolean eglInitialize(EGLDisplay d, EGLint *ma, EGLint *mi) { return EGL_TRUE; }
+EGLBoolean eglInitialize(EGLDisplay d, EGLint *ma, EGLint *mi) { if (ma) *ma = 1; if (mi) *mi = 4; return EGL_TRUE; }
+#ifdef FAKE_EGL_ONLY     /* (otherwise fake_sdl_gl.c has it) */
+const char *eglQueryString(EGLDisplay d, EGLint name) { return name == EGL_VENDOR ? "fake" : "1.4 (fake)"; }
+#endif
 EGLBoolean eglTerminate(EGLDisplay d) { return EGL_TRUE; }
 EGLint eglGetError(void) { return EGL_SUCCESS; }
 EGLBoolean eglChooseConfig(EGLDisplay d, const EGLint *a, EGLConfig *c, EGLint n, EGLint *num)

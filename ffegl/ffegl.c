@@ -9,6 +9,7 @@
 #include <GL/gl.h>
 #endif
 #include <SDL.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,6 +87,7 @@ struct FFEGLVideo {
     uint8_t *pend;                     /* sound not yet given to StreamManager */
     unsigned pend_len, pend_size;
     unsigned added_bytes, added_blocks;
+    unsigned ssb_refused, ssb_stat_added, ssb_stat_played;   /* for ffegl_debug */
 #endif
 
     /* timer clock (no sound, or after the sound ended) */
@@ -170,6 +172,8 @@ static const char *ssb_start(FFEGLVideo *v)
         return msg;
     }
     v->sm_stream = r.r[0];
+    av_log(NULL, AV_LOG_VERBOSE, "ffegl: SharedSoundBuffer stream %#x (StreamManager %#x), %d Hz, blocks of %d bytes\n",
+           v->ssb_handle, v->sm_stream, v->rate, SSB_BLOCK_BYTES);
     /* room for far more than we keep queued, so AddBlock doesn't refuse */
     ssb_swi(StreamManager_SetBuffer, v->sm_stream, v->rate * 4 * 2 + SSB_BLOCK_BYTES * 4, 0, NULL);
     ssb_swi(SharedSoundBuffer_SampleRate, v->ssb_handle, v->rate * 1024, 0, NULL);
@@ -198,6 +202,8 @@ static unsigned ssb_unplayed(FFEGLVideo *v)
         return 0;
     added = (unsigned)r.r[0];
     played = (unsigned)r.r[1];
+    v->ssb_stat_added = added;
+    v->ssb_stat_played = played;
     if (added == v->added_blocks && added != v->added_bytes) {
         added *= SSB_BLOCK_BYTES;
         played *= SSB_BLOCK_BYTES;
@@ -218,8 +224,15 @@ static void ssb_push(FFEGLVideo *v, int final)
             memset(v->pend + off + n, 0, SSB_BLOCK_BYTES - n);
             v->pend_len = off + SSB_BLOCK_BYTES;
         }
-        if (ssb_swi(StreamManager_AddBlock, v->sm_stream, (int)(intptr_t)(v->pend + off), SSB_BLOCK_BYTES, NULL))
-            break;                                 /* full: try again next time */
+        {
+            _kernel_oserror *e = ssb_swi(StreamManager_AddBlock, v->sm_stream,
+                                         (int)(intptr_t)(v->pend + off), SSB_BLOCK_BYTES, NULL);
+            if (e) {                               /* full: try again next time */
+                if (!v->ssb_refused++)
+                    av_log(NULL, AV_LOG_VERBOSE, "ffegl: StreamManager_AddBlock refused a block: %s\n", e->errmess);
+                break;
+            }
+        }
         off += SSB_BLOCK_BYTES;
         v->added_bytes += SSB_BLOCK_BYTES;
         v->added_blocks++;
@@ -230,8 +243,10 @@ static void ssb_push(FFEGLVideo *v, int final)
     }
     if (!v->ssb_started && !v->ssb_user_paused &&
         (v->added_blocks >= 2 || (final && v->added_blocks > 0))) {
-        ssb_swi(SharedSoundBuffer_Pause, v->ssb_handle, 1, 0, NULL);   /* play */
+        _kernel_oserror *e = ssb_swi(SharedSoundBuffer_Pause, v->ssb_handle, 1, 0, NULL);   /* play */
         v->ssb_started = 1;
+        av_log(NULL, AV_LOG_VERBOSE, "ffegl: sound starts (%u blocks given)%s%s\n", v->added_blocks,
+               e ? "; SharedSoundBuffer_Pause: " : "", e ? e->errmess : "");
     }
 }
 #endif
@@ -288,6 +303,8 @@ static int aud_open(FFEGLVideo *v, int freq)
     v->bytes_per_sec = have.freq * 4;
     v->latency = have.samples / (double)have.freq;
     v->ahead = AUDIO_AHEAD;
+    av_log(NULL, AV_LOG_VERBOSE, "ffegl: SDL audio driver %s, %d Hz, %d samples a buffer\n",
+           SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?", have.freq, have.samples);
     return 0;
 }
 
@@ -354,9 +371,12 @@ static void aud_clear(FFEGLVideo *v)
 #ifdef USE_SSB
     if (v->ssb) {
         /* StreamManager has no "empty the buffer": start a new stream */
+        const char *err;
         ssb_stop(v);
-        if (ssb_start(v))
-            v->stalled = 1;                        /* can't: carry on without sound */
+        if ((err = ssb_start(v)) != NULL) {
+            av_log(NULL, AV_LOG_WARNING, "ffegl: can't reopen the sound after a seek: %s\n", err);
+            v->stalled = 1;                        /* carry on without sound */
+        }
         return;
     }
 #endif
@@ -391,7 +411,11 @@ static double queued_audio(const FFEGLVideo *v)
 
 static void audio_stalled(FFEGLVideo *v, double c)
 {
-    av_log(NULL, AV_LOG_WARNING, "ffegl: the sound device isn't playing; carrying on without sound\n");
+    {
+        char d[200];
+        ffegl_debug(v, d, sizeof(d));
+        av_log(NULL, AV_LOG_WARNING, "ffegl: the sound device isn't playing; carrying on without sound (%s)\n", d);
+    }
     v->stalled = 1;
     aud_clear(v);
     aud_pause(v, 1);
@@ -584,6 +608,68 @@ double ffegl_frame_rate(const FFEGLVideo *v) { return v->fps; }
 double ffegl_duration(const FFEGLVideo *v)  { return v->duration; }
 int ffegl_has_audio(const FFEGLVideo *v)    { return v->dev != 0 && !v->stalled; }
 unsigned ffegl_dropped_frames(const FFEGLVideo *v) { return v->dropped; }
+
+int ffegl_debug(const FFEGLVideo *v, char *buf, int size)
+{
+    FFEGLVideo *w = (FFEGLVideo *)v;
+    double q = v->dev ? aud_queued(w) / (double)(v->bytes_per_sec ? v->bytes_per_sec : 1) : 0;
+    /* the clock as clock_now() would give it, without its stall check */
+    double c = v->paused ? v->pause_pos
+             : v->audio_clock && v->audio_end >= 0 ? v->audio_end - q - v->latency
+             : (av_gettime_relative() - v->t0) / 1e6;
+    int n = snprintf(buf, size, "pos %.2f clock %.2f%s, %d pictures waiting, %u late",
+                     ffegl_position(v), c,
+                     v->paused ? " (paused)" : v->audio_clock ? " (sound)" : " (timer)", v->qn, v->dropped);
+    if (n >= size)
+        return n;
+    if (!v->dev)
+        return n + snprintf(buf + n, size - n, "; no sound%s%s", v->audio_note[0] ? ": " : "", v->audio_note);
+#ifdef USE_SSB
+    if (v->ssb)
+        return n + snprintf(buf + n, size - n,
+                            "; SSB %s%s, queued %.2f s, added %u played %u (StreamManager), waiting %u bytes, %u refused",
+                            v->stalled ? "stalled" : v->ssb_started ? "playing" : "not started",
+                            v->ssb_user_paused ? ", paused" : "", q,
+                            v->ssb_stat_added, v->ssb_stat_played, v->pend_len, v->ssb_refused);
+#endif
+    return n + snprintf(buf + n, size - n, "; SDL %s, queued %.2f s", v->stalled ? "stalled" : "playing", q);
+}
+
+static void (*log_fn)(int, const char *);
+
+static void log_callback(void *avcl, int level, const char *fmt, va_list vl)
+{
+    static char line[1024];
+    static int len;
+    int n;
+    if (level > av_log_get_level())
+        return;
+    n = vsnprintf(line + len, sizeof(line) - len, fmt, vl);
+    if (n < 0)
+        return;
+    len += n;
+    if (len >= (int)sizeof(line) - 1)
+        len = sizeof(line) - 1;
+    if (len && line[len - 1] == '\n') {
+        line[len - 1] = 0;
+        if (log_fn)
+            log_fn(level, line);
+        len = 0;
+    }
+    (void)avcl;
+}
+
+void ffegl_set_log(void (*fn)(int level, const char *line), int verbose)
+{
+    log_fn = fn;
+    if (fn) {
+        av_log_set_level(verbose ? AV_LOG_VERBOSE : AV_LOG_INFO);
+        av_log_set_callback(log_callback);
+    } else {
+        av_log_set_level(AV_LOG_INFO);
+        av_log_set_callback(av_log_default_callback);
+    }
+}
 
 int ffegl_info(const FFEGLVideo *v, char *buf, int size)
 {

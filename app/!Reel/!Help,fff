@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                           0.5
+!Reel - a video player for RISC OS                           0.6
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -33,7 +33,20 @@ Keys (click in the window first):
 The window can be resized: the picture keeps its shape. Menu on the
 window: File info (codec, size, frame rate, sound, and how many late
 frames were skipped), Full screen, Loop, Close. Menu on the icon: Info,
-Loop, Quit.
+Loop, Log, Quit.
+
+Log
+---
+Reel writes a log as it goes, started afresh each time Reel starts:
+<Wimp$ScrapDir>.ReelLog (ReelEGLLog for !ReelEGL). Log on the icon's
+menu opens it. It has the sound modules found (and their versions), the
+screen mode, each file opened and what's in it, what you did (pause,
+seek, full screen), any errors, FFmpeg's messages, and once a second
+while playing: the position, the clock, the sound (queued, and
+StreamManager's added and played counts) and how many pictures were
+shown. If something goes wrong, the log says what Reel saw.
+To put it somewhere else: *Set Reel$Log <file> before starting Reel;
+*Set Reel$Log off for none.
 
 Speed
 -----

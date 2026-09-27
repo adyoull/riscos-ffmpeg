@@ -6,7 +6,8 @@
  * task, through the Obey file !FFmpeg.Task (which sets the WimpSlot), with
  * ffplay's messages in <Wimp$ScrapDir>.ffplay/log.
  *
- *   Menu on the icon: Info, Full screen (ffplay -fs), Quit.
+ *   Menu on the icon: Info, Full screen (ffplay -fs), Log (opens the last
+ *   ffplay's messages, <Wimp$ScrapDir>.ffplay/log, verbose), Quit.
  *   Select on the icon: a reminder of what to do.
  *
  * A small UnixLib program with no heap to speak of; the SWIs are called
@@ -96,7 +97,7 @@ int fffront_command(char *out, size_t size, const char *dir, const char *file, i
     int n;
     const char *q = strchr(file, ' ') ? "\"" : "";
     if (scrap && *scrap)
-        n = snprintf(out, size, "Obey %s.Task ffplay -nostats -hide_banner%s %s%s%s > %s.ffplay/log 2>&1",
+        n = snprintf(out, size, "Obey %s.Task ffplay -nostats -hide_banner -loglevel verbose%s %s%s%s > %s.ffplay/log 2>&1",
                      dir, fs ? " -fs" : "", q, file, q, scrap);
     else
         n = snprintf(out, size, "Obey %s.Task ffplay -nostats -hide_banner -loglevel quiet%s %s%s%s",
@@ -123,21 +124,21 @@ static struct {
     char title[12];
     unsigned char tfg, tbg, wfg, wbg;
     int width, height, gap;
-    item_t item[3];
+    item_t item[4];
 } menu;
 static int menu_x;
 
 static void menu_build(void)
 {
-    static const char *names[3] = { "Info", "Full screen", "Quit" };
+    static const char *names[4] = { "Info", "Full screen", "Log", "Quit" };
     memset(&menu, 0, sizeof(menu));
     strcpy(menu.title, APP_NAME);
     menu.tfg = 7; menu.tbg = 2; menu.wfg = 7; menu.wbg = 0;
     menu.width = 12 * 16 + 16;
     menu.height = 44;
     menu.gap = 0;
-    for (int i = 0; i < 3; i++) {
-        menu.item[i].flags = (i == 1 && fullscreen ? 1 : 0) | (i == 1 ? 2 : 0) | (i == 2 ? 0x80 : 0);
+    for (int i = 0; i < 4; i++) {
+        menu.item[i].flags = (i == 1 && fullscreen ? 1 : 0) | (i == 1 ? 2 : 0) | (i == 3 ? 0x80 : 0);
         menu.item[i].sub = -1;
         menu.item[i].iflags = 0x07000021;     /* text, filled, black on white */
         strncpy(menu.item[i].text, names[i], 12);
@@ -151,7 +152,7 @@ static void menu_open(int x)
     menu_build();
     r.r[1] = (intptr_t)&menu;
     r.r[2] = x - 64;
-    r.r[3] = 96 + 3 * 44;
+    r.r[3] = 96 + 4 * 44;
     swi(Wimp_CreateMenu, &r);
 }
 
@@ -167,7 +168,19 @@ static void menu_select(const int *sel)
     case 1:
         fullscreen = !fullscreen;
         break;
-    case 2:
+    case 2: {
+        const char *scrap = getenv("Wimp$ScrapDir");
+        char cmd[300];
+        if (!scrap || !*scrap) {
+            report("There's no log: <Wimp$ScrapDir> isn't set.", 1);
+            break;
+        }
+        snprintf(cmd, sizeof(cmd), "Filer_Run %s.ffplay/log", scrap);
+        if (start_task(cmd))
+            report("No log yet: play a file first. It's <Wimp$ScrapDir>.ffplay/log.", 1 | 16);
+        break;
+    }
+    case 3:
         r.r[0] = 0;
         swi(Wimp_CloseDown, &r);
         exit(0);

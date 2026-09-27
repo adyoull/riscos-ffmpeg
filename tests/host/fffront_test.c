@@ -81,9 +81,9 @@ int main(void)
     CHECK(icon_made == 1 && !strcmp(icon_name, "!ffmpeg") && (icon_flags & 0xF00A) == 0x300A,
           "icon bar icon: %d made, '%s', flags %x", icon_made, icon_name, icon_flags);
     CHECK(nstarted == 2, "%d tasks started (want 2)", nstarted);
-    CHECK(!strcmp(started[0], "Obey SDFS::Pi.$.Apps.!FFmpeg.Task ffplay -nostats -hide_banner "
+    CHECK(!strcmp(started[0], "Obey SDFS::Pi.$.Apps.!FFmpeg.Task ffplay -nostats -hide_banner -loglevel verbose "
                   "SDFS::Pi.$.Films.clip/mp4 > SDFS::Pi.$.Scrap.ffplay/log 2>&1"), "command 1: %s", started[0]);
-    CHECK(!strcmp(started[1], "Obey SDFS::Pi.$.Apps.!FFmpeg.Task ffplay -nostats -hide_banner -fs "
+    CHECK(!strcmp(started[1], "Obey SDFS::Pi.$.Apps.!FFmpeg.Task ffplay -nostats -hide_banner -loglevel verbose -fs "
                   "\"ADFS::HD4.$.My Films.b/mkv\" > SDFS::Pi.$.Scrap.ffplay/log 2>&1"), "command 2: %s", started[1]);
     CHECK(acks == 3, "%d DataLoadAcks (want 3)", acks);
     CHECK(reports == 2, "%d reports (want 2: the directory, the Select click)", reports);

@@ -79,6 +79,18 @@ int ffegl_info(const FFEGLVideo *v, char *buf, int size);
 /* Frames skipped because they were already late (the CPU fell behind). */
 unsigned ffegl_dropped_frames(const FFEGLVideo *v);
 
+/* For logs: one line on the state of playback now: position and clock,
+   pictures waiting, late frames, and the sound (which output, how much is
+   queued; with SharedSoundBuffer, StreamManager's added and played counts).
+   Returns its length (as snprintf). */
+int ffegl_debug(const FFEGLVideo *v, char *buf, int size);
+
+/* Sends FFmpeg's (and ffegl's) messages, one line at a time without the
+   newline, to FN instead of stderr; VERBOSE adds ffegl's sound details
+   (stream opened, started, refused blocks) and FFmpeg's verbose messages.
+   FN NULL puts things back. */
+void ffegl_set_log(void (*fn)(int level, const char *line), int verbose);
+
 /* Decodes what is needed and chooses the frame for "now".
    Returns FFEGL_NEW_FRAME, FFEGL_SAME_FRAME, FFEGL_END, or a negative
    AVERROR code. The first call after opening (or seeking) always gives
