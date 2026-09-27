@@ -117,6 +117,12 @@ reelcore_close(v);
   sound track). `reelcore_draw_pixels` (and `ffegl_draw_surface`) take
   `REELCORE_FILL` (cover the rectangle, cropping) or `REELCORE_ORIGINAL`
   (1:1, centred) as well as `REELCORE_STRETCH`; 0 fits, letterboxed.
+- **Deinterlacing** (from Reel 0.1.12): `reelcore_set_deinterlace(v,
+  REELCORE_DEINT_AUTO / _ON / _OFF)`; Auto (the default) runs FFmpeg's
+  yadif on pictures marked interlaced, one picture a frame, and leaves
+  progressive video alone. Patch 0015 gives yadif a NEON line filter on
+  32-bit ARM, bit-exact with its C. `reelcore_stats` has the counts and
+  the time.
 - **Sound:** on RISC OS straight to SharedSoundBuffer and StreamManager
   (`REELCORE_AUDIO=sdl` for SDL2's audio), and the pictures follow it.
   Without sound, or if no sound device opens, they follow a timer.

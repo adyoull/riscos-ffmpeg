@@ -115,6 +115,10 @@ typedef struct ReelCoreStats {
     double speed;                     /* reelcore_set_speed */
     int fast;                         /* reelcore_set_fast */
     int audio_track, audio_tracks;    /* the sound track played (0 = the first; -1 none), and how many */
+    int deinterlace;                  /* REELCORE_DEINT_* */
+    unsigned interlaced;              /* pictures decoded that were interlaced */
+    unsigned deinterlaced;            /* pictures that came out of the deinterlacer */
+    double deinterlace_time;          /* seconds spent deinterlacing */
 } ReelCoreStats;
 void reelcore_stats(const ReelCore *v, ReelCoreStats *st);
 
@@ -154,6 +158,16 @@ double reelcore_volume(const ReelCore *v);
    on screen (a short gap). */
 int reelcore_set_speed(ReelCore *v, double speed);
 double reelcore_speed(const ReelCore *v);
+
+/* Deinterlacing (FFmpeg's yadif, one picture per frame; NEON on ARM with
+   riscos-ffmpeg's patch 0015). AUTO (the default) deinterlaces the pictures
+   the decoder marks as interlaced, and costs nothing for progressive video;
+   ON deinterlaces every picture (for files that don't say); OFF never. */
+#define REELCORE_DEINT_OFF  0
+#define REELCORE_DEINT_AUTO 1
+#define REELCORE_DEINT_ON   2
+void reelcore_set_deinterlace(ReelCore *v, int mode);
+int reelcore_deinterlace(const ReelCore *v);
 
 /* Fast decoding: skips the deblocking filter (H.264, HEVC and others): about
    20-30% less decoding time, a slightly softer and blockier picture. Can be

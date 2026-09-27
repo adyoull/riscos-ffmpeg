@@ -18,7 +18,7 @@ if [ ! -f .riscos-patched ]; then
   done
   # RISC OS traps unaligned accesses: make the NEON assembly safe
   # (tools/neon-align.py explains the rewrite).
-  find libavcodec/arm libavutil/arm libswscale/arm libswresample/arm -name '*.S' -print0 |
+  find libavcodec/arm libavutil/arm libswscale/arm libswresample/arm libavfilter/arm -name '*.S' -print0 |
     xargs -0 "$TOP/tools/neon-align-apply.sh" "$TOP/tools/neon-align-ffmpeg.allow"
   touch .riscos-patched
 fi

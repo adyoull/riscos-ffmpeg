@@ -52,6 +52,7 @@ int reel_test_pic_flags(void);
 int reel_test_ab(double *a, double *b);
 int reel_test_list(int *n);
 int reel_test_mini(int *ontop);
+int reel_test_deint(void);
 
 static const char *clip1, *clip2;
 static int fails, step;
@@ -78,7 +79,7 @@ static double ab_lo, ab_hi;
 static char choices_dir[64];
 
 /* the window menu (reel.c's WM_*) */
-enum { M_INFO, M_FULL, M_MINI, M_ONTOP, M_PIC, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_CLOSE };
+enum { M_INFO, M_FULL, M_MINI, M_ONTOP, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_CLOSE };
 static char title[64];
 static int *title_ptr;
 
@@ -132,7 +133,7 @@ static int script(int *b)
 }
 
 /* the phases after the first drop */
-enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
+enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
        P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL,
        P_VSYNCOFF, P_UNFULL, P_RESIZE, P_PLAY4, P_DROP2, P_PLAY5, P_LIST, P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE,
        P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_CLOSE, P_QUIT };
@@ -233,6 +234,18 @@ static int next_event(int *b)
             CHECK(reel_test_pic_flags() == 0, "picture flags %d (want fit)", reel_test_pic_flags());
             check_picture("fit");
             break;
+        case P_DEINT:                                                 /* Deinterlace: Off from the menu, then D: Auto */
+            MENU_PICK(WIN, M_DEINT, 2);
+            if (phase_step == 2) {
+                CHECK(reel_test_deint() == REELCORE_DEINT_OFF && reelcore_deinterlace(v) == REELCORE_DEINT_OFF &&
+                      choices_has("deinterlace Off"), "deinterlace off: %d, core %d", reel_test_deint(), reelcore_deinterlace(v));
+                phase_step++;
+                key_event(b, WIN, 'd');
+                return 8;
+            }
+            CHECK(reel_test_deint() == REELCORE_DEINT_AUTO && reelcore_deinterlace(v) == REELCORE_DEINT_AUTO &&
+                  choices_has("deinterlace Auto"), "D: deinterlace %d (want Auto)", reel_test_deint());
+            break;
         case P_FAST:                                                  /* on, then off again */
             MENU_PICK(WIN, M_FAST, -1);
             if (phase_step == 2) {
@@ -291,6 +304,7 @@ static int next_event(int *b)
                 double fps = ps ? atof(ps + 15) : 0;
                 CHECK(fps >= 23.5 && fps <= 25.5, "pictures shown %.1f a second (want about 25)", fps);
             }
+            CHECK(strstr(info_seen, "Deinterlacing|Auto: not needed") != NULL, "no deinterlacing row: %.300s", info_seen);
             CHECK((strstr(info_seen, "SharedSoundBuffer: ") || strstr(info_seen, "SDL: ")) &&
                   strstr(info_seen, "pictures,") && strstr(info_seen, "Mbit/s"),
                   "stats text: %.400s", info_seen);

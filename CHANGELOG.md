@@ -3,6 +3,36 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel 0.1.12: deinterlacing, with yadif in NEON (2026-09-27)
+
+- **Deinterlace** (window menu: Auto, On, Off; D; remembered). reelcore
+  runs FFmpeg's yadif (buffer → yadif=send_frame → buffersink, one
+  picture a frame, no threads) on the pictures as they're decoded, so
+  redraws, resizes and the mini player cost nothing extra. Auto makes
+  the filter only at the first picture marked interlaced: progressive
+  video goes straight through as before. Seeking drops what yadif held;
+  at the end its last picture is flushed.
+- **FFmpeg patch 0015: yadif's line filter in NEON for 32-bit ARM**
+  (`libavfilter/arm/vf_yadif_neon.S`). FFmpeg 5.1 has x86 versions only,
+  so ARM ran the C. Eight pixels an iteration, 16-bit sums, byte-element
+  loads and stores (no alignment needed). Bit-exact: `yadif_test`
+  compares it with the C on 56,064 lines (every mode, parity, edge line,
+  width 1–70 and wide, every alignment; four deliberate bugs are all
+  caught), and `ffmpeg -vf yadif` gives the same pictures with NEON,
+  with `-cpuflags 0` and on x86 FFmpeg. The ffmpeg/ffplay programs get it
+  in the next FFmpeg package; Reel has it now (its zip carries the patch
+  in `docs.source.patches`).
+- Media info: **Scan** (progressive / interlaced, which field first) and a
+  **Deinterlacing** stats row (mode, ms a picture, pictures interlaced).
+- reelcore: `reelcore_set_deinterlace`, `reelcore_deinterlace`,
+  `REELCORE_DEINT_*`; stats `deinterlace`, `interlaced`, `deinterlaced`,
+  `deinterlace_time`. Its filter graphs (atempo too) are made with one
+  thread.
+- Tests: `yadif_test`, the whole-picture yadif comparison, `deint_test`
+  (Auto matches x86 FFmpeg's yadif at the same frame, Off matches the
+  plain decode, seeking, progressive left alone), and Reel's menu and D
+  key in `reel_test`.
+
 ## Reel 0.1.11: playback options and a mini player (2026-09-27)
 
 - **Volume:** a green bar in the controls row; click along it. It's

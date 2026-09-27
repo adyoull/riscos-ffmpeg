@@ -104,6 +104,14 @@ struct ReelCore {
     AVFilterContext *tempo_in, *tempo_out;
     AVFrame *tempo_frame;
     int fast;                          /* fast decoding: no deblocking filter */
+    int deint;                         /* REELCORE_DEINT_* */
+    AVFilterGraph *dgraph;             /* buffer -> yadif -> buffersink, made when needed */
+    AVFilterContext *din, *dout;
+    AVFrame *dframe;
+    int dg_w, dg_h, dg_fmt;            /* what it was made for */
+    int deint_failed;                  /* couldn't be made: pictures go straight through */
+    unsigned n_interlaced, n_deint;
+    int64_t t_deint;                   /* microseconds */
     double ahead;                      /* seconds of sound to keep queued */
 #ifdef USE_SSB
     int ssb;                           /* 1: SharedSoundBuffer, not SDL (dev is then 1) */
@@ -543,6 +551,7 @@ ReelCore *reelcore_open(const char *url, int flags)
     v->volume = SDL_MIX_MAXVOLUME;
     v->vol = 1;
     v->speed = 1;
+    v->deint = REELCORE_DEINT_AUTO;
     v->cs_key[0] = -1;
     if ((ret = avformat_open_input(&v->fmt, url, NULL, NULL)) < 0 ||
         (ret = avformat_find_stream_info(v->fmt, NULL)) < 0) {
@@ -611,6 +620,7 @@ static void clear_queue(ReelCore *v)
 
 static void vpk_clear(ReelCore *v);
 static void tempo_close(ReelCore *v);
+static void deint_close(ReelCore *v);
 static int tempo_open(ReelCore *v);
 
 void reelcore_close(ReelCore *v)
@@ -624,6 +634,7 @@ void reelcore_close(ReelCore *v)
     av_freep(&v->vpk);
     av_frame_free(&v->cur);
     av_frame_free(&v->frame);
+    deint_close(v);
     av_packet_free(&v->pkt);
     avcodec_free_context(&v->vdec);
     avcodec_free_context(&v->adec);
@@ -711,6 +722,10 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     st->bytes_read = v->fmt && v->fmt->pb ? v->fmt->pb->bytes_read : 0;
     st->speed = v->speed;
     st->fast = v->fast;
+    st->deinterlace = v->deint;
+    st->interlaced = v->n_interlaced;
+    st->deinterlaced = v->n_deint;
+    st->deinterlace_time = v->t_deint / 1e6;
     st->audio_track = reelcore_audio_track(v);
     st->audio_tracks = reelcore_audio_tracks(v);
 }
@@ -776,6 +791,10 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
         if (v->fps > 0)
             ADD("Frame rate\t%.3f fps\n", v->fps);
         ADD("Pixels\t%s\n", or_q(av_get_pix_fmt_name(p->format)));
+        ADD("Scan\t%s\n", p->field_order == AV_FIELD_PROGRESSIVE ? "progressive" :
+                          p->field_order == AV_FIELD_TT || p->field_order == AV_FIELD_TB ? "interlaced, top field first" :
+                          p->field_order == AV_FIELD_BB || p->field_order == AV_FIELD_BT ? "interlaced, bottom field first" :
+                          v->n_interlaced ? "interlaced (the pictures say)" : "not given");
         if (p->color_space == AVCOL_SPC_UNSPECIFIED && p->color_range == AVCOL_RANGE_UNSPECIFIED)
             ADD("Colours\tnot given (shown as BT.601, limited range)\n");
         else
@@ -923,11 +942,9 @@ static double frame_pts(AVFrame *f, AVStream *st, double fallback)
     return t == AV_NOPTS_VALUE ? fallback : t * av_q2d(st->time_base);
 }
 
-static void got_video(ReelCore *v, AVFrame *f)
+/* Queues a picture (a new reference to f) to be shown at pts. */
+static void queue_picture(ReelCore *v, AVFrame *f, double pts)
 {
-    double pts = frame_pts(f, v->fmt->streams[v->vs],
-                           v->qn ? v->qpts[v->qn - 1] + (v->fps > 0 ? 1 / v->fps : 0.04)
-                                 : v->cur ? v->cur_pts : 0);
     if (v->seek_target >= 0) {
         if (pts < v->seek_target - 0.001)
             return;                       /* before the seek point */
@@ -941,9 +958,100 @@ static void got_video(ReelCore *v, AVFrame *f)
     }
     v->q[v->qn] = av_frame_clone(f);
     v->qpts[v->qn] = pts;
-    v->n_decoded++;
     if (v->q[v->qn])
         v->qn++;
+}
+
+/* ---- deinterlacing: yadif ---- */
+
+static void deint_close(ReelCore *v)
+{
+    avfilter_graph_free(&v->dgraph);
+    v->din = v->dout = NULL;
+    av_frame_free(&v->dframe);
+}
+
+/* buffer -> yadif (a picture a frame) -> buffersink, for f's size and
+   format; times in microseconds. */
+static int deint_open(ReelCore *v, const AVFrame *f)
+{
+    char args[200];
+    AVFilterContext *y = NULL;
+    AVRational sar = f->sample_aspect_ratio.num ? f->sample_aspect_ratio : (AVRational){ 1, 1 };
+    deint_close(v);
+    if (!(v->dgraph = avfilter_graph_alloc()) || !(v->dframe = av_frame_alloc()))
+        goto fail;
+    v->dgraph->nb_threads = 1;            /* no threads of its own (a Wimp task) */
+    snprintf(args, sizeof(args), "video_size=%dx%d:pix_fmt=%d:time_base=1/1000000:pixel_aspect=%d/%d",
+             f->width, f->height, f->format, sar.num, sar.den);
+    if (avfilter_graph_create_filter(&v->din, avfilter_get_by_name("buffer"), "in", args, NULL, v->dgraph) < 0)
+        goto fail;
+    snprintf(args, sizeof(args), "mode=send_frame:parity=auto:deint=%s", v->deint == REELCORE_DEINT_ON ? "all" : "interlaced");
+    if (avfilter_graph_create_filter(&y, avfilter_get_by_name("yadif"), "yadif", args, NULL, v->dgraph) < 0 ||
+        avfilter_graph_create_filter(&v->dout, avfilter_get_by_name("buffersink"), "out", NULL, NULL, v->dgraph) < 0 ||
+        avfilter_link(v->din, 0, y, 0) < 0 || avfilter_link(y, 0, v->dout, 0) < 0 ||
+        avfilter_graph_config(v->dgraph, NULL) < 0)
+        goto fail;
+    v->dg_w = f->width;
+    v->dg_h = f->height;
+    v->dg_fmt = f->format;
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: deinterlacing (yadif, %s) %dx%d %s\n",
+           v->deint == REELCORE_DEINT_ON ? "every picture" : "interlaced pictures", f->width, f->height,
+           av_get_pix_fmt_name(f->format));
+    return 0;
+fail:
+    av_log(NULL, AV_LOG_WARNING, "reelcore: can't deinterlace (%s); pictures are shown as they are\n",
+           av_get_pix_fmt_name(f->format));
+    deint_close(v);
+    v->deint_failed = 1;
+    return -1;
+}
+
+/* Queues what yadif has ready */
+static void deint_drain(ReelCore *v)
+{
+    AVFrame *o = v->dframe;
+    double tb = av_q2d(av_buffersink_get_time_base(v->dout));
+    while (av_buffersink_get_frame(v->dout, o) >= 0) {
+        queue_picture(v, o, o->pts * tb);
+        v->n_deint++;
+        av_frame_unref(o);
+    }
+}
+
+/* Gives yadif a picture (it gives back the one before: it needs the next
+   to deinterlace). Returns -1 if the picture must be queued as it is. */
+static int deint_feed(ReelCore *v, AVFrame *f, double pts)
+{
+    int64_t t0 = av_gettime_relative(), keep_pts = f->pts;
+    int ret;
+    if ((!v->dgraph || f->width != v->dg_w || f->height != v->dg_h || f->format != v->dg_fmt) &&
+        deint_open(v, f) < 0)
+        return -1;
+    f->pts = llrint(pts * 1e6);
+    ret = av_buffersrc_add_frame_flags(v->din, f, AV_BUFFERSRC_FLAG_KEEP_REF);
+    f->pts = keep_pts;
+    if (ret < 0)
+        return -1;
+    deint_drain(v);
+    v->t_deint += av_gettime_relative() - t0;
+    return 0;
+}
+
+static void got_video(ReelCore *v, AVFrame *f)
+{
+    double pts = frame_pts(f, v->fmt->streams[v->vs],
+                           v->qn ? v->qpts[v->qn - 1] + (v->fps > 0 ? 1 / v->fps : 0.04)
+                                 : v->cur ? v->cur_pts : 0);
+    v->n_decoded++;
+    if (f->interlaced_frame)
+        v->n_interlaced++;
+    /* AUTO: the graph is made at the first interlaced picture, then kept */
+    if (!v->deint_failed && (v->deint == REELCORE_DEINT_ON ||
+                             (v->deint == REELCORE_DEINT_AUTO && (f->interlaced_frame || v->dgraph))) &&
+        deint_feed(v, f, pts) == 0)
+        return;
+    queue_picture(v, f, pts);
 }
 
 /* Gives the device sound (16-bit stereo at v->rate), at the volume set
@@ -981,6 +1089,7 @@ static int tempo_open(ReelCore *v)
         return 0;
     if (!(v->tempo = avfilter_graph_alloc()) || !(v->tempo_frame = av_frame_alloc()))
         goto fail;
+    v->tempo->nb_threads = 1;             /* no threads of its own (a Wimp task) */
     snprintf(args, sizeof(args), "sample_rate=%d:sample_fmt=s16:channel_layout=stereo:time_base=1/%d",
              v->rate, v->rate);
     if (avfilter_graph_create_filter(&v->tempo_in, avfilter_get_by_name("abuffer"), "in", args, NULL, v->tempo) < 0)
@@ -1124,9 +1233,11 @@ static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int v
     for (;;) {
         ret = avcodec_receive_frame(dec, v->frame);
         if (ret == AVERROR_EOF) {
-            if (video)
+            if (video) {
+                if (v->dgraph && av_buffersrc_add_frame(v->din, NULL) >= 0)
+                    deint_drain(v);       /* the last picture yadif held */
                 v->eof_video = 1;
-            else {
+            } else {
                 v->eof_audio = 1;
                 if (v->tempo && av_buffersrc_add_frame(v->tempo_in, NULL) >= 0)
                     tempo_drain(v);       /* what atempo still holds */
@@ -1343,6 +1454,7 @@ int reelcore_seek(ReelCore *v, double seconds)
         tempo_open(v);                    /* and atempo */
     clear_queue(v);
     vpk_clear(v);
+    deint_close(v);                       /* the pictures it held are from before */
     v->vflushed = 0;
     v->eof_demux = v->eof_video = v->eof_audio = 0;
     v->audio_end = -1;
@@ -1509,6 +1621,19 @@ void reelcore_set_fast(ReelCore *v, int on)
 }
 
 int reelcore_fast(const ReelCore *v) { return v->fast; }
+
+void reelcore_set_deinterlace(ReelCore *v, int mode)
+{
+    if (mode < REELCORE_DEINT_OFF || mode > REELCORE_DEINT_ON || mode == v->deint)
+        return;
+    v->deint = mode;
+    v->deint_failed = 0;
+    deint_close(v);                       /* made again as needed (the picture held is lost) */
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: deinterlace %s\n",
+           mode == REELCORE_DEINT_ON ? "on" : mode == REELCORE_DEINT_AUTO ? "auto" : "off");
+}
+
+int reelcore_deinterlace(const ReelCore *v) { return v->deint; }
 
 /* The file's i-th sound stream (0 = the first), its index, or -1 */
 static int audio_stream(const ReelCore *v, int i)

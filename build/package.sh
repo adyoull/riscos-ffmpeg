@@ -86,7 +86,7 @@ rm -f "$DIST/FFmpeg-EGL-examples-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-EGL-examples-$V.zip" EGLExamples )
 
 # --- !Reel and !ReelEGL, the video player (sprite / EGL drawing) ---------
-RV=${REEL_VERSION:-0.1.11}
+RV=${REEL_VERSION:-0.1.12}
 RT=$TMP/Reel
 mkdir -p "$RT"
 for app in Reel ReelEGL; do
@@ -106,6 +106,8 @@ for app in Reel ReelEGL; do
     cp "$TOP/ffegl/ffegl.h"  "$R/docs/source/h/ffegl,fff"
   fi
   cp "$TOP/tools/mksprites.py" "$R/docs/source/mksprites_py,fff"
+  mkdir -p "$R/docs/source/patches"               # FFmpeg changes newer than the FFmpeg package
+  cp "$TOP"/patches/ffmpeg/0015-*.patch "$R/docs/source/patches/yadif-neon,fff"
   cp "$TOP/build/build-apps.sh" "$R/docs/source/build-apps_sh,fff"
   cat > "$R/docs/source/ReadMe,fff" <<EOF
 $app $RV's own source is here (one source, player/reel.c; ReelEGL is it

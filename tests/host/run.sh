@@ -61,6 +61,36 @@ echo "== options_test (speed, fast decoding, sound tracks, picture modes)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/options_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/twoaudio_h264_aac_322_184.mp4" 2>&1 |
   grep -v "swscaler\|reelcore: " || bad=1
 
+# yadif's NEON line filter (FFmpeg patch 0015) against its C, bit for bit
+$CC -c "$F/libavfilter/arm/vf_yadif_neon.S" -I$F -o "$O/vf_yadif_neon.o"
+$CC -O2 -c "$HERE/yadif_test.c" -o "$O/yadif_test.o"
+arm-linux-gnueabihf-gcc -no-pie -o "$O/yadif_test" "$O/yadif_test.o" "$O/vf_yadif_neon.o"
+echo "== yadif_test (NEON line filter against C)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/yadif_test" || bad=1
+# ... and whole pictures: ffmpeg -vf yadif with NEON, without (-cpuflags 0), and x86 FFmpeg
+echo "== yadif, whole pictures: NEON, C and x86 FFmpeg"
+ffmpeg -v error -y -i "$SAMPLES/mv_mpeg2_il.mpg" -f rawvideo -pix_fmt yuv420p "$O/il.yuv"
+for vf in yadif=0:0:0 yadif=1:1:0 yadif=2:0:0 yadif=3:1:0; do
+  sums=""
+  for cpu in "" "-cpuflags 0"; do
+    sums="$sums $("$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error $cpu -f rawvideo -pix_fmt yuv420p -s 322x184 \
+      -i "$O/il.yuv" -vf $vf -f rawvideo - | md5sum | cut -c1-32)"
+  done
+  sums="$sums $(ffmpeg -v error -f rawvideo -pix_fmt yuv420p -s 322x184 -i "$O/il.yuv" -vf $vf -f rawvideo - | md5sum | cut -c1-32)"
+  set -- $sums
+  if [ "$1" = "$2" ] && [ "$1" = "$3" ]; then echo "  $vf: the same ($1)"; else echo "FAIL: $vf: $sums"; bad=1; fi
+done
+
+# reelcore's deinterlacing (Auto/On/Off) against x86 FFmpeg's yadif
+ffmpeg -v error -y -i "$SAMPLES/mv_h264_mbaff.mkv" -vf yadif=0:-1:1 -f rawvideo -pix_fmt yuv420p "$O/mbaff_yadif.yuv"
+ffmpeg -v error -y -i "$SAMPLES/mv_h264_mbaff.mkv" -f rawvideo -pix_fmt yuv420p "$O/mbaff_plain.yuv"
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/deint_test.c" -o "$O/deint_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/deint_test" "$O/reelcore.o" \
+  "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/deint_test.o" $LIBS -lm 2>/dev/null
+echo "== deint_test (reelcore: deinterlacing Auto, On, Off)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/deint_test" "$SAMPLES/mv_h264_mbaff.mkv" "$O/mbaff_yadif.yuv" "$O/mbaff_plain.yuv" \
+  "$SAMPLES/long_h264_aac_322_184.mp4" 2>&1 | grep -v "swscaler\|reelcore: " || bad=1
+
 # sleeping between pictures (ffegl_idle_time) against polling flat out
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/idle_test.c" -o "$O/idle_test.o"
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcodec_send_packet -o "$O/idle_test" "$O/reelcore.o" \

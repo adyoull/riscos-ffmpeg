@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.11
+!Reel - a video player for RISC OS                        0.1.12
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -37,6 +37,7 @@ Keys (click in the window first):
   F             full screen on and off
   Escape        leave full screen
   M             the mini player on and off
+  D             deinterlace: Auto, On, Off in turn
   A             A-B repeat: set A, then B (it repeats), then off
   N, P          the next / previous file in the playlist
   Q             close the video
@@ -54,6 +55,10 @@ Menu on the window:
                       Fill (crop): fill the window, cutting off the edges
                       Original size: pixel for pixel, centred
                       Stretch: fill the window, out of shape
+  Deinterlace >       Auto: only the pictures the file marks as
+                      interlaced (TV recordings, DVDs); On: every
+                      picture (for files that don't say); Off: never.
+                      Remembered
   Speed >             0.5x to 2x; the sound keeps its pitch
   Sound track >       for files with more than one (e.g. languages)
   Playlist >          jump to a file; Clear the rest
@@ -86,6 +91,19 @@ mini player looks about once a second while playing and, if something
 has been opened over it, comes back to the front. It never takes the
 keyboard from what you're typing in.
 
+Deinterlacing
+-------------
+TV recordings, DVDs and camcorder video are often interlaced: each
+picture is two half-pictures (fields) taken a moment apart, so anything
+moving shows comb-like stripes. Reel removes them with FFmpeg's yadif,
+which looks at the pictures before and after to fill in each missing line:
+sharp where things are still, smooth where they move. One picture a
+frame (25 a second for PAL). On ARM it runs in NEON (added in this port;
+it gives exactly the same picture as FFmpeg's plain C). Media info shows
+whether the file says it's interlaced (Scan) and, while playing, what
+deinterlacing is doing and its cost a picture (Deinterlacing).
+With Auto, progressive video (most downloads) costs nothing.
+
 Carrying on where you stopped
 -----------------------------
 Reel remembers where you stopped each file (the last 100). Open one
@@ -94,7 +112,7 @@ played to the end, or hardly started, aren't remembered.
 
 Choices
 -------
-The volume, Keep on top and where the mini player goes are saved in
+The volume, Deinterlace, Keep on top and where the mini player goes are saved in
 <Choices$Write>.Reel.Choices (ReelEGL for !ReelEGL); where files were
 stopped in <Choices$Write>.Reel.Resume. The other options are for this
 session only.
@@ -113,6 +131,8 @@ at the top, "stats for nerds", updated every second while playing:
   Decoding load     the share of the time spent decoding
   Frame skipping    whether Reel is skipping frames to keep up
   Converting        swscale's time a picture (colours and scaling)
+  Deinterlacing     Auto/On/Off, the time a picture, and how many
+                    pictures were interlaced
   Drawing           the time to put each picture on the screen
   Waiting           pictures decoded and packets read but not yet used
   Sound             the sound output and how much is queued

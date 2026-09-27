@@ -157,6 +157,10 @@ enum { PIC_FIT, PIC_FILL, PIC_ORIGINAL, PIC_STRETCH, N_PIC };
 static const char *const pic_names[N_PIC] = { "Fit", "Fill (crop)", "Original size", "Stretch" };
 static const int pic_flags_of[N_PIC] = { 0, REELCORE_FILL, REELCORE_ORIGINAL, REELCORE_STRETCH };
 
+/* Deinterlacing (window menu, Deinterlace): in the menu's order */
+static const char *const deint_names[3] = { "Auto", "On", "Off" };
+static const int deint_modes[3] = { REELCORE_DEINT_AUTO, REELCORE_DEINT_ON, REELCORE_DEINT_OFF };
+
 /* Speeds (window menu, Speed) */
 #define N_SPEED 6
 static const double speeds[N_SPEED] = { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 };
@@ -213,6 +217,7 @@ static struct {
     int pic_mode;                       /* PIC_* */
     int speed_i;                        /* speeds[] */
     int fast;                           /* fast decoding */
+    int deint_i;                        /* deint_modes[] */
     int ab;                             /* A-B repeat: 0 off, 1 A set, 2 repeating */
     double ab_a, ab_b;
     /* the playlist */
@@ -1139,8 +1144,8 @@ static void choices_save(void)
     FILE *f = choices_open("Choices", 1);
     if (!f)
         return;
-    fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_right %d\nmini_bottom %d\n", APP, S.vol,
-            S.ontop, S.mini_right, S.mini_bottom);
+    fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_right %d\nmini_bottom %d\ndeinterlace %s\n", APP, S.vol,
+            S.ontop, S.mini_right, S.mini_bottom, deint_names[S.deint_i]);
     fclose(f);
 }
 
@@ -1170,6 +1175,10 @@ static void choices_load(void)
                 S.mini_right = n;
             else if (sscanf(line, "mini_bottom %d", &n) == 1 && n >= -1)
                 S.mini_bottom = n;
+            else if (!strncmp(line, "deinterlace ", 12))
+                for (int i = 0; i < 3; i++)
+                    if (!strncmp(line + 12, deint_names[i], strlen(deint_names[i])))
+                        S.deint_i = i;
         }
         fclose(f);
     }
@@ -1248,6 +1257,7 @@ static void options_apply(void)
 {
     reelcore_set_volume(S.v, S.vol * S.vol);
     reelcore_set_fast(S.v, S.fast);
+    reelcore_set_deinterlace(S.v, deint_modes[S.deint_i]);
     if (S.speed_i != 2)
         reelcore_set_speed(S.v, speeds[S.speed_i]);
 }
@@ -1426,7 +1436,7 @@ static info_row_t *info_add(int heading, const char *label, const char *value)
 
 static const char *const stat_labels[] = {
     "Position", "Clock", "Pictures shown", "Decoded", "Decoding load", "Frame skipping",
-    "Converting", "Drawing", "Waiting", "Sound", "Reading", "Desktop", "Playback"
+    "Converting", "Deinterlacing", "Drawing", "Waiting", "Sound", "Reading", "Desktop", "Playback"
 };
 #define N_STATS ((int)(sizeof(stat_labels) / sizeof(stat_labels[0])))
 
@@ -1502,8 +1512,20 @@ static void info_stats(void)
         snprintf(r[6].value, sizeof(r[6].value), "%.1f ms a picture, to %dx%d (swscale)",
                  (st.convert_time - info_prev.convert_time) * 1000 / conv, st.convert_w, st.convert_h);
     }
+    {
+        unsigned dn = st.deinterlaced - info_prev.deinterlaced;
+        double dtm = st.deinterlace_time - info_prev.deinterlace_time;
+        if (st.deinterlace == REELCORE_DEINT_OFF)
+            snprintf(r[7].value, sizeof(r[7].value), "off; %u of %u pictures interlaced", st.interlaced, st.decoded);
+        else if (st.deinterlace == REELCORE_DEINT_AUTO && !st.interlaced)
+            snprintf(r[7].value, sizeof(r[7].value), "Auto: not needed (no interlaced pictures)");
+        else
+            snprintf(r[7].value, sizeof(r[7].value), "%s: yadif, %.1f ms a picture; %u of %u pictures interlaced",
+                     st.deinterlace == REELCORE_DEINT_ON ? "On" : "Auto", dn ? dtm * 1000 / dn : 0.0,
+                     st.interlaced, st.decoded);
+    }
     if (draws)
-        snprintf(r[7].value, sizeof(r[7].value), "%.1f ms a picture (%s)",
+        snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (%s)",
                  (S.draw_cs - info_prev_draw_cs) * 10.0 / draws,
 #ifdef REEL_EGL
                  S.fullscreen ? (!S.vsync ? "EGL screen surface, direct" : "EGL screen surface, vsync")
@@ -1512,20 +1534,20 @@ static void info_stats(void)
                  "OS_SpriteOp, with converting"
 #endif
                  );
-    snprintf(r[8].value, sizeof(r[8].value), "%d pictures, %d packets (%u KB)",
+    snprintf(r[9].value, sizeof(r[9].value), "%d pictures, %d packets (%u KB)",
              st.pictures_waiting, st.packets_waiting, st.packet_bytes >> 10);
     if (st.sound == 0)
-        snprintf(r[9].value, sizeof(r[9].value), "none");
+        snprintf(r[10].value, sizeof(r[10].value), "none");
     else if (st.sound_stalled)
-        snprintf(r[9].value, sizeof(r[9].value), "stalled: the device isn't playing");
+        snprintf(r[10].value, sizeof(r[10].value), "stalled: the device isn't playing");
     else if (st.sound == 1)
-        snprintf(r[9].value, sizeof(r[9].value), "SharedSoundBuffer: %.2f s queued, %.1f MB played",
+        snprintf(r[10].value, sizeof(r[10].value), "SharedSoundBuffer: %.2f s queued, %.1f MB played",
                  st.sound_queued, st.sound_played / 1048576.0);
     else
-        snprintf(r[9].value, sizeof(r[9].value), "SDL: %.2f s queued", st.sound_queued);
-    snprintf(r[10].value, sizeof(r[10].value), "%.2f Mbit/s (%.1f MB so far)",
+        snprintf(r[10].value, sizeof(r[10].value), "SDL: %.2f s queued", st.sound_queued);
+    snprintf(r[11].value, sizeof(r[11].value), "%.2f Mbit/s (%.1f MB so far)",
              (st.bytes_read - info_prev.bytes_read) * 8 / dt / 1e6, st.bytes_read / 1048576.0);
-    snprintf(r[11].value, sizeof(r[11].value), "%.0f null events a second, %s %.0f%% of the time; screen %dx%d, %d bpp, %s%s",
+    snprintf(r[12].value, sizeof(r[12].value), "%.0f null events a second, %s %.0f%% of the time; screen %dx%d, %d bpp, %s%s",
              (S.st_nulls - info_prev_nulls) / dt, S.nosleep ? "no sleeping (Reel$NoSleep):" : "asleep",
              (S.slept_cs - info_prev_slept) / dt, S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1 << S.log2bpp,
              S.trgb ? "TRGB" : "TBGR", S.fullscreen ? "; full screen" : "");
@@ -1537,7 +1559,7 @@ static void info_stats(void)
             format_time(pb, sizeof(pb), S.ab_b);
             snprintf(ab, sizeof(ab), S.ab == 2 ? "; A-B %s to %s" : "; A at %s", pa, pb);
         }
-        snprintf(r[12].value, sizeof(r[12].value), "%s speed, picture %s%s; volume %.0f%%; sound track %d of %d; "
+        snprintf(r[13].value, sizeof(r[13].value), "%s speed, picture %s%s; volume %.0f%%; sound track %d of %d; "
                  "playlist %d of %d%s%s",
                  speed_names[S.speed_i], pic_names[S.pic_mode], st.fast ? ", fast decode" : "", S.vol * 100,
                  st.audio_track + 1, st.audio_tracks, S.list_n ? S.list_i + 1 : 0, S.list_n, ab,
@@ -1752,13 +1774,13 @@ typedef struct {
     int width, height, gap;
     item_t item[MENU_MAX];
 } menu_t;
-static menu_t menu, m_pic, m_speed, m_track, m_list;
-static char menu_text[5][MENU_MAX][72];
+static menu_t menu, m_pic, m_speed, m_track, m_list, m_deint;
+static char menu_text[6][MENU_MAX][72];
 static int menu_is_bar;                 /* the open menu: 1 icon bar, 0 window */
 static int menu_x, menu_y;
 
 /* The window menu */
-enum { WM_INFO, WM_FULL, WM_MINI, WM_ONTOP, WM_PIC, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_CLOSE, WM_N };
+enum { WM_INFO, WM_FULL, WM_MINI, WM_ONTOP, WM_PIC, WM_DEINT, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_CLOSE, WM_N };
 
 static void menu_start(menu_t *m, const char *title)
 {
@@ -1813,6 +1835,11 @@ static void menu_open(int bar, int x, int y)
         for (int i = 0; i < N_PIC; i++)
             menu_add(&m_pic, 1, &k, pic_names[i], S.pic_mode == i, NULL, 0);
         menu_end(&m_pic, k);
+        menu_start(&m_deint, "Deinterlace");
+        k = 0;
+        for (int i = 0; i < 3; i++)
+            menu_add(&m_deint, 5, &k, deint_names[i], S.deint_i == i, NULL, 0);
+        menu_end(&m_deint, k);
         menu_start(&m_speed, "Speed");
         k = 0;
         for (int i = 0; i < N_SPEED; i++)
@@ -1841,6 +1868,8 @@ static void menu_open(int bar, int x, int y)
         menu_add(&menu, 0, &n, "Mini player", mini, NULL, !S.v);
         menu_add(&menu, 0, &n, "Keep on top", S.ontop, NULL, 0);
         menu_add(&menu, 0, &n, "Picture", 0, &m_pic, 0);
+        snprintf(t, sizeof(t), "Deinterlace (%s)", deint_names[S.deint_i]);
+        menu_add(&menu, 0, &n, t, 0, &m_deint, 0);
         snprintf(t, sizeof(t), "Speed (%s)", speed_names[S.speed_i]);
         menu_add(&menu, 0, &n, t, 0, &m_speed, 0);
         menu_add(&menu, 0, &n, "Sound track", 0, tracks > 1 ? &m_track : NULL, tracks < 2);
@@ -1894,6 +1923,16 @@ static void set_speed_i(int i)
         reelcore_set_speed(S.v, speeds[i]);
     lg("speed %s", speed_names[i]);
     update_controls(1);
+}
+
+/* Deinterlace: Auto, On, Off (remembered) */
+static void set_deint_i(int i)
+{
+    S.deint_i = i;
+    if (S.v)
+        reelcore_set_deinterlace(S.v, deint_modes[i]);
+    lg("deinterlace %s", deint_names[i]);
+    choices_save();
 }
 
 static void set_fast(int on)
@@ -2091,6 +2130,7 @@ static void menu_select(const int *sel)
             choices_save();
             break;
         case WM_PIC: if (sel[1] >= 0 && sel[1] < N_PIC) set_pic_mode(sel[1]); break;
+        case WM_DEINT: if (sel[1] >= 0 && sel[1] < 3) set_deint_i(sel[1]); break;
         case WM_SPEED: if (sel[1] >= 0 && sel[1] < N_SPEED) set_speed_i(sel[1]); break;
         case WM_TRACK:
             if (sel[1] >= 0 && S.v && reelcore_set_audio_track(S.v, sel[1]) == 0)
@@ -2192,6 +2232,7 @@ static void key(int *b)
     case 'q': case 'Q': close_video(); return;
     case 'i': case 'I': info_toggle(); return;
     case 'm': case 'M': set_mini(!mini); return;
+    case 'd': case 'D': set_deint_i((S.deint_i + 1) % 3); return;
     case 'a': case 'A': ab_press(); return;
     case 'n': case 'N': if (S.list_i + 1 < S.list_n) list_play(S.list_i + 1); return;
     case 'p': case 'P': if (S.list_i > 0) list_play(S.list_i - 1); return;
@@ -2536,6 +2577,7 @@ int reel_test_pic_flags(void) { return pic_flags_of[S.pic_mode]; }
 int reel_test_ab(double *a, double *b) { *a = S.ab_a; *b = S.ab_b; return S.ab; }
 int reel_test_list(int *n) { *n = S.list_n; return S.list_i; }
 int reel_test_mini(int *ontop) { *ontop = S.ontop; return mini; }
+int reel_test_deint(void) { return deint_modes[S.deint_i]; }
 #endif
 
 #ifndef REEL_NO_MAIN

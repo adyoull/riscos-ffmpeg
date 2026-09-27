@@ -38,7 +38,8 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
     full screen; drop a file on the icon or double-click it in the Filer.
   - A mini player above the icon bar (optionally kept on top), playlists,
     speed 0.5x–2x, picture sizes, sound tracks, A-B repeat, carry on
-    where you stopped, vsync full screen, fast decoding.
+    where you stopped, vsync full screen, fast decoding, deinterlacing
+    (yadif, with a NEON line filter added in this port).
   - Sound straight to SharedSoundBuffer, which is also the clock the
     pictures follow; late frames are skipped (and, when far behind,
     non-reference frames aren't decoded).
