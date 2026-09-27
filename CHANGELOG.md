@@ -10,6 +10,12 @@
   - The icon's menu has Info, Full screen (plays with `-fs`) and Quit.
   - It's a small C program (`frontend/fffront.c`, `!RunImage`, 512K); only
     one copy runs. It has a host test with a scripted fake Wimp.
+  - Repackaged the same day: the first version said "File name '.Task' not
+    recognised" when `!FFmpeg` was started from the boot sequence
+    (Configure > Boot > Look at). It used `FFmpeg$Dir` when a file was
+    dropped, and that can hold a reference like `<Obey$Dir>` which by then
+    points elsewhere. It now works out its full directory when it starts
+    (`OS_FSControl` 37, else its own command line).
 
 ## 5.1.10-riscos4 (2026-09-27)
 

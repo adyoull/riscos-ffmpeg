@@ -11,6 +11,7 @@
 int fffront_main(void);
 int fffront_command(char *, size_t, const char *, const char *, int, const char *);
 
+static const char *canon = "SDFS::Pi.$.Apps.!FFmpeg";   /* what OS_FSControl 37 gives; NULL = fail */
 static int fails, step, icon_made, acks, reports, closed;
 static char started[4][1024]; static int nstarted;
 static char icon_name[13]; static int icon_flags;
@@ -29,6 +30,12 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     static _kernel_oserror err = { 1, "fake" };
     switch (swi) {
     case 0x400C0: out->r[1] = 0x1234; return NULL;                 /* Wimp_Initialise */
+    case 0x29:                                                     /* OS_FSControl 37 */
+        if (in->r[0] != 37 || !canon || strcmp((const char *)(intptr_t)in->r[1], "<FFmpeg$Dir>")) return &err;
+        strcpy((char *)(intptr_t)in->r[2], canon);
+        out->r[5] = in->r[5] - (long)strlen(canon) - 1;
+        return NULL;
+    case 0x10: out->r[0] = (long)"SDFS::Pi.$.Other.!FFmpeg.!RunImage "; return NULL;   /* OS_GetEnv */
     case 0x42681: out->r[0] = -1; return NULL;                     /* EnumerateTasks: none */
     case 0x400C2: {                                                /* Wimp_CreateIcon */
         int *b = (int *)(intptr_t)in->r[1];
@@ -67,7 +74,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
 int main(void)
 {
     char cmd[1024];
-    setenv("FFmpeg$Dir", "SDFS::Pi.$.Apps.!FFmpeg", 1);
+    /* FFmpeg$Dir as the boot sequence can leave it: canonicalised at start-up */
+    setenv("FFmpeg$Dir", "<Obey$Dir>", 1);
     setenv("Wimp$ScrapDir", "SDFS::Pi.$.Scrap", 1);
     CHECK(fffront_main() == 0, "front end didn't end cleanly");
     CHECK(icon_made == 1 && !strcmp(icon_name, "!ffmpeg") && (icon_flags & 0xF00A) == 0x300A,
@@ -82,6 +90,10 @@ int main(void)
     CHECK(closed == 1, "Wimp_CloseDown %d times", closed);
     CHECK(fffront_command(cmd, sizeof(cmd), "D", "f", 0, NULL) == 0 &&
           !strcmp(cmd, "Obey D.Task ffplay -nostats -hide_banner -loglevel quiet f"), "no scrap: %s", cmd);
+    /* OS_FSControl fails: the program's own directory from OS_GetEnv */
+    canon = NULL; step = 0; nstarted = 0; closed = 0; acks = 0; reports = 0; icon_made = 0;
+    CHECK(fffront_main() == 0 && nstarted == 2 &&
+          !strncmp(started[0], "Obey SDFS::Pi.$.Other.!FFmpeg.Task ffplay ", 42), "OS_GetEnv fallback: %s", started[0]);
     printf("  started: %s\n", started[0]);
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;

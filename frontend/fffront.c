@@ -43,7 +43,7 @@
 #endif
 
 static int task, icon, fullscreen;
-static const char *ffdir;
+static char ffdir[256];
 
 static _kernel_oserror *swi(int n, _kernel_swi_regs *r) { return _kernel_swi(n, r, r); }
 
@@ -180,6 +180,42 @@ static void menu_select(const int *sel)
 
 /* ---- set up -------------------------------------------------------- */
 
+/* Our directory, as a full path worked out now. FFmpeg$Dir can hold a
+   reference such as <Obey$Dir> that only means the right thing while !Run
+   (or the boot sequence) is running, so canonicalise it at start-up
+   (OS_FSControl 37); failing that, use the directory of this program, from
+   the command line that started it (OS_GetEnv). */
+static void find_dir(void)
+{
+    _kernel_swi_regs r;
+    const char *env;
+    char *dot;
+    size_t n;
+
+    ffdir[0] = 0;
+    r.r[0] = 37;
+    r.r[1] = (intptr_t)"<FFmpeg$Dir>";
+    r.r[2] = (intptr_t)ffdir;
+    r.r[3] = 0;
+    r.r[4] = 0;
+    r.r[5] = sizeof(ffdir);
+    if (!swi(0x29 /* OS_FSControl */, &r) && ffdir[0] && r.r[5] > 0 && strchr(ffdir, '.'))
+        return;
+    ffdir[0] = 0;
+    if (swi(0x10 /* OS_GetEnv */, &r))
+        return;
+    env = (const char *)(intptr_t)r.r[0];
+    for (n = 0; env[n] > ' ' && n < sizeof(ffdir) - 1; n++)
+        ffdir[n] = env[n];
+    ffdir[n] = 0;
+    if ((dot = strrchr(ffdir, '.')) != NULL && strchr(ffdir, ':'))
+        *dot = 0;                               /* drop the leaf (!RunImage) */
+    else
+        ffdir[0] = 0;
+}
+
+
+
 static int already_running(void)
 {
     int buf[16 * 4];
@@ -222,7 +258,7 @@ int fffront_main(void)
     int block[64];
     _kernel_swi_regs r;
 
-    ffdir = getenv("FFmpeg$Dir");
+    find_dir();
     r.r[0] = 380;
     r.r[1] = TASK_WORD;
     r.r[2] = (intptr_t)TASK_NAME;
@@ -230,8 +266,8 @@ int fffront_main(void)
     if (swi(Wimp_Initialise, &r))
         return 1;
     task = r.r[1];
-    if (!ffdir || !*ffdir) {
-        report("FFmpeg$Dir isn't set: start FFmpeg by double-clicking !FFmpeg.", 1);
+    if (!*ffdir) {
+        report("Can't find the !FFmpeg directory: start FFmpeg by double-clicking !FFmpeg.", 1);
         return 1;
     }
     if (already_running()) {
