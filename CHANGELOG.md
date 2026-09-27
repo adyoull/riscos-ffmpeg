@@ -1,5 +1,21 @@
 # Changes
 
+## 5.1.10-riscos3 (2026-09-27)
+
+- **ffplay from a TaskWindow crashed on the Pi** ("Internal error: abort on
+  data transfer" in VFPSupport; the new ffplay's log showed an EMT trap in
+  its video decoder thread). The ffplay in the TaskWindow started the new
+  task with its own VFP (floating point) context still active. VFPSupport
+  later saved that context to its old stack address, which by then
+  belonged to the new ffplay, and corrupted it. ffplay now switches its
+  context off around `Wimp_StartTask`, as UnixLib does before running
+  another program (patch 0013).
+- **Built with the fixed UnixLib from the Warzone 2100 port's toolchain**
+  (caea90c3): the pthread ticker's code is in the RMA, so a thread switch
+  can't jump into ffplay's memory while another task is paged in. ffplay
+  runs several threads (reading, decoding, SDL's timer). Warzone 2100 hit
+  exactly that abort.
+
 ## 5.1.10-riscos2 (2026-09-27)
 
 - **`ffmpeg -f egl`:** a new output device that shows video through

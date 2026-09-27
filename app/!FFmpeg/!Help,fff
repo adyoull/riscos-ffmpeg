@@ -1,4 +1,4 @@
-!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos2
+!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos3
 ===================================================================
 
 FFmpeg converts, plays and inspects audio and video. This is FFmpeg
@@ -109,7 +109,8 @@ Known limits
 - ffplay has no desktop front end: start it from a TaskWindow or Obey
   file. It uses the whole CPU while it plays.
 - Version riscos1's ffplay stopped with "Window Manager is currently in
-  use" when started in a TaskWindow; riscos2 starts itself as its own task.
+  use" when started in a TaskWindow; riscos2 started itself as its own
+  task but then crashed (VFPSupport); riscos3 fixes that.
 - If ffmpeg seems to wait for a key in a TaskWindow, add -nostdin.
 - No https (no TLS library), no hardware decoding.
 

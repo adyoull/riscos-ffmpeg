@@ -25,5 +25,8 @@ Test-only (not in any release):
 - **QEMU 8.2.2**: archive.ubuntu.com `qemu_8.2.2+ds.orig.tar.xz`.
 
 Toolchain: GCCSDK GCC 10.2.0 Release 2 (riscos-warzone2100), built from
-GCCSDK 64c6f81 with the riscos-openttd UnixLib patch
-(`Warzone2100/dist/gccsdk-gcc10.2-x86_64-linux-env.tgz`).
+GCCSDK 64c6f81 with the riscos-openttd UnixLib patch and the Warzone 2100
+port's pthread ticker fix (the ticker code runs from the RMA)
+(`Warzone2100/dist/gccsdk-gcc10.2-x86_64-linux-env.tgz`, md5
+caea90c3cc14abb4387f2c8d2e009355, from riscos3; riscos1 and riscos2 used
+the earlier build without the ticker fix).

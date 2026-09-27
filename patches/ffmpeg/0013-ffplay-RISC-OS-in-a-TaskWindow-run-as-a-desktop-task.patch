@@ -1,4 +1,4 @@
-From f337a06e792d0065e5108fb0683f168f95663015 Mon Sep 17 00:00:00 2001
+From 3a6b9e61928c0ed68da437f5f0c1e98528f8184b Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Sun, 27 Sep 2026 12:55:00 +0100
 Subject: [PATCH] ffplay (RISC OS): in a TaskWindow, run as a desktop task of
@@ -9,20 +9,58 @@ Manager is currently in use"). ffplay starts itself again with
 Wimp_StartTask, through the Obey file Task next to it (WimpSlot), with
 its messages in <Wimp$ScrapDir>.ffplay/log. FFPLAY_NEWTASK=0 turns it off.
 
+Our VFP context is switched off around Wimp_StartTask (one asm block),
+as UnixLib does before running another program: otherwise VFPSupport
+later saves it lazily to our stack address, which by then belongs to the
+new task (seen on the Pi: "abort on data transfer" in VFPSupport, and an
+EMT trap in the new ffplay's video decoder thread).
+
 ---
- fftools/ffplay.c | 63 ++++++++++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 63 insertions(+)
+ fftools/ffplay.c | 96 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 96 insertions(+)
 
 diff --git a/fftools/ffplay.c b/fftools/ffplay.c
-index 934212f..d661046 100644
+index 934212f..8108b72 100644
 --- a/fftools/ffplay.c
 +++ b/fftools/ffplay.c
-@@ -874,6 +874,65 @@ static void calculate_display_rect(SDL_Rect *rect,
+@@ -874,6 +874,98 @@ static void calculate_display_rect(SDL_Rect *rect,
      rect->h = FFMAX((int)height, 1);
  }
  
 +#ifdef __riscos__
 +#include <kernel.h>
++
++/* Wimp_StartTask with our VFP context switched off meanwhile. UnixLib
++ * keeps that context on our stack; the new task's UnixLib creates its own
++ * context, and VFPSupport would first save ours to an address that is no
++ * longer mapped: "abort on data transfer" in VFPSupport (UnixLib does the
++ * same before running another program). The three SWIs are one asm block
++ * so the compiler can't put a VFP/NEON instruction between them. */
++static _kernel_oserror *riscos_start_task(const char *cmd)
++{
++#if defined(__arm__)
++    _kernel_oserror *err;
++    __asm__ volatile(
++        "mov    r0, #0\n\t"
++        "mov    r1, #0\n\t"
++        "swi    0x78EC3\n\t"          /* XVFPSupport_ChangeContext 0: off */
++        "movvs  r0, #0\n\t"
++        "mov    r4, r0\n\t"           /* the old context */
++        "mov    r0, %1\n\t"
++        "swi    0x600DE\n\t"          /* XWimp_StartTask */
++        "movvs  %0, r0\n\t"
++        "movvc  %0, #0\n\t"
++        "movs   r0, r4\n\t"
++        "mov    r1, #0\n\t"
++        "swine  0x78EC3\n\t"          /* back on */
++        : "=&r"(err) : "r"(cmd) : "r0", "r1", "r2", "r3", "r4", "r14", "cc", "memory");
++    return err;
++#else   /* host tests (tests/host/ffplay-direct.sh) */
++    _kernel_swi_regs r;
++    r.r[0] = (intptr_t)cmd;
++    return _kernel_swi(0x400DE, &r, &r);
++#endif
++}
 +
 +/* RISC OS: a program running in a TaskWindow can't open windows: the
 + * TaskWindow is already its Wimp task, so SDL's Wimp_Initialise fails with
@@ -40,6 +78,7 @@ index 934212f..d661046 100644
 +    const char *env, *leaf;
 +    size_t n;
 +    AVBPrint bp;
++    _kernel_oserror *err;
 +
 +    if (no && *no == '0')
 +        return;
@@ -71,9 +110,9 @@ index 934212f..d661046 100644
 +    }
 +    fprintf(stderr, "ffplay: a TaskWindow can't open windows, so ffplay runs as its own\n"
 +                    "desktop task. Its messages go to %s\n", log);
-+    r.r[0] = (intptr_t)cmd;
-+    if (_kernel_swi(0x400DE /* Wimp_StartTask */, &r, &r)) {
-+        av_log(NULL, AV_LOG_WARNING, "ffplay: Wimp_StartTask failed\n");
++    err = riscos_start_task(cmd);
++    if (err) {
++        av_log(NULL, AV_LOG_WARNING, "ffplay: Wimp_StartTask failed: %s\n", err->errmess);
 +        return;
 +    }
 +    exit(0);
@@ -83,7 +122,7 @@ index 934212f..d661046 100644
  #ifdef __riscos__
  /* RISC OS: draw video straight into the window.
   *
-@@ -3862,6 +3921,10 @@ int main(int argc, char **argv)
+@@ -3862,6 +3954,10 @@ int main(int argc, char **argv)
      if (display_disable) {
          video_disable = 1;
      }
