@@ -1,0 +1,110 @@
+diff -ru a/src/arm/32/cdef.S dav1d-1.5.4/src/arm/32/cdef.S
+--- dav1d-1.5.4.orig/src/arm/32/cdef.S	2026-09-27 08:50:57.111286242 +0100
++++ dav1d-1.5.4/src/arm/32/cdef.S	2026-09-27 09:01:21.760913957 +0100
+@@ -296,12 +296,12 @@
+ 0:
+         ldrh            r12, [r3], #2
+         vldr            \reg, [r1]
+-        str             r12, [r0, #-2]
+-        ldrh            r12, [r1, #\w]
+-        add             r1,  r1,  r2
++        strh            r12, [r0, #-2]      // RISC OS: str here is unaligned (the
++        ldrh            r12, [r1, #\w]      // upper 2 bytes were zeros that nothing
++        add             r1,  r1,  r2        // reads, or overwritten by the vstr)
+         subs            r6,  r6,  #1
+         vstr            \reg, [r0]
+-        str             r12, [r0, #\w]
++        strh            r12, [r0, #\w]
+         add             r0,  r0,  #\stride
+         bgt             0b
+ 
+diff -ru a/src/arm/32/msac.S dav1d-1.5.4/src/arm/32/msac.S
+--- dav1d-1.5.4.orig/src/arm/32/msac.S	2026-09-27 08:50:57.112242430 +0100
++++ dav1d-1.5.4/src/arm/32/msac.S	2026-09-27 08:50:57.132902854 +0100
+@@ -294,7 +294,14 @@
+         subs            r5,  r5,  r4
+         bhi             6f
+ 
+-        ldr             r8,  [r3]              // next_bits
++        // RISC OS traps unaligned ldr: read the 4 bytes one at a time (r12 is free here)
++        ldrb            r8,  [r3]
++        ldrb            r12, [r3, #1]
++        orr             r8,  r8,  r12, lsl #8
++        ldrb            r12, [r3, #2]
++        orr             r8,  r8,  r12, lsl #16
++        ldrb            r12, [r3, #3]
++        orr             r8,  r8,  r12, lsl #24
+         rsb             r5,  r6,  #16
+         add             r4,  r6,  #16          // shift_bits = cnt + 16
+         mvn             r8,  r8
+@@ -326,7 +333,14 @@
+         cmp             r3,  r4
+         bhs             5b
+ 
+-        ldr             r8,  [r4, #-4]
++        // RISC OS traps unaligned ldr: read the 4 bytes one at a time (r12 is free here)
++        ldrb            r8,  [r4, #-4]
++        ldrb            r12, [r4, #-3]
++        orr             r8,  r8,  r12, lsl #8
++        ldrb            r12, [r4, #-2]
++        orr             r8,  r8,  r12, lsl #16
++        ldrb            r12, [r4, #-1]
++        orr             r8,  r8,  r12, lsl #24
+         lsl             r5,  r5,  #3
+         lsr             r8,  r8,  r5
+         add             r5,  r6,  #16
+@@ -436,7 +450,14 @@
+         subs            r5,  r5,  r4
+         bhi             7f
+ 
+-        ldr             r8,  [r3]              // next_bits
++        // RISC OS traps unaligned ldr: read the 4 bytes one at a time (r12 is free here)
++        ldrb            r8,  [r3]
++        ldrb            r12, [r3, #1]
++        orr             r8,  r8,  r12, lsl #8
++        ldrb            r12, [r3, #2]
++        orr             r8,  r8,  r12, lsl #16
++        ldrb            r12, [r3, #3]
++        orr             r8,  r8,  r12, lsl #24
+         rsb             r5,  r6,  #16
+         add             r4,  r6,  #16          // shift_bits = cnt + 16
+         mvn             r8,  r8
+@@ -475,7 +496,14 @@
+         cmp             r3,  r4
+         bhs             6b
+ 
+-        ldr             r8,  [r4, #-4]
++        // RISC OS traps unaligned ldr: read the 4 bytes one at a time (r12 is free here)
++        ldrb            r8,  [r4, #-4]
++        ldrb            r12, [r4, #-3]
++        orr             r8,  r8,  r12, lsl #8
++        ldrb            r12, [r4, #-2]
++        orr             r8,  r8,  r12, lsl #16
++        ldrb            r12, [r4, #-1]
++        orr             r8,  r8,  r12, lsl #24
+         lsl             r5,  r5,  #3
+         lsr             r8,  r8,  r5
+         add             r5,  r6,  #16
+diff -ru a/src/arm/32/util.S dav1d-1.5.4/src/arm/32/util.S
+--- dav1d-1.5.4.orig/src/arm/32/util.S	2026-09-27 08:50:57.112314179 +0100
++++ dav1d-1.5.4/src/arm/32/util.S	2026-09-27 10:12:54.234348655 +0100
+@@ -87,7 +87,7 @@
+ #endif
+ .endm
+ 
+-// This macro clobbers r7 (and r12 on windows) and stores data at the
++// This macro clobbers r7 (and r12 on windows and RISC OS) and stores data at the
+ // bottom of the stack; sp is the start of the space allocated that
+ // the caller can use.
+ .macro sub_sp_align space
+@@ -102,7 +102,9 @@
+         // on the stack, as we don't want to waste a register as frame
+         // pointer.
+         str             r7,  [sp, #-16]!
+-#ifdef _WIN32
++        // RISC OS maps the stack a page at a time below a guard page, as
++        // Windows does, so it needs the same probe for big frames.
++#if defined(_WIN32) || defined(__riscos__)
+ .if \space > 8192
+         // Here, we'd need to touch two (or more) pages while decrementing
+         // the stack pointer.

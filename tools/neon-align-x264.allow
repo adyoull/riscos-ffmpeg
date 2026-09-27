@@ -1,0 +1,16 @@
+# x264 0.165: whole-register vld2/3/4 / vst2/3/4 with wide elements, checked
+# by hand.
+# pixel-a.S ssim_4x4x2_core: ip is the int sums[2][4] output (4-byte aligned).
+pixel-a.S:1462
+# mc-a.S load_add_add/load_add_sub/load_sub_add: after
+# patches/x264/x264-riscos-align.patch every caller passes whole
+# registers (d0, d1, ...), so element size -> .8.
+whole mc-a.S:203
+whole mc-a.S:204
+whole mc-a.S:220
+whole mc-a.S:221
+whole mc-a.S:237
+whole mc-a.S:238
+# pixel-a.S SSIM_ITER: callers pass whole registers (d26-d29).
+whole pixel-a.S:1414
+whole pixel-a.S:1428

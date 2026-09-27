@@ -1,0 +1,92 @@
+!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos1
+===================================================================
+
+FFmpeg converts, plays and inspects audio and video. This is FFmpeg
+5.1.10, the current release of the 5.1 long-term-support series, built
+for ARMv7 machines with NEON: Raspberry Pi 2, 3, 4 and 400, Titanium,
+IGEPv5, iMX6 boards, BeagleBoard-xM, Pandaboard. It does not run on a
+Pi 1 / Zero or older machines.
+
+It contains three commands:
+
+  ffmpeg    convert between formats, encode, cut, resize, ...
+  ffprobe   show what is in a file
+  ffplay    play a file in a desktop window (or full screen)
+
+Getting started
+---------------
+Let the Filer see !FFmpeg (open the directory it is in), or double-click
+it once. That sets up the commands. Then open a TaskWindow (Ctrl-F12):
+
+  ffprobe SDFS::RISCOSpi.$.Videos.holiday/mp4
+  ffplay  SDFS::RISCOSpi.$.Videos.holiday/mp4
+  ffmpeg -i holiday/mp4 -c:v libx264 -crf 23 -c:a aac small/mp4
+  ffmpeg -i song/flac -c:a libmp3lame -b:a 192k song/mp3
+
+File names can be RISC OS style (ADFS::HardDisc4.$.Films.clip/mkv,
+<Obey$Dir>.clip/mp4) or Unix style (clip.mp4). The extension after "/"
+or "." picks the output format. New files get their filetype from
+MimeMap.
+
+ffplay keys: Q or Escape quit, F full screen, P or Space pause,
+Left/Right seek 10 s, Up/Down seek 1 min, M mute, 9/0 volume,
+W cycle video/waveform/spectrum, S step one frame.
+ffplay plays sound through SharedSoundBuffer and StreamManager
+(John Duffell's ssb.zip, from the RDPClient page at orac.co.uk) when they
+are loaded.
+
+What is in it
+-------------
+Decoders for almost everything FFmpeg knows (H.264, HEVC, VP8, VP9, AV1
+via dav1d, MPEG-1/2/4, ProRes, AAC, MP3, AC-3, Opus, Vorbis, FLAC, ...).
+Encoders: H.264 (x264), MP3 (LAME), Opus, Vorbis, AAC, MPEG-4, MPEG-2,
+MJPEG, FLAC, ProRes, FFV1 and more. Network: http, tcp, udp, rtp, rtmp,
+hls (no https: there is no TLS library in this build).
+
+Speed
+-----
+Most of FFmpeg's speed on ARM comes from its hand-written NEON assembly
+(and dav1d's and x264's). The PackMan FFmpeg (4.4) is built for ARMv4
+without VFP or NEON; this one uses all of it.
+
+RISC OS runs with alignment checking on, and much of that assembly
+assumed unaligned loads are allowed (as on Linux). For this build every
+such instruction was rewritten so it cannot fault, and FFmpeg's, dav1d's
+and x264's own test suites (about 3,000 checks) plus 110 decode/encode
+tests all pass under an emulator that traps like RISC OS.
+
+"Bench" (in this directory) measures the speed on your machine: double-
+click it. It compares the NEON code with plain C.
+
+Why 5.1 and not 7.x/8.x: 5.1 is the last FFmpeg with NEON code for the
+AAC, AC-3, Vorbis and WMA audio decoders on 32-bit ARM (6.0 replaced it
+with generic C), and the last whose ffmpeg command doesn't need threads
+(RISC OS has one core). It is still maintained (LTS).
+
+Memory
+------
+Each program needs about 32MB of application space (the Boot file sets
+it). Memory for pictures and sound comes from a dynamic area called
+"FFmpeg Heap" (up to 512MB), which goes away when the program quits.
+
+Needs
+-----
+SharedUnixLibrary 1.16 or later and ARMEABISupport (both in PackMan).
+
+Known limits
+------------
+- ffplay has no desktop front end: start it from a TaskWindow or Obey
+  file. It uses the whole CPU while it plays.
+- If ffmpeg seems to wait for a key in a TaskWindow, add -nostdin.
+- No https (no TLS library), no hardware decoding.
+
+Licence
+-------
+This build of FFmpeg is under the GNU GPL, version 2 or later, because it
+includes x264 (GPL). The other libraries in it have their own, compatible
+licences. The docs directory has all of them (docs.Licences), the source
+of this port (docs.source: patches and build scripts) and where the
+upstream source came from (docs.SOURCES).
+
+FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg
+project. This is an unofficial port.

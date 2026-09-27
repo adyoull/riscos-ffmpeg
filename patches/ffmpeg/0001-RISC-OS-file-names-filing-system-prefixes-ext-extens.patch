@@ -1,0 +1,64 @@
+From e4034faa44e96e511f57451987148dc2f68bbe8c Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 08:16:51 +0100
+Subject: [PATCH 1/3] RISC OS file names: filing system prefixes, /ext
+ extensions
+
+---
+ libavformat/avio.c   | 20 ++++++++++++++++++++
+ libavformat/format.c | 11 +++++++++++
+ 2 files changed, 31 insertions(+)
+
+diff --git a/libavformat/avio.c b/libavformat/avio.c
+index 4846bbd..cbbb807 100644
+--- a/libavformat/avio.c
++++ b/libavformat/avio.c
+@@ -283,6 +283,26 @@ static const struct URLProtocol *url_find_protocol(const char *filename)
+         }
+     }
+     av_freep(&protocols);
++#ifdef __riscos__
++    /* RISC OS file names can start with a filing system, disc or path
++     * variable followed by a colon (ADFS::HardDisc4.$.x, SDFS::Pi.$.x,
++     * RAM:$.x, Resources:$.x, Boot:x). When the part before the colon isn't
++     * a protocol we know, it's a file name. */
++    if (filename[proto_len] == ':' && !av_strstart(filename, "https:", NULL) &&
++        !av_strstart(filename, "tls:", NULL)) {
++        protocols = ffurl_get_protocols(NULL, NULL);
++        if (protocols) {
++            for (i = 0; protocols[i]; i++) {
++                const URLProtocol *up = protocols[i];
++                if (!strcmp(up->name, "file")) {
++                    av_freep(&protocols);
++                    return up;
++                }
++            }
++            av_freep(&protocols);
++        }
++    }
++#endif
+     if (av_strstart(filename, "https:", NULL) || av_strstart(filename, "tls:", NULL))
+         av_log(NULL, AV_LOG_WARNING, "https protocol not found, recompile FFmpeg with "
+                                      "openssl, gnutls or securetransport enabled.\n");
+diff --git a/libavformat/format.c b/libavformat/format.c
+index cb2f696..d2ed860 100644
+--- a/libavformat/format.c
++++ b/libavformat/format.c
+@@ -45,6 +45,17 @@ int av_match_ext(const char *filename, const char *extensions)
+         return 0;
+ 
+     ext = strrchr(filename, '.');
++#ifdef __riscos__
++    {
++        /* RISC OS names use '.' between directories and '/' before an
++         * extension (SDFS::Pi.$.Videos.clip/mp4). If the last '/' comes after
++         * the last '.', try what follows it as an extension as well; a Unix
++         * style name (dir/file.mp4) still matches on the '.' as usual. */
++        const char *slash = strrchr(filename, '/');
++        if (slash && (!ext || slash > ext) && av_match_name(slash + 1, extensions))
++            return 1;
++    }
++#endif
+     if (ext)
+         return av_match_name(ext + 1, extensions);
+     return 0;

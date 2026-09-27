@@ -1,0 +1,37 @@
+diff -ru a/common/arm/mc-a.S x264-master/common/arm/mc-a.S
+--- x264-master.orig/common/arm/mc-a.S	2026-09-27 09:51:17.950378747 +0100
++++ x264-master/common/arm/mc-a.S	2026-09-27 09:51:17.961000780 +0100
+@@ -248,9 +248,13 @@
+     load_weights_\ext
+ 1:  // height loop
+     subs            lr,  lr,  #2
+-    load_\ext       d0[], d1[]
++    @ RISC OS: the load_* macros written out for the 4-wide case, since
++    @ they move single lanes here (d0[]) that tools/neon-align.py must see.
++    vld1.32         {d0[]}, [r2], r3
++    vld1.32         {d1[]}, [r4], r5
+     weight_\ext     q8,  d0,  d1
+-    load_\ext       d2[], d3[]
++    vld1.32         {d2[]}, [r2], r3
++    vld1.32         {d3[]}, [r4], r5
+     vqrshrun.s16    d0,  q8,  #6
+     weight_\ext     q9,  d2,  d3
+     vst1.32         {d0[0]}, [r0,:32], r1
+diff -ru a/common/pixel.c x264-master/common/pixel.c
+--- x264-master.orig/common/pixel.c	2026-09-27 09:51:17.953069496 +0100
++++ x264-master/common/pixel.c	2026-09-27 09:51:17.972054244 +0100
+@@ -1426,7 +1426,14 @@
+ #endif //HAVE_MMX
+ 
+ #if HAVE_ARMV6
++    /* RISC OS traps unaligned accesses; these ARMv6 SADs load 32-bit words
++     * from any byte address, so the C versions are used there (NEON has no
++     * 4-wide SAD). FF_STRICT_ALIGN: the same, for the qemu tests. */
++#if !defined(__riscos__) && !defined(FF_STRICT_ALIGN)
+     if( cpu&X264_CPU_ARMV6 )
++#else
++    if( 0 )
++#endif
+     {
+         pixf->sad[PIXEL_4x8] = x264_pixel_sad_4x8_armv6;
+         pixf->sad[PIXEL_4x4] = x264_pixel_sad_4x4_armv6;

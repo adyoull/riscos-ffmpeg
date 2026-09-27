@@ -1,0 +1,15 @@
+| !Run for !FFmpeg (FFmpeg 5.1.10 LTS for RISC OS)
+| FFmpeg has no desktop front end: double-clicking !FFmpeg sets up the
+| *ffmpeg, *ffprobe and *ffplay commands (as !Boot does) and checks the
+| modules they need. Then use them from a TaskWindow (Ctrl-F12).
+Set FFmpeg$Dir <Obey$Dir>
+Run <FFmpeg$Dir>.!Boot
+
+| --- Runtime support -------------------------------------------------
+RMEnsure SharedUnixLibrary 1.16 IfThere System:Modules.SharedULib Then RMLoad System:Modules.SharedULib
+RMEnsure SharedUnixLibrary 1.16 Error FFmpeg needs SharedUnixLibrary 1.16 or later. Install it with PackMan.
+RMEnsure ARMEABISupport 0 IfThere System:Modules.ARMEABISupport Then RMLoad System:Modules.ARMEABISupport
+RMEnsure ARMEABISupport 0 Error FFmpeg needs the ARMEABISupport module. Install it with PackMan.
+| ffplay's sound uses SharedSoundBuffer and StreamManager (John Duffell's
+| ssb.zip, from the RDPClient page at orac.co.uk) when they are loaded;
+| without them SDL falls back to UnixLib's /dev/dsp (DigitalRenderer).

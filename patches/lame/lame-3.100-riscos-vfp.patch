@@ -1,0 +1,24 @@
+diff -ru lame-3.100.orig/libmp3lame/lame.c lame-3.100/libmp3lame/lame.c
+--- lame-3.100.orig/libmp3lame/lame.c	2026-09-27 08:06:55.001031128 +0100
++++ lame-3.100/libmp3lame/lame.c	2026-09-27 08:06:55.006096438 +0100
+@@ -51,7 +51,7 @@
+ #if defined(__FreeBSD__) && !defined(__alpha__)
+ #include <floatingpoint.h>
+ #endif
+-#ifdef __riscos__
++#if defined(__riscos__) && defined(FPA10)
+ #include "asmstuff.h"
+ #endif
+ 
+diff -ru lame-3.100.orig/libmp3lame/util.c lame-3.100/libmp3lame/util.c
+--- lame-3.100.orig/libmp3lame/util.c	2026-09-27 08:06:55.000793782 +0100
++++ lame-3.100/libmp3lame/util.c	2026-09-27 08:06:55.007916511 +0100
+@@ -856,7 +856,7 @@
+     }
+ #endif
+ 
+-#if defined(__riscos__) && !defined(ABORTFP)
++#if defined(__riscos__) && defined(FPA10) && !defined(ABORTFP)
+     /* Disable FPE's under RISC OS */
+     /* if bit is set, we disable trapping that error! */
+     /*   _FPE_IVO : invalid operation */

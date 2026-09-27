@@ -1,0 +1,73 @@
+From 87fdb471213c6aa7c042ace7b8c38f4aba212f4c Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 09:27:42 +0100
+Subject: [PATCH] RISC OS: never select the ARMv6 media routines (unaligned
+ word access)
+
+---
+ libavcodec/arm/vp8.h |  4 +++-
+ libavutil/arm/cpu.c  | 18 +++++++++++++++---
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/libavcodec/arm/vp8.h b/libavcodec/arm/vp8.h
+index 965342d..f85c9ca 100644
+--- a/libavcodec/arm/vp8.h
++++ b/libavcodec/arm/vp8.h
+@@ -25,7 +25,9 @@
+ #include "libavcodec/vp56.h"
+ #include "libavcodec/vp8.h"
+ 
+-#if HAVE_ARMV6_EXTERNAL
++/* ARMv6 code: reads the bitstream with ldrh at odd addresses (see
++ * libavutil/arm/cpu.c on alignment). */
++#if HAVE_ARMV6_EXTERNAL && !defined(__riscos__) && !defined(FF_STRICT_ALIGN)
+ #define vp8_decode_block_coeffs_internal ff_decode_block_coeffs_armv6
+ int ff_decode_block_coeffs_armv6(VP56RangeCoder *rc, int16_t block[16],
+                                  uint8_t probs[8][3][NUM_DCT_TOKENS-1],
+diff --git a/libavutil/arm/cpu.c b/libavutil/arm/cpu.c
+index c84a655..f5ab093 100644
+--- a/libavutil/arm/cpu.c
++++ b/libavutil/arm/cpu.c
+@@ -31,6 +31,18 @@
+      CORE_FLAG(VFPV3)   |                       \
+      CORE_FLAG(NEON))
+ 
++/* RISC OS runs with alignment checking on: an unaligned ldr/str faults
++ * ("abort on data transfer"). The ARMv6 media routines load and store 32-bit
++ * words at byte addresses, which ARMv6+ only allows with checking off, so
++ * they are never selected there; the NEON code is made alignment-safe when
++ * it is built, and everything else has a C version. FF_STRICT_ALIGN does the
++ * same on Linux, for testing under an emulator that traps like RISC OS. */
++#if defined(__riscos__) || defined(FF_STRICT_ALIGN)
++#define STRICT_ALIGN_OFF (AV_CPU_FLAG_ARMV6 | AV_CPU_FLAG_ARMV6T2)
++#else
++#define STRICT_ALIGN_OFF 0
++#endif
++
+ #if defined __linux__ || defined __ANDROID__
+ 
+ #include <stdint.h>
+@@ -159,20 +171,20 @@ int ff_get_cpu_flags_arm(void)
+     if ((flags & AV_CPU_FLAG_VFP) && !(flags & (AV_CPU_FLAG_VFPV3 | AV_CPU_FLAG_NEON)))
+         flags |= AV_CPU_FLAG_VFP_VM;
+ 
+-    return flags;
++    return flags & ~STRICT_ALIGN_OFF;
+ }
+ 
+ #else
+ 
+ int ff_get_cpu_flags_arm(void)
+ {
+-    return AV_CPU_FLAG_ARMV5TE * HAVE_ARMV5TE |
++    return (AV_CPU_FLAG_ARMV5TE * HAVE_ARMV5TE |
+            AV_CPU_FLAG_ARMV6   * HAVE_ARMV6   |
+            AV_CPU_FLAG_ARMV6T2 * HAVE_ARMV6T2 |
+            AV_CPU_FLAG_VFP     * HAVE_VFP     |
+            AV_CPU_FLAG_VFPV3   * HAVE_VFPV3   |
+            AV_CPU_FLAG_NEON    * HAVE_NEON    |
+-           AV_CPU_FLAG_SETEND  * !(HAVE_NEON | HAVE_VFPV3);
++           AV_CPU_FLAG_SETEND  * !(HAVE_NEON | HAVE_VFPV3)) & ~STRICT_ALIGN_OFF;
+ }
+ 
+ #endif

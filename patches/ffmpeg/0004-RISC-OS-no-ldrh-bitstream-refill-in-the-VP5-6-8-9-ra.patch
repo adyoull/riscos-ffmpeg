@@ -1,0 +1,27 @@
+From 05ff439bc0e803d908fef3d50d1f92701ec3eee6 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 09:01:30 +0100
+Subject: [PATCH 4/4] RISC OS: no ldrh bitstream refill in the VP5/6/8/9 range
+ coder (alignment)
+
+---
+ libavcodec/arm/vp56_arith.h | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/libavcodec/arm/vp56_arith.h b/libavcodec/arm/vp56_arith.h
+index feb1247..032d8fb 100644
+--- a/libavcodec/arm/vp56_arith.h
++++ b/libavcodec/arm/vp56_arith.h
+@@ -37,7 +37,11 @@
+ #   define U(x)
+ #endif
+ 
+-#if HAVE_ARMV6_INLINE
++/* The refill below reads the bitstream 16 bits at a time with ldrh from an
++ * address that can be odd: that faults on RISC OS, which runs with alignment
++ * checking on (FF_STRICT_ALIGN selects the same for the qemu tests). The C
++ * version reads bytes. */
++#if HAVE_ARMV6_INLINE && !defined(__riscos__) && !defined(FF_STRICT_ALIGN)
+ 
+ #define vp56_rac_get_prob vp56_rac_get_prob_armv6
+ static inline int vp56_rac_get_prob_armv6(VP56RangeCoder *c, int pr)

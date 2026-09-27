@@ -1,0 +1,11 @@
+/dl
+/devkit
+/src/
+/stage/
+/src-linuxarm/
+/stage-linuxarm/
+/dist/
+/tests/qemu/samples/
+/tests/qemu/out/
+/tools/elf2aif/elf2aif
+*START-HERE*.md

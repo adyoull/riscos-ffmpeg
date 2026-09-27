@@ -1,0 +1,25 @@
+From fa0d5ffdfc47ddf6dc55c985986fb53b3fdc2490 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 09:45:15 +0100
+Subject: [PATCH] swscale arm: leave out rgbx_to_nv12_neon (crashes)
+
+---
+ libswscale/arm/swscale_unscaled.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/libswscale/arm/swscale_unscaled.c b/libswscale/arm/swscale_unscaled.c
+index 910610b..0fe252e 100644
+--- a/libswscale/arm/swscale_unscaled.c
++++ b/libswscale/arm/swscale_unscaled.c
+@@ -160,7 +160,10 @@ DECLARE_FF_NVX_TO_ALL_RGBX_FUNCS(nv21)
+ 
+ static void get_unscaled_swscale_neon(SwsContext *c) {
+     int accurate_rnd = c->flags & SWS_ACCURATE_RND;
+-    if (c->srcFormat == AV_PIX_FMT_RGBA
++    /* RISC OS build: rgbx_to_nv12 is left out. It crashes (reads past the
++     * source) in qemu even unmodified, for 640x360 RGBA -> NV12; the C
++     * converter is used instead. */
++    if (0 && c->srcFormat == AV_PIX_FMT_RGBA
+             && c->dstFormat == AV_PIX_FMT_NV12
+             && (c->srcW >= 16)) {
+         c->convert_unscaled = accurate_rnd ? rgbx_to_nv12_neon_32_wrapper

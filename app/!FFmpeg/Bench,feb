@@ -1,0 +1,32 @@
+| Bench: how fast is this FFmpeg on this machine?
+| Double-click it. It makes a 10 second 1280x720 H.264 test clip in
+| <Wimp$ScrapDir>.FFbench (about a minute on a Pi 4), then times:
+|   1. H.264 decoding with the NEON code         (normal use)
+|   2. H.264 decoding with plain C (-cpuflags 0) (what NEON saves)
+|   3. H.264 decode + YUV to RGB, as ffplay does it
+|   4. AAC decoding, and 5. MP3 encoding with LAME
+| Each prints "bench: ... rtime=N.NNNs" (wall-clock seconds; smaller is
+| better). The clip is 250 frames, so fps = 250 / rtime.
+| A copy of everything goes to <Wimp$ScrapDir>.FFbench.Log
+If "<FFmpeg$Dir>"="" Then Set FFmpeg$Dir <Obey$Dir>
+Run <FFmpeg$Dir>.!Boot
+CDir <Wimp$ScrapDir>.FFbench
+| "|<" keeps <Wimp$ScrapDir> unexpanded here; UnixLib expands it when the
+| log is opened.
+Set FFREPORT file=/|<Wimp$ScrapDir>/FFbench/Log:level=32
+Echo Making the test clip (x264, veryfast) ...
+ffmpeg -hide_banner -nostdin -y -f lavfi -i testsrc2=size=1280x720:rate=25:duration=10 -f lavfi -i sine=frequency=440:sample_rate=48000:duration=10 -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -shortest /<Wimp$ScrapDir>/FFbench/clip.mp4
+Echo
+Echo 1. H.264 720p decode, NEON:
+ffmpeg -hide_banner -nostdin -benchmark -i /<Wimp$ScrapDir>/FFbench/clip.mp4 -map 0:v -f null -
+Echo 2. H.264 720p decode, plain C:
+ffmpeg -hide_banner -nostdin -benchmark -cpuflags 0 -i /<Wimp$ScrapDir>/FFbench/clip.mp4 -map 0:v -f null -
+Echo 3. H.264 720p decode + YUV to RGBA (ffplay's path):
+ffmpeg -hide_banner -nostdin -benchmark -i /<Wimp$ScrapDir>/FFbench/clip.mp4 -map 0:v -vf format=rgba -f null -
+Echo 4. AAC decode:
+ffmpeg -hide_banner -nostdin -benchmark -i /<Wimp$ScrapDir>/FFbench/clip.mp4 -map 0:a -f null -
+Echo 5. MP3 encode (LAME, 10 s):
+ffmpeg -hide_banner -nostdin -benchmark -i /<Wimp$ScrapDir>/FFbench/clip.mp4 -map 0:a -c:a libmp3lame -f null -
+Unset FFREPORT
+Echo
+Echo Done. The log is in <Wimp$ScrapDir>.FFbench

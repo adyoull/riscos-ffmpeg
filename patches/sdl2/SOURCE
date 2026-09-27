@@ -1,0 +1,4 @@
+SDL 2.26.0 RISC OS overlay, copied from riscos-mesa patches/sdl2
+(the authoritative copy) at commit 4f859d5 on 2026-09-27.
+Don't edit these files here: change them in riscos-mesa and copy them
+again with riscos-mesa/tools/sdl-overlay-export.sh.

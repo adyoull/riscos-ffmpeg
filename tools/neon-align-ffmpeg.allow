@@ -1,0 +1,27 @@
+# FFmpeg 5.1.10: whole-register vld2/3/4 with wide elements, checked by hand.
+# sbcdsp_neon.S: r1 is the int16 PCM input (2-byte aligned).
+sbcdsp_neon.S:564
+sbcdsp_neon.S:565
+sbcdsp_neon.S:681
+sbcdsp_neon.S:682
+# rgb2yuv_neon_*.S init: src is the int32 input_rgb2yuv_table in SwsContext.
+rgb2yuv_neon_16.S:39
+rgb2yuv_neon_32.S:52
+# hevcdsp_qpel_neon.S put_qpel_uw_pixels(_m) macros: after patch 0007 every
+# caller passes whole registers (d0, q0-q1, ...), so element size -> .8.
+whole hevcdsp_qpel_neon.S:952
+whole hevcdsp_qpel_neon.S:953
+whole hevcdsp_qpel_neon.S:954
+whole hevcdsp_qpel_neon.S:955
+whole hevcdsp_qpel_neon.S:956
+whole hevcdsp_qpel_neon.S:957
+whole hevcdsp_qpel_neon.S:958
+whole hevcdsp_qpel_neon.S:959
+whole hevcdsp_qpel_neon.S:971
+whole hevcdsp_qpel_neon.S:972
+whole hevcdsp_qpel_neon.S:975
+whole hevcdsp_qpel_neon.S:976
+whole hevcdsp_qpel_neon.S:979
+whole hevcdsp_qpel_neon.S:980
+whole hevcdsp_qpel_neon.S:983
+whole hevcdsp_qpel_neon.S:984

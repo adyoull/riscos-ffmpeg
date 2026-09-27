@@ -1,0 +1,28 @@
+From f495f604008dedde1e26d0e85e423bda60955c9d Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 08:16:51 +0100
+Subject: [PATCH 2/3] RISC OS: heap dynamic area "FFmpeg Heap", 512 MB
+
+---
+ fftools/cmdutils.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/fftools/cmdutils.c b/fftools/cmdutils.c
+index 1c75cfa..f05d955 100644
+--- a/fftools/cmdutils.c
++++ b/fftools/cmdutils.c
+@@ -55,6 +55,14 @@
+ #include "compat/w32dlfcn.h"
+ #endif
+ 
++#ifdef __riscos__
++/* UnixLib puts the heap in a dynamic area with a 32 MB limit unless told
++ * otherwise; a few HD frames plus x264's lookahead need far more. The
++ * size is address space reserved, not memory taken. */
++const char *const __dynamic_da_name = "FFmpeg Heap";
++int __dynamic_da_max_size = 512 << 20;
++#endif
++
+ AVDictionary *sws_dict;
+ AVDictionary *swr_opts;
+ AVDictionary *format_opts, *codec_opts;

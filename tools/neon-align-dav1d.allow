@@ -1,0 +1,41 @@
+# dav1d 1.5.4: loads/stores whose register list is a macro argument, on data
+# aligned to its 16-bit elements (so they can't fault), checked by hand.
+# cdef_tmpl.S: the uint16_t tmp buffer.
+cdef_tmpl.S:64
+cdef_tmpl.S:65
+cdef_tmpl.S:69
+cdef_tmpl.S:71
+cdef_tmpl.S:73
+cdef_tmpl.S:74
+# filmgrain.S: the int16_t grain_lut.
+filmgrain.S:144
+filmgrain.S:145
+filmgrain.S:146
+filmgrain.S:184
+filmgrain.S:185
+# mc16.S: 16-bit pixels (high bit depth only).
+mc16.S:1285
+mc16.S:1286
+mc16.S:1288
+mc16.S:1289
+mc16.S:1292
+mc16.S:1295
+mc16.S:1298
+mc16.S:1302
+mc16.S:1304
+mc16.S:1307
+mc16.S:1397
+mc16.S:1398
+mc16.S:1400
+mc16.S:1401
+mc16.S:1404
+mc16.S:1405
+mc16.S:1406
+mc16.S:1407
+# msac.S vld1_n/vst1_n: the uint16_t CDF arrays.
+msac.S:60
+msac.S:62
+msac.S:64
+msac.S:80
+msac.S:82
+msac.S:84
