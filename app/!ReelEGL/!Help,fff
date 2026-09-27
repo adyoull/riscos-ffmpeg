@@ -1,4 +1,4 @@
-!ReelEGL - Reel, drawing through EGL (an example)       0.1.10
+!ReelEGL - Reel, drawing through EGL (an example)       0.1.11
 ===================================================================
 
 ReelEGL is the Reel video player built a second way: the picture goes
@@ -17,11 +17,15 @@ How it draws
   controls are ordinary Wimp icons. Each frame is converted by swscale
   straight into the surface (EGL_KHR_lock_surface) and eglSwapBuffers
   shows it; redraws plot it with eglPlotSurfaceRISCOS.
-- Full screen uses EGL's whole-screen surface. With Direct ticked (the
-  window menu; the default) frames go straight into screen memory: no
-  plot at all, the fastest way, but you may see tearing. Without Direct,
-  EGL plots a sprite after waiting for the vertical sync.
-  *Set ReelEGL$NoDirect 1 starts with Direct off.
+- Full screen uses EGL's whole-screen surface. With Vsync (full screen)
+  ticked (the window menu; the default) EGL plots each picture after
+  waiting for the screen's refresh (eglSwapInterval 1): no tearing.
+  Untick it and frames go straight into screen memory
+  (EGL_SINGLE_BUFFER): no plot at all, the fastest way, but you may see
+  tearing. *Set ReelEGL$NoVsync 1 starts with it off.
+- The mini player (M) is a second window; its picture is a work area
+  surface of its own, made when it opens (only one surface exists at a
+  time, so switching makes the other window's surface again).
 
 Needs
 -----

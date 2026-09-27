@@ -30,7 +30,7 @@ $CC -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE/.. -c "$HERE/mesa_egl
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/mesa_eglimage_test" \
   "$O/mesa_eglimage_test.o" "$O/ffegl.o" "$O/reelcore.o" "$O/fake_sdl.o" "$O/riscos_shim.o" \
   "$O/libEGL.a" "$O/libOSMesa.a" "$DEVKIT/lib/libz.a" \
-  -L$S/lib -lavformat -lavcodec -lswscale -lswresample -lavutil -ldav1d -lx264 -lmp3lame \
+  -L$S/lib -lavfilter -lpostproc -lavformat -lavcodec -lswscale -lswresample -lavutil -ldav1d -lx264 -lmp3lame \
   -lopus -lvorbisenc -lvorbis -logg /usr/arm-linux-gnueabihf/lib/libstdc++.so.6 -lm -lpthread \
   2>"$O/link.log" || { cat "$O/link.log"; exit 1; }
 

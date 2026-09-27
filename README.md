@@ -34,8 +34,11 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
 - **!Reel:** a video player for the desktop (`player/reel.c`, its own zip),
   built on reelcore, the player core (no EGL), with **!ReelEGL**, the same
   player drawing through riscos-mesa's EGL with ffegl.
-  - A Wimp window with Play/Pause, skip, a position bar, time and full
-    screen; drop a file on the icon or double-click it in the Filer.
+  - A Wimp window with Play/Pause, skip, a position bar, time, volume and
+    full screen; drop a file on the icon or double-click it in the Filer.
+  - A mini player above the icon bar (optionally kept on top), playlists,
+    speed 0.5x–2x, picture sizes, sound tracks, A-B repeat, carry on
+    where you stopped, vsync full screen, fast decoding.
   - Sound straight to SharedSoundBuffer, which is also the clock the
     pictures follow; late frames are skipped (and, when far behind,
     non-reference frames aren't decoded).

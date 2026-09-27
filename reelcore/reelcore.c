@@ -11,10 +11,14 @@
 #include <string.h>
 
 #include "libavformat/avformat.h"
+#include "libavfilter/avfilter.h"
+#include "libavfilter/buffersink.h"
+#include "libavfilter/buffersrc.h"
 #include "libavcodec/avcodec.h"
 #include "libavutil/avstring.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/imgutils.h"
+#include "libavutil/pixdesc.h"
 #include "libavutil/time.h"
 #include "libswresample/swresample.h"
 #include "libswscale/swscale.h"
@@ -93,7 +97,13 @@ struct ReelCore {
     double latency;                    /* the device's own buffer, seconds */
     uint8_t *abuf, *mixbuf;
     int abuf_size;
-    int volume;                        /* 0..SDL_MIX_MAXVOLUME */
+    int volume;                        /* 0..SDL_MIX_MAXVOLUME (mixed in: SDL) */
+    double vol;                        /* 0..1, as set */
+    double speed;                      /* playback speed, 0.5..2 (1 = normal) */
+    AVFilterGraph *tempo;              /* atempo: the sound at speed, same pitch */
+    AVFilterContext *tempo_in, *tempo_out;
+    AVFrame *tempo_frame;
+    int fast;                          /* fast decoding: no deblocking filter */
     double ahead;                      /* seconds of sound to keep queued */
 #ifdef USE_SSB
     int ssb;                           /* 1: SharedSoundBuffer, not SDL (dev is then 1) */
@@ -162,6 +172,13 @@ static int ssb_have(const char *swi)
     return _kernel_swi(OS_SWINumberFromString, &r, &r) == NULL;
 }
 
+/* SharedSoundBuffer_Volume: left and right, 16 bits each (0xFFFF full) */
+static int ssb_volume_word(const ReelCore *v)
+{
+    unsigned l = (unsigned)(av_clipd(v->vol, 0, 1) * 0xFFFF + 0.5);
+    return (int)(l | l << 16);
+}
+
 /* Opens the stream, paused; 0 or an error message. */
 static const char *ssb_start(ReelCore *v)
 {
@@ -185,7 +202,7 @@ static const char *ssb_start(ReelCore *v)
     /* room for far more than we keep queued, so AddBlock doesn't refuse */
     ssb_swi(StreamManager_SetBuffer, v->sm_stream, v->rate * 4 * 2 + SSB_BLOCK_BYTES * 4, 0, NULL);
     ssb_swi(SharedSoundBuffer_SampleRate, v->ssb_handle, v->rate * 1024, 0, NULL);
-    ssb_swi(SharedSoundBuffer_Volume, v->ssb_handle, (int)0xFFFFFFFF, 0, NULL);
+    ssb_swi(SharedSoundBuffer_Volume, v->ssb_handle, ssb_volume_word(v), 0, NULL);
     ssb_swi(SharedSoundBuffer_Pause, v->ssb_handle, 0, 0, NULL);     /* R1 bit 0 clear: paused */
     v->ssb_started = 0;
     v->pend_len = 0;
@@ -417,6 +434,8 @@ static double queued_audio(const ReelCore *v)
    otherwise stay on the first frame. */
 #define STALL_SECONDS 1.0
 
+static void timer_set(ReelCore *v, double pts);
+
 static void audio_stalled(ReelCore *v, double c)
 {
     {
@@ -428,7 +447,7 @@ static void audio_stalled(ReelCore *v, double c)
     aud_clear(v);
     aud_pause(v, 1);
     v->audio_clock = 0;
-    v->t0 = av_gettime_relative() - (int64_t)(c * 1e6);
+    timer_set(v, c);
 }
 
 static double clock_now(ReelCore *v)
@@ -439,13 +458,15 @@ static double clock_now(ReelCore *v)
         double q = queued_audio(v);
         if (v->eof_audio && q <= 0) {
             /* the sound has finished: carry on with the timer */
-            double c = v->audio_end - v->latency;
+            double c = v->audio_end - v->latency * v->speed;
             v->audio_clock = 0;
-            v->t0 = av_gettime_relative() - (int64_t)(c * 1e6);
+            timer_set(v, c);
             return c;
         }
         {
-            double c = v->audio_end - q - v->latency;
+            /* q and the latency are real time; at speed s they hold s times
+               as much of the file */
+            double c = v->audio_end - (q + v->latency) * v->speed;
             int64_t now = av_gettime_relative();
             if (c > v->stall_clock + 0.001 || q <= 0 || !v->stall_since) {
                 v->stall_clock = c;
@@ -457,13 +478,13 @@ static double clock_now(ReelCore *v)
             return c;
         }
     }
-    return (av_gettime_relative() - v->t0) / 1e6;
+    return (av_gettime_relative() - v->t0) / 1e6 * v->speed;
 }
 
 /* Make the timer read pts now. */
 static void timer_set(ReelCore *v, double pts)
 {
-    v->t0 = av_gettime_relative() - (int64_t)(pts * 1e6);
+    v->t0 = av_gettime_relative() - (int64_t)(pts / v->speed * 1e6);
 }
 
 /* ---------------------------------------------------------------- open */
@@ -520,6 +541,8 @@ ReelCore *reelcore_open(const char *url, int flags)
     v->seek_target = v->aseek_target = -1;
     v->need_first = 1;
     v->volume = SDL_MIX_MAXVOLUME;
+    v->vol = 1;
+    v->speed = 1;
     v->cs_key[0] = -1;
     if ((ret = avformat_open_input(&v->fmt, url, NULL, NULL)) < 0 ||
         (ret = avformat_find_stream_info(v->fmt, NULL)) < 0) {
@@ -587,6 +610,8 @@ static void clear_queue(ReelCore *v)
 }
 
 static void vpk_clear(ReelCore *v);
+static void tempo_close(ReelCore *v);
+static int tempo_open(ReelCore *v);
 
 void reelcore_close(ReelCore *v)
 {
@@ -604,6 +629,7 @@ void reelcore_close(ReelCore *v)
     avcodec_free_context(&v->adec);
     avformat_close_input(&v->fmt);
     swr_free(&v->swr);
+    tempo_close(v);
     sws_freeContext(v->sws);
     av_free(v->abuf);
     av_free(v->mixbuf);
@@ -625,8 +651,8 @@ int reelcore_debug(const ReelCore *v, char *buf, int size)
     double q = v->dev ? aud_queued(w) / (double)(v->bytes_per_sec ? v->bytes_per_sec : 1) : 0;
     /* the clock as clock_now() would give it, without its stall check */
     double c = v->paused ? v->pause_pos
-             : v->audio_clock && v->audio_end >= 0 ? v->audio_end - q - v->latency
-             : (av_gettime_relative() - v->t0) / 1e6;
+             : v->audio_clock && v->audio_end >= 0 ? v->audio_end - (q + v->latency) * v->speed
+             : (av_gettime_relative() - v->t0) / 1e6 * v->speed;
     int n = snprintf(buf, size, "pos %.2f clock %.2f%s, %d pictures and %d packets (%u KB) waiting, "
                      "%u late%s, %u skip spells",
                      reelcore_position(v), c,
@@ -657,8 +683,8 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     st->sound_queued = v->dev ? aud_queued(w) / (double)(v->bytes_per_sec ? v->bytes_per_sec : 1) : 0;
     st->clock_source = v->paused ? 2 : v->audio_clock ? 1 : 0;
     st->clock = v->paused ? v->pause_pos
-              : v->audio_clock && v->audio_end >= 0 ? v->audio_end - st->sound_queued - v->latency
-              : (av_gettime_relative() - v->t0) / 1e6;
+              : v->audio_clock && v->audio_end >= 0 ? v->audio_end - (st->sound_queued + v->latency) * v->speed
+              : (av_gettime_relative() - v->t0) / 1e6 * v->speed;
     st->fps = v->fps;
     st->decoded = v->n_decoded;
     st->shown = v->n_shown;
@@ -683,6 +709,10 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     }
 #endif
     st->bytes_read = v->fmt && v->fmt->pb ? v->fmt->pb->bytes_read : 0;
+    st->speed = v->speed;
+    st->fast = v->fast;
+    st->audio_track = reelcore_audio_track(v);
+    st->audio_tracks = reelcore_audio_tracks(v);
 }
 
 #define ADD(...) do { if (n < size) n += snprintf(buf + n, size - n, __VA_ARGS__); } while (0)
@@ -871,8 +901,19 @@ int reelcore_paused(const ReelCore *v)       { return v->paused; }
 
 void reelcore_set_volume(ReelCore *v, double volume)
 {
-    v->volume = (int)(av_clipd(volume, 0, 1) * SDL_MIX_MAXVOLUME + 0.5);
+    v->vol = av_clipd(volume, 0, 1);
+#ifdef USE_SSB
+    if (v->ssb && v->ssb_handle) {
+        /* SharedSoundBuffer's own volume: heard at once, not after the
+           0.5 s already queued */
+        ssb_swi(SharedSoundBuffer_Volume, v->ssb_handle, ssb_volume_word(v), 0, NULL);
+        return;
+    }
+#endif
+    v->volume = (int)(v->vol * SDL_MIX_MAXVOLUME + 0.5);
 }
+
+double reelcore_volume(const ReelCore *v) { return v->vol; }
 
 /* ---------------------------------------------------------------- decode */
 
@@ -905,6 +946,87 @@ static void got_video(ReelCore *v, AVFrame *f)
         v->qn++;
 }
 
+/* Gives the device sound (16-bit stereo at v->rate), at the volume set
+   when SDL is the output (SharedSoundBuffer has its own volume). */
+static void queue_sound(ReelCore *v, const uint8_t *data, int bytes)
+{
+    if (v->volume < SDL_MIX_MAXVOLUME) {
+        uint8_t *m = av_mallocz(bytes);
+        if (m) {
+            SDL_MixAudioFormat(m, data, AUDIO_S16SYS, bytes, v->volume);
+            aud_queue(v, m, bytes);
+            av_free(m);
+        }
+    } else
+        aud_queue(v, data, bytes);
+}
+
+/* ---- speed: the sound through atempo (same pitch) ---- */
+
+static void tempo_close(ReelCore *v)
+{
+    avfilter_graph_free(&v->tempo);
+    v->tempo_in = v->tempo_out = NULL;
+    av_frame_free(&v->tempo_frame);
+}
+
+/* A graph abuffer -> atempo=speed -> abuffersink for 16-bit stereo at
+   v->rate; none at speed 1. */
+static int tempo_open(ReelCore *v)
+{
+    char args[160];
+    AVFilterContext *t = NULL;
+    tempo_close(v);
+    if (v->speed == 1 || !v->rate)
+        return 0;
+    if (!(v->tempo = avfilter_graph_alloc()) || !(v->tempo_frame = av_frame_alloc()))
+        goto fail;
+    snprintf(args, sizeof(args), "sample_rate=%d:sample_fmt=s16:channel_layout=stereo:time_base=1/%d",
+             v->rate, v->rate);
+    if (avfilter_graph_create_filter(&v->tempo_in, avfilter_get_by_name("abuffer"), "in", args, NULL, v->tempo) < 0)
+        goto fail;
+    snprintf(args, sizeof(args), "tempo=%.4f", v->speed);
+    if (avfilter_graph_create_filter(&t, avfilter_get_by_name("atempo"), "tempo", args, NULL, v->tempo) < 0 ||
+        avfilter_graph_create_filter(&v->tempo_out, avfilter_get_by_name("abuffersink"), "out", NULL, NULL, v->tempo) < 0 ||
+        avfilter_link(v->tempo_in, 0, t, 0) < 0 || avfilter_link(t, 0, v->tempo_out, 0) < 0 ||
+        avfilter_graph_config(v->tempo, NULL) < 0)
+        goto fail;
+    return 0;
+fail:
+    av_log(NULL, AV_LOG_WARNING, "reelcore: can't change the sound's speed; it plays at normal speed\n");
+    tempo_close(v);
+    return -1;
+}
+
+/* Takes what atempo has ready: each output sample is v->speed of the file. */
+static void tempo_drain(ReelCore *v)
+{
+    AVFrame *o = v->tempo_frame;
+    while (av_buffersink_get_frame(v->tempo_out, o) >= 0) {
+        queue_sound(v, o->data[0], o->nb_samples * 4);
+        v->audio_end += o->nb_samples / (double)v->rate * v->speed;
+        av_frame_unref(o);
+    }
+}
+
+static void tempo_feed(ReelCore *v, const uint8_t *data, int n)
+{
+    AVFrame *f = av_frame_alloc();
+    AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+    if (!f)
+        return;
+    f->nb_samples = n;
+    f->format = AV_SAMPLE_FMT_S16;
+    f->sample_rate = v->rate;
+    av_channel_layout_copy(&f->ch_layout, &stereo);
+    if (av_frame_get_buffer(f, 0) >= 0) {
+        memcpy(f->data[0], data, (size_t)n * 4);
+        if (av_buffersrc_add_frame(v->tempo_in, f) >= 0)
+            tempo_drain(v);
+    }
+    av_frame_free(&f);
+}
+
 static void got_audio(ReelCore *v, AVFrame *f)
 {
     int out_max = swr_get_out_samples(v->swr, f->nb_samples);
@@ -927,16 +1049,12 @@ static void got_audio(ReelCore *v, AVFrame *f)
     bytes = n * 4;
     if (v->audio_end < 0)
         v->audio_end = pts;
-    if (v->volume < SDL_MIX_MAXVOLUME) {
-        uint8_t *m = av_mallocz(bytes);
-        if (m) {
-            SDL_MixAudioFormat(m, v->abuf, AUDIO_S16SYS, bytes, v->volume);
-            aud_queue(v, m, bytes);
-            av_free(m);
-        }
-    } else
-        aud_queue(v, v->abuf, bytes);
-    v->audio_end += n / (double)v->rate;
+    if (v->tempo)
+        tempo_feed(v, v->abuf, n);
+    else {
+        queue_sound(v, v->abuf, bytes);
+        v->audio_end += n / (double)v->rate;
+    }
 }
 
 /* ---- video packets waiting to be decoded ---- */
@@ -1006,7 +1124,15 @@ static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int v
     for (;;) {
         ret = avcodec_receive_frame(dec, v->frame);
         if (ret == AVERROR_EOF) {
-            if (video) v->eof_video = 1; else { v->eof_audio = 1; if (v->dev && !v->stalled) aud_flush(v); }
+            if (video)
+                v->eof_video = 1;
+            else {
+                v->eof_audio = 1;
+                if (v->tempo && av_buffersrc_add_frame(v->tempo_in, NULL) >= 0)
+                    tempo_drain(v);       /* what atempo still holds */
+                if (v->dev && !v->stalled)
+                    aud_flush(v);
+            }
             return;
         }
         if (ret < 0)
@@ -1171,7 +1297,7 @@ double reelcore_idle_time(ReelCore *v)
         return 0;
     if (!v->qn)
         return v->eof_demux ? IDLE_MAX / 4 : 0;   /* the end: sound draining */
-    due = v->qpts[0] - clock_now(v);
+    due = (v->qpts[0] - clock_now(v)) / v->speed;   /* real seconds */
     if (due <= 0)
         return 0;
     return due > IDLE_MAX ? IDLE_MAX : due;
@@ -1213,6 +1339,8 @@ int reelcore_seek(ReelCore *v, double seconds)
         aud_clear(v);
     if (v->swr)
         swr_init(v->swr);                 /* drop what it buffered */
+    if (v->tempo)
+        tempo_open(v);                    /* and atempo */
     clear_queue(v);
     vpk_clear(v);
     v->vflushed = 0;
@@ -1227,19 +1355,49 @@ int reelcore_seek(ReelCore *v, double seconds)
 
 /* ---------------------------------------------------------------- draw */
 
-/* Converts the current frame into w x h pixels at dst (fmt), with the
-   frame's colour space and range. */
-static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPixelFormat fmt)
+/* Converts the part cw x ch at cx, cy of the current frame into w x h
+   pixels at dst (fmt), with the frame's colour space and range. */
+static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPixelFormat fmt,
+                   int cx, int cy, int cw, int ch)
 {
     AVFrame *f = v->cur;
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(f->format);
+    const uint8_t *src[4] = { f->data[0], f->data[1], f->data[2], f->data[3] };
     uint8_t *d[4] = { dst };
     int ds[4] = { pitch };
     int cs = f->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 : SWS_CS_ITU601;
     int full = f->color_range == AVCOL_RANGE_JPEG;
-    int key[8] = { cs, full, f->width, f->height, f->format, w, h, fmt };
+    int key[8];
 
-    v->sws = sws_getCachedContext(v->sws, f->width, f->height, f->format, w, h, fmt,
-                                  (w == f->width && h == f->height) ? SWS_POINT : SWS_FAST_BILINEAR,
+    if (cx || cy || cw != f->width || ch != f->height) {
+        if (!desc || (desc->flags & (AV_PIX_FMT_FLAG_BITSTREAM | AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_HWACCEL))) {
+            cx = cy = 0;                          /* can't crop this format: all of it */
+            cw = f->width;
+            ch = f->height;
+        } else {
+            /* the crop starts on a whole chroma sample */
+            int mw = (1 << desc->log2_chroma_w) - 1, mh = (1 << desc->log2_chroma_h) - 1;
+            int done[4] = { 0 };
+            cx &= ~mw;
+            cy &= ~mh;
+            cw = FFMAX(cw & ~mw, mw + 1);
+            ch = FFMAX(ch & ~mh, mh + 1);
+            for (int i = 0; i < desc->nb_components; i++) {
+                const AVComponentDescriptor *c = &desc->comp[i];
+                int chroma = (i == 1 || i == 2) && !(desc->flags & AV_PIX_FMT_FLAG_RGB);
+                if (done[c->plane])
+                    continue;
+                done[c->plane] = 1;
+                src[c->plane] = f->data[c->plane] +
+                                (cy >> (chroma ? desc->log2_chroma_h : 0)) * f->linesize[c->plane] +
+                                (cx >> (chroma ? desc->log2_chroma_w : 0)) * c->step;
+            }
+        }
+    }
+    key[0] = cs; key[1] = full; key[2] = cw; key[3] = ch; key[4] = f->format;
+    key[5] = w; key[6] = h; key[7] = fmt;
+    v->sws = sws_getCachedContext(v->sws, cw, ch, f->format, w, h, fmt,
+                                  (w == cw && h == ch) ? SWS_POINT : SWS_FAST_BILINEAR,
                                   NULL, NULL, NULL);
     if (!v->sws)
         return AVERROR(ENOMEM);
@@ -1252,7 +1410,7 @@ static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPi
     /* (swscale's arm NEON converters used to return 0 lines; only < 0 is an error) */
     {
         int64_t t0 = av_gettime_relative();
-        int ret = sws_scale(v->sws, (const uint8_t * const *)f->data, f->linesize, 0, f->height, d, ds);
+        int ret = sws_scale(v->sws, src, f->linesize, 0, ch, d, ds);
         v->t_convert += av_gettime_relative() - t0;
         v->conv_w = w;
         v->conv_h = h;
@@ -1269,13 +1427,30 @@ static void fill_black(uint8_t *p, int pitch, int x, int y, int w, int h)
 int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int bgr, int flags)
 {
     uint8_t *p = pixels;
-    int x = 0, y = 0, rw = w, rh = h;
+    AVFrame *f = v->cur;
+    int x = 0, y = 0, rw = w, rh = h, cx = 0, cy = 0, cw, ch;
 
-    if (!v->cur)
+    if (!f)
         return AVERROR(EAGAIN);
     if (w < 1 || h < 1)
         return AVERROR(EINVAL);
-    if (!(flags & REELCORE_STRETCH)) {
+    cw = f->width;
+    ch = f->height;
+    if (flags & (REELCORE_FILL | REELCORE_ORIGINAL)) {
+        /* the whole picture at scale s (display pixels, aspect applied):
+           fill = cover the rectangle, original = 1:1; what's outside the
+           rectangle is cropped, what's left over gets bars */
+        double s = flags & REELCORE_FILL ? FFMAX((double)w / v->w, (double)h / v->h) : 1.0;
+        double dw = v->w * s, dh = v->h * s;
+        rw = FFMAX(dw < w ? (int)(dw + 0.5) : w, 1);
+        rh = FFMAX(dh < h ? (int)(dh + 0.5) : h, 1);
+        cw = FFMIN(FFMAX((int)(f->width * rw / dw + 0.5), 1), f->width);
+        ch = FFMIN(FFMAX((int)(f->height * rh / dh + 0.5), 1), f->height);
+        cx = (f->width - cw) / 2;
+        cy = (f->height - ch) / 2;
+        x = (w - rw) / 2;
+        y = (h - rh) / 2;
+    } else if (!(flags & REELCORE_STRETCH)) {
         rh = h;
         rw = (int)av_rescale(h, v->w, v->h);
         if (rw > w) {
@@ -1286,16 +1461,129 @@ int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int
         rh = FFMAX(rh, 1);
         x = (w - rw) / 2;
         y = (h - rh) / 2;
-        if (!(flags & REELCORE_NO_BORDERS)) {
-            fill_black(p, pitch, 0, 0, w, y);
-            fill_black(p, pitch, 0, y + rh, w, h - y - rh);
-            fill_black(p, pitch, 0, y, x, rh);
-            fill_black(p, pitch, x + rw, y, w - x - rw, rh);
-        }
+    }
+    if ((x || y || rw < w || rh < h) && !(flags & REELCORE_NO_BORDERS)) {
+        fill_black(p, pitch, 0, 0, w, y);
+        fill_black(p, pitch, 0, y + rh, w, h - y - rh);
+        fill_black(p, pitch, 0, y, x, rh);
+        fill_black(p, pitch, x + rw, y, w - x - rw, rh);
     }
     /* RGBA/BGRA: the fourth byte isn't shown, and these get swscale's NEON */
     return convert(v, p + y * pitch + x * 4, pitch, rw, rh,
-                   bgr ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA);
+                   bgr ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA, cx, cy, cw, ch);
+}
+
+/* ---------------------------------------------------------------- options */
+
+int reelcore_set_speed(ReelCore *v, double speed)
+{
+    double pos;
+    speed = av_clipd(speed, 0.5, 2.0);
+    if (speed == v->speed)
+        return 0;
+    pos = v->paused ? v->pause_pos : v->cur ? clock_now(v) : 0;
+    v->speed = speed;
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: speed %.2fx\n", speed);
+    if (v->dev && !v->stalled && v->swr) {
+        /* the sound already queued was made at the old speed: start again
+           from the picture on screen, through a new atempo */
+        tempo_open(v);
+        return reelcore_seek(v, reelcore_position(v));
+    }
+    if (!v->paused)
+        timer_set(v, pos);
+    return 0;
+}
+
+double reelcore_speed(const ReelCore *v) { return v->speed; }
+
+void reelcore_set_fast(ReelCore *v, int on)
+{
+    v->fast = !!on;
+    v->vdec->skip_loop_filter = on ? AVDISCARD_ALL : AVDISCARD_DEFAULT;
+    if (on)
+        v->vdec->flags2 |= AV_CODEC_FLAG2_FAST;
+    else
+        v->vdec->flags2 &= ~AV_CODEC_FLAG2_FAST;
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: fast decoding %s\n", on ? "on (no deblocking)" : "off");
+}
+
+int reelcore_fast(const ReelCore *v) { return v->fast; }
+
+/* The file's i-th sound stream (0 = the first), its index, or -1 */
+static int audio_stream(const ReelCore *v, int i)
+{
+    for (unsigned s = 0; s < v->fmt->nb_streams; s++)
+        if (v->fmt->streams[s]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && i-- == 0)
+            return (int)s;
+    return -1;
+}
+
+int reelcore_audio_tracks(const ReelCore *v)
+{
+    int n = 0;
+    while (audio_stream(v, n) >= 0)
+        n++;
+    return n;
+}
+
+int reelcore_audio_track(const ReelCore *v)
+{
+    for (int i = 0, s; (s = audio_stream(v, i)) >= 0; i++)
+        if (s == v->as)
+            return i;
+    return -1;
+}
+
+int reelcore_audio_track_name(const ReelCore *v, int i, char *buf, int size)
+{
+    int s = audio_stream(v, i), n;
+    const AVStream *st;
+    const AVDictionaryEntry *lang, *title;
+    if (s < 0)
+        return snprintf(buf, size, "?");
+    st = v->fmt->streams[s];
+    lang = av_dict_get(st->metadata, "language", NULL, 0);
+    title = av_dict_get(st->metadata, "title", NULL, 0);
+    n = snprintf(buf, size, "%s, %d ch", avcodec_get_name(st->codecpar->codec_id), st->codecpar->ch_layout.nb_channels);
+    if (lang && strcmp(lang->value, "und") && n < size)
+        n += snprintf(buf + n, size - n, ", %s", lang->value);
+    if (title && n < size)
+        n += snprintf(buf + n, size - n, ", %s", title->value);
+    return n;
+}
+
+int reelcore_set_audio_track(ReelCore *v, int i)
+{
+    AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+    AVCodecContext *dec;
+    SwrContext *swr = NULL;
+    int s = audio_stream(v, i);
+    if (s < 0)
+        return AVERROR(EINVAL);
+    if (s == v->as)
+        return 0;
+    if (!v->dev)
+        return AVERROR(ENODEV);                /* no sound output to play it on */
+    if (!(dec = open_decoder(v->fmt->streams[s])))
+        return AVERROR_DECODER_NOT_FOUND;
+    if (swr_alloc_set_opts2(&swr, &stereo, AV_SAMPLE_FMT_S16, v->rate,
+                            &dec->ch_layout, dec->sample_fmt, dec->sample_rate, 0, NULL) < 0 ||
+        swr_init(swr) < 0) {
+        swr_free(&swr);
+        avcodec_free_context(&dec);
+        return AVERROR(EINVAL);
+    }
+    if (v->as >= 0)
+        v->fmt->streams[v->as]->discard = AVDISCARD_ALL;
+    v->fmt->streams[s]->discard = AVDISCARD_DEFAULT;
+    avcodec_free_context(&v->adec);
+    swr_free(&v->swr);
+    v->adec = dec;
+    v->swr = swr;
+    v->as = s;
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: sound track %d (stream %d)\n", i + 1, s);
+    return reelcore_seek(v, reelcore_position(v));   /* the new track from here */
 }
 
 int reelcore_frame_size(const ReelCore *v, int *w, int *h)

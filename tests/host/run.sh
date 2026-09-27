@@ -21,7 +21,7 @@ mkdir -p "$O" "$HERE/fake/EGL" "$HERE/fake/KHR"
 cp "$DEVKIT"/include/EGL/*.h "$HERE/fake/EGL/"
 cp "$DEVKIT"/include/KHR/*.h "$HERE/fake/KHR/"
 CC="arm-linux-gnueabihf-gcc -O1 -g -marm -mno-unaligned-access -DEGL_NO_X11 -I$HERE/fake -I$HERE"
-LIBS="-L$S/lib -lavformat -lavcodec -lswscale -lswresample -lavutil -ldav1d -lx264 -lmp3lame \
+LIBS="-L$S/lib -lavfilter -lpostproc -lavformat -lavcodec -lswscale -lswresample -lavutil -ldav1d -lx264 -lmp3lame \
   -lopus -lvorbisenc -lvorbis -logg -lm -lpthread"
 
 $CC -I$F -c "$F/libavdevice/riscos_egl.c" -o "$O/riscos_egl.o"
@@ -52,6 +52,14 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcode
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/slow_test.o" $LIBS 2>/dev/null
 echo "== slow_test (decoding slower than real time)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/slow_test" "$SAMPLES/long_h264_aac_322_184.mp4" 2>&1 | grep -v "swscaler" || bad=1
+
+# playback options: speed, fast decoding, sound tracks, picture modes
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/options_test.c" -o "$O/options_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/options_test" "$O/reelcore.o" \
+  "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/options_test.o" $LIBS -lm 2>/dev/null
+echo "== options_test (speed, fast decoding, sound tracks, picture modes)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/options_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/twoaudio_h264_aac_322_184.mp4" 2>&1 |
+  grep -v "swscaler\|reelcore: " || bad=1
 
 # sleeping between pictures (ffegl_idle_time) against polling flat out
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/idle_test.c" -o "$O/idle_test.o"

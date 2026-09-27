@@ -51,6 +51,8 @@ typedef struct ReelCore ReelCore;
 /* reelcore_draw_pixels flags (also for ffegl_draw_surface) */
 #define REELCORE_STRETCH    1   /* fill the rectangle (default: keep the shape, black bars) */
 #define REELCORE_NO_BORDERS 2   /* keep the shape but leave the bars alone */
+#define REELCORE_FILL       4   /* keep the shape and cover the rectangle (the rest is cropped) */
+#define REELCORE_ORIGINAL   8   /* one display pixel a pixel, centred (cropped or with bars) */
 
 /* Opens a file or URL. NULL on failure (the reason is logged through
    av_log; reelcore_last_error() gives it too). */
@@ -110,6 +112,9 @@ typedef struct ReelCoreStats {
     double sound_queued;              /* seconds */
     unsigned sound_added, sound_played;   /* StreamManager's counts (SharedSoundBuffer) */
     long long bytes_read;             /* from the file */
+    double speed;                     /* reelcore_set_speed */
+    int fast;                         /* reelcore_set_fast */
+    int audio_track, audio_tracks;    /* the sound track played (0 = the first; -1 none), and how many */
 } ReelCoreStats;
 void reelcore_stats(const ReelCore *v, ReelCoreStats *st);
 
@@ -142,6 +147,27 @@ int reelcore_paused(const ReelCore *v);
 int reelcore_seek(ReelCore *v, double seconds);
 /* Sound volume, 0.0 to 1.0. */
 void reelcore_set_volume(ReelCore *v, double volume);
+double reelcore_volume(const ReelCore *v);
+
+/* Playback speed, 0.5 to 2 (1 = normal). The sound keeps its pitch
+   (FFmpeg's atempo filter). Changing it restarts the sound from the picture
+   on screen (a short gap). */
+int reelcore_set_speed(ReelCore *v, double speed);
+double reelcore_speed(const ReelCore *v);
+
+/* Fast decoding: skips the deblocking filter (H.264, HEVC and others): about
+   20-30% less decoding time, a slightly softer and blockier picture. Can be
+   changed at any time. */
+void reelcore_set_fast(ReelCore *v, int on);
+int reelcore_fast(const ReelCore *v);
+
+/* The file's sound tracks: how many, which one plays (0 = the first; -1 =
+   none), a short description ("aac, 2 ch, eng, Commentary"), and changing
+   track (the new one starts from the picture on screen). */
+int reelcore_audio_tracks(const ReelCore *v);
+int reelcore_audio_track(const ReelCore *v);
+int reelcore_audio_track_name(const ReelCore *v, int track, char *buf, int size);
+int reelcore_set_audio_track(ReelCore *v, int track);
 
 /* Draws the current frame into 32bpp memory: w x h pixels, pitch bytes a
    row, top row first. bgr = 0: bytes R,G,B,x (sprite type 6 / TBGR, 0x00BBGGRR);

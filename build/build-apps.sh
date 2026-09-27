@@ -13,8 +13,8 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 O=$SRC/apps
 mkdir -p "$O" "$STAGE/bin"
-CC="${CROSS}gcc $CFLAGS_RO -Wall -I$STAGE/include -I$STAGE/include/SDL2 -I$TOP/reelcore -I$TOP/ffegl"
-FF="-lavformat -lavcodec -lswresample -lswscale -lavutil \
+CC="${CROSS}gcc $CFLAGS_RO -Wall -I$TOP/reelcore -I$TOP/ffegl -I$STAGE/include -I$STAGE/include/SDL2"
+FF="-lavfilter -lpostproc -lavformat -lavcodec -lswresample -lswscale -lavutil \
   -ldav1d -lx264 -lmp3lame -lopus -lvorbisenc -lvorbis -logg -lz -lSDL2"
 
 # the libraries

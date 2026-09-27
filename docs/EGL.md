@@ -110,6 +110,13 @@ reelcore_close(v);
   (display size, aspect applied); `reelcore_idle_time` for sleeping
   between pictures; `reelcore_media_info` and `reelcore_stats` for an
   information window.
+- **Playback options** (from Reel 0.1.11): `reelcore_set_speed` (0.5x to
+  2x; the sound keeps its pitch through FFmpeg's atempo filter, so link
+  `-lavfilter`), `reelcore_set_fast` (skips the deblocking filter),
+  `reelcore_audio_tracks`/`_track_name`/`set_audio_track` (choose the
+  sound track). `reelcore_draw_pixels` (and `ffegl_draw_surface`) take
+  `REELCORE_FILL` (cover the rectangle, cropping) or `REELCORE_ORIGINAL`
+  (1:1, centred) as well as `REELCORE_STRETCH`; 0 fits, letterboxed.
 - **Sound:** on RISC OS straight to SharedSoundBuffer and StreamManager
   (`REELCORE_AUDIO=sdl` for SDL2's audio), and the pictures follow it.
   Without sound, or if no sound device opens, they follow a timer.
@@ -123,7 +130,7 @@ reelcore_close(v);
 Link (static), EGL programs:
 
 ```
--lffegl -lreelcore -lavformat -lavcodec -lswresample -lswscale -lavutil -ldav1d -lx264
+-lffegl -lreelcore -lavfilter -lpostproc -lavformat -lavcodec -lswresample -lswscale -lavutil -ldav1d -lx264
 -lmp3lame -lopus -lvorbisenc -lvorbis -logg -lz -lSDL2 -lEGL -lOSMesa -lstdc++ -lm
 ```
 

@@ -3,9 +3,17 @@
  *
  * A normal Wimp application: an icon on the icon bar, and one window with
  * the picture above a row of controls (play/pause, back and forward 10 s,
- * a position bar you can click, the time, full screen). Drop a video file
- * on the icon or the window, or double-click one in the Filer while Reel is
- * loaded. Full screen is a window with no furniture that covers the screen.
+ * a position bar you can click, the time, the volume, full screen). Drop a
+ * video file on the icon or the window, or double-click one in the Filer
+ * while Reel is loaded; several dropped at once make a playlist. Full
+ * screen is a window with no furniture that covers the screen. The mini
+ * player is another, small one above the icon bar (Play/Pause, the position
+ * bar, Normal), optionally kept on top while playing.
+ *
+ * Playback options (window menu): picture size, speed (atempo in
+ * reelcore), sound track, A-B repeat, loop, fast decoding, vsync full
+ * screen. The volume, keep on top, the mini player's place and where each
+ * file was stopped are kept in Choices:Reel (ReelEGL).
  *
  * reelcore (reelcore/) is the player core: it reads, decodes, plays the
  * sound (SharedSoundBuffer, the clock) and says when a picture is due.
@@ -17,7 +25,8 @@
  * No threads of our own: decoding happens on null events.
  *
  * Keys (window or full screen): Space pause, Left/Right 10 s, Up/Down 1 min,
- * F full screen on/off, Escape leaves full screen, Q closes the video.
+ * F full screen on/off, Escape leaves full screen, M the mini player, A A-B
+ * repeat, N/P next/previous in the playlist, Q closes the video.
  *
  * Media info (window menu, or I): a window with what's in the file (codecs,
  * sizes, rates) and, every second while playing, "stats for nerds": pictures
@@ -74,6 +83,7 @@ int __dynamic_da_max_size = 512 << 20;
 #define Wimp_GetWindowState    0x400CB
 #define Wimp_SetIconState      0x400CD
 #define Wimp_GetPointerInfo    0x400CF
+#define Wimp_DragBox           0x400D0
 #define Wimp_ForceRedraw       0x400D1
 #define Wimp_SetCaretPosition  0x400D2
 #define Wimp_CreateMenu        0x400D4
@@ -104,28 +114,68 @@ int __dynamic_da_max_size = 512 << 20;
 #endif
 #define CH      64          /* height of the controls row, OS units */
 #define GAP     4
-#define MIN_W   880         /* narrowest window: the position bar still has room */
+#define MIN_W   1096        /* narrowest window: the position bar still has room */
 #define W_PLAY  104         /* control widths, OS units */
 #define W_SKIP  96
-#define W_TIME  176
+#define W_TIME  264         /* room for "12:34 / 1:45:00" or "1:23 / 3:45 1.5x AB" */
 #define W_FULL  88
+#define W_VOL   128         /* the volume bar */
+/* the mini player: a small window with no furniture above the icon bar */
+#define MINI_W  640         /* its width, OS units (320 pixels on most screens) */
+#define W_NORM  120         /* its "Normal" button: back to the full window */
+#define MINI_EDGE 32        /* its default gap from the screen's right edge */
+#define MINI_LIFT 16        /* ... and above the icon bar */
+
+static int mini;            /* the mini player is showing (the controls lay out for it) */
 
 /* The position bar's track, in work area x, for the window's width */
 static void track_x(int vw, int *x0, int *x1)
 {
-    *x0 = GAP + W_PLAY + GAP + W_SKIP + GAP + W_SKIP + GAP * 2;
-    *x1 = vw - GAP - W_FULL - GAP - W_TIME - GAP;
+    if (mini) {                         /* Play, the bar, Normal */
+        *x0 = GAP + W_PLAY + GAP * 2;
+        *x1 = vw - GAP - W_NORM - GAP * 2;
+    } else {
+        *x0 = GAP + W_PLAY + GAP + W_SKIP + GAP + W_SKIP + GAP * 2;
+        *x1 = vw - GAP - W_FULL - GAP - W_VOL - GAP - W_TIME - GAP;
+    }
     if (*x1 < *x0 + 16)
         *x1 = *x0 + 16;
 }
 
-enum { I_PLAY, I_BACK, I_FWD, I_TRACK, I_FILL, I_TIME, I_FULL, N_ICONS };
+enum { I_PLAY, I_BACK, I_FWD, I_TRACK, I_FILL, I_TIME, I_FULL, I_VOL, I_VOLFILL, N_ICONS };
+#define I_NORMAL N_ICONS            /* the mini player's own extra icon */
+
+/* the volume bar, in work area x, for the window's width */
+static void vol_x(int vw, int *x0, int *x1)
+{
+    *x1 = vw - GAP - W_FULL - GAP;
+    *x0 = *x1 - W_VOL;
+}
+
+/* Picture sizes (window menu, Picture) */
+enum { PIC_FIT, PIC_FILL, PIC_ORIGINAL, PIC_STRETCH, N_PIC };
+static const char *const pic_names[N_PIC] = { "Fit", "Fill (crop)", "Original size", "Stretch" };
+static const int pic_flags_of[N_PIC] = { 0, REELCORE_FILL, REELCORE_ORIGINAL, REELCORE_STRETCH };
+
+/* Speeds (window menu, Speed) */
+#define N_SPEED 6
+static const double speeds[N_SPEED] = { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 };
+static const char *const speed_names[N_SPEED] = { "0.5x", "0.75x", "Normal", "1.25x", "1.5x", "2x" };
+
+#define LIST_MAX 64                     /* files in the playlist */
 
 typedef struct { int x0, y0, x1, y1; } box_t;
 
 static struct {
     int task, bar_icon;
-    int win, full;                      /* the window; the full screen window (0 = none) */
+    int win, full;                      /* the window showing the video (the normal one or the
+                                           mini player); the full screen window (0 = none) */
+    int main_win, mini_win;             /* the normal window; the mini player (0 = not made yet) */
+    int main_st[9];                     /* where the normal window was, while the mini player shows */
+    int ontop;                          /* the mini player keeps itself on top while playing */
+    int ontop_cs;                       /* when it last looked */
+    int mini_right, mini_bottom;        /* its place: gap from the screen's right edge; bottom
+                                           (-1 = just above the icon bar) */
     int fullscreen;                     /* showing full screen */
     int loop;
     ReelCore *v;
@@ -154,9 +204,21 @@ static struct {
     EGLConfig cfg;
     EGLSurface surf;                    /* work area surface, or the whole screen */
     int surf_w, surf_h, surf_full;
-    int direct;                         /* full screen straight into screen memory */
 #endif
     int fill_x1;                        /* current right edge of the position fill */
+    /* playback options */
+    double vol;                         /* the volume bar, 0..1 (the sound is vol squared) */
+    int vol_fill_x1;
+    int vsync;                          /* full screen: wait for the screen's refresh */
+    int pic_mode;                       /* PIC_* */
+    int speed_i;                        /* speeds[] */
+    int fast;                           /* fast decoding */
+    int ab;                             /* A-B repeat: 0 off, 1 A set, 2 repeating */
+    double ab_a, ab_b;
+    /* the playlist */
+    char *list[LIST_MAX];
+    int list_n, list_i;
+    int last_drop_cs;                   /* when the last file arrived (a batch = one drag) */
 } S;
 
 /* ---- small helpers ---------------------------------------------------- */
@@ -276,7 +338,7 @@ static void log_open(void)
     log_env("REELCORE_AUDIO");
     log_env("SDL_AUDIODRIVER");
 #ifdef REEL_EGL
-    log_env("ReelEGL$NoDirect");
+    log_env("ReelEGL$NoVsync");
 #endif
     reelcore_set_log(ff_log, 1);
 }
@@ -423,7 +485,7 @@ static void sprite_draw_frame(void)
 {
     if (!S.v || !S.area)
         return;
-    if (reelcore_draw_pixels(S.v, sprite_pixels(), S.spr_w * 4, S.spr_w, S.spr_h, S.trgb, 0) == 0)
+    if (reelcore_draw_pixels(S.v, sprite_pixels(), S.spr_w * 4, S.spr_w, S.spr_h, S.trgb, pic_flags_of[S.pic_mode]) == 0)
         S.have_frame = 1;
 }
 
@@ -456,9 +518,10 @@ static void sprite_plot(int x, int y1, const box_t *clip)
    it through EGL_KHR_lock_surface and eglSwapBuffers shows it; redraws
    plot it with eglPlotSurfaceRISCOS in our own Wimp_RedrawWindow loop.
    Full screen uses the whole screen surface (EGL_RISCOS_SCREEN_WINDOW):
-   with "Direct" (the default) EGL_SINGLE_BUFFER, frames go straight into
-   screen memory (no plot; can tear), otherwise a sprite plotted after the
-   vsync wait. Only one surface exists at a time. */
+   with Vsync (the default) a sprite plotted after the vsync wait
+   (eglSwapInterval 1); without, EGL_SINGLE_BUFFER: frames go straight
+   into screen memory (no plot; can tear). Only one surface exists at a
+   time: switching to or from the mini player makes it again. */
 
 static int egl_init(void)
 {
@@ -505,7 +568,7 @@ static void surf_make(int w, int h, int full)
     if (egl_init() < 0)
         return;
     if (full) {
-        if (S.direct) {
+        if (!S.vsync) {                 /* Direct: straight into screen memory */
             *a++ = EGL_RENDER_BUFFER; *a++ = EGL_SINGLE_BUFFER;
         }
     } else {
@@ -524,8 +587,8 @@ static void surf_make(int w, int h, int full)
         return;
     }
     if (full)
-        eglSwapInterval(S.dpy, S.direct ? 0 : 1);
-    lg("EGL surface %dx%d, %s", w, h, !full ? "work area" : S.direct ? "screen, direct (single buffer)" : "screen");
+        eglSwapInterval(S.dpy, S.vsync ? 1 : 0);
+    lg("EGL surface %dx%d, %s", w, h, !full ? "work area" : !S.vsync ? "screen, direct (single buffer)" : "screen, vsync");
     S.surf_w = w;
     S.surf_h = h;
     S.surf_full = full;
@@ -561,7 +624,7 @@ static void pic_refresh(void)
 #ifdef REEL_EGL
     if (!S.v || S.surf == EGL_NO_SURFACE)
         return;
-    if (ffegl_draw_surface(S.v, S.dpy, S.surf, 0, 0, 0, 0, 0) == 0) {
+    if (ffegl_draw_surface(S.v, S.dpy, S.surf, 0, 0, 0, 0, pic_flags_of[S.pic_mode]) == 0) {
         eglSwapBuffers(S.dpy, S.surf);
         S.have_frame = 1;
     }
@@ -599,8 +662,33 @@ static void icon_def(icon_t *ic, int flags, char *text, const char *valid, int l
 #define IF_CLICK  (3 << 12)
 #define IF_COL(fg, bg) (((fg) << 24) | ((bg) << 28))
 
-static char back_text[] = "\x8b 10s", fwd_text[] = "10s \x8a", full_text[] = "Full";
+static char back_text[] = "\x8b 10s", fwd_text[] = "10s \x8a", full_text[] = "Full", normal_text[] = "Normal";
 static char empty_text[] = "";
+
+/* The controls: the same icons (and texts) in the normal window and the
+   mini player, so the icon numbers mean the same in both; layout() moves
+   the ones the mini player doesn't show out of sight. */
+static void icons_def(icon_t *icon)
+{
+    icon_def(&icon[I_PLAY], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
+             S.play_text, "R5,3", sizeof(S.play_text));
+    icon_def(&icon[I_BACK], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
+             back_text, "R5,3", sizeof(back_text));
+    icon_def(&icon[I_FWD], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
+             fwd_text, "R5,3", sizeof(fwd_text));
+    icon_def(&icon[I_TRACK], IF_BORDER | IF_FILLED | IF_INDIR | IF_TEXT | IF_CLICK | IF_COL(7, 0),
+             empty_text, "R2", 1);
+    icon_def(&icon[I_FILL], IF_FILLED | IF_INDIR | IF_TEXT | IF_CLICK | IF_COL(7, 8),
+             empty_text, (const char *)-1, 1);
+    icon_def(&icon[I_TIME], IF_TEXT | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_COL(7, 1),
+             S.time_text, (const char *)-1, sizeof(S.time_text));
+    icon_def(&icon[I_VOL], IF_BORDER | IF_FILLED | IF_INDIR | IF_TEXT | IF_CLICK | IF_COL(7, 0),
+             empty_text, "R2", 1);
+    icon_def(&icon[I_VOLFILL], IF_FILLED | IF_INDIR | IF_TEXT | IF_CLICK | IF_COL(7, 10),
+             empty_text, (const char *)-1, 1);
+    icon_def(&icon[I_FULL], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
+             full_text, "R5,3", sizeof(full_text));
+}
 
 static int create_window(void)
 {
@@ -631,24 +719,49 @@ static int create_window(void)
     w.title.valid = (const char *)-1;
     w.title.len = sizeof(S.title);
     w.nicons = N_ICONS;
-    icon_def(&w.icon[I_PLAY], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
-             S.play_text, "R5,3", sizeof(S.play_text));
-    icon_def(&w.icon[I_BACK], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
-             back_text, "R5,3", sizeof(back_text));
-    icon_def(&w.icon[I_FWD], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
-             fwd_text, "R5,3", sizeof(fwd_text));
-    icon_def(&w.icon[I_TRACK], IF_BORDER | IF_FILLED | IF_INDIR | IF_TEXT | IF_CLICK | IF_COL(7, 0),
-             empty_text, "R2", 1);
-    icon_def(&w.icon[I_FILL], IF_FILLED | IF_INDIR | IF_TEXT | IF_CLICK | IF_COL(7, 8),
-             empty_text, (const char *)-1, 1);
-    icon_def(&w.icon[I_TIME], IF_TEXT | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_COL(7, 1),
-             S.time_text, (const char *)-1, sizeof(S.time_text));
-    icon_def(&w.icon[I_FULL], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
-             full_text, "R5,3", sizeof(full_text));
+    icons_def(w.icon);
     r.r[1] = (intptr_t)&w;
     if (swi(Wimp_CreateWindow, &r))
         return -1;
-    S.win = r.r[0];
+    S.win = S.main_win = r.r[0];
+    return 0;
+}
+
+/* The mini player: no title bar or other furniture (drag the picture to
+   move it; double-click it for the normal window), the controls cut down
+   to Play/Pause, the position bar and Normal. */
+static int create_mini_window(void)
+{
+    struct {
+        box_t vis;
+        int sx, sy, behind, flags;
+        unsigned char tfg, tbg, wfg, wbg, sofg, sibg, tfocus, xflags;
+        box_t ext;
+        int tflags, wbutton, sprites;
+        short minw, minh;
+        int title[3];
+        int nicons;
+        icon_t icon[N_ICONS + 1];
+    } w;
+    _kernel_swi_regs r;
+
+    memset(&w, 0, sizeof(w));
+    w.vis.x1 = MINI_W; w.vis.y1 = 400;
+    w.behind = -1;
+    w.flags = (int)0x80000002u;         /* new format, moveable; no furniture */
+    w.tfg = 0xFF;                       /* no title */
+    w.wfg = 7; w.wbg = 1; w.sofg = 3; w.sibg = 1; w.tfocus = 12;
+    w.ext.x0 = 0; w.ext.y0 = -8192; w.ext.x1 = 8192; w.ext.y1 = 0;
+    w.wbutton = 10 << 12;               /* click/drag/double: drag moves it, double-click: normal window */
+    w.sprites = 1;
+    w.nicons = N_ICONS + 1;
+    icons_def(w.icon);
+    icon_def(&w.icon[I_NORMAL], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
+             normal_text, "R5,3", sizeof(normal_text));
+    r.r[1] = (intptr_t)&w;
+    if (swi(Wimp_CreateWindow, &r))
+        return -1;
+    S.mini_win = r.r[0];
     return 0;
 }
 
@@ -705,6 +818,20 @@ static void layout(int vw, int vh)
     S.pic.x1 = vw;
     S.pic.y1 = 0;
     S.pic.y0 = -vh + CH;
+    if (mini) {                         /* Play, the position bar, Normal; the rest out of sight */
+        static const int hidden[] = { I_BACK, I_FWD, I_TIME, I_VOL, I_VOLFILL, I_FULL };
+        for (int i = 0; i < (int)(sizeof(hidden) / sizeof(hidden[0])); i++)
+            resize_icon(hidden[i], -256, y0, -128, y1);
+        resize_icon(I_PLAY, x, y0, x + W_PLAY, y1);
+        track_x(vw, &track_x0, &track_x1);
+        resize_icon(I_TRACK, track_x0, y0 + 12, track_x1, y1 - 12);
+        S.fill_x1 = track_x0 + 4;
+        resize_icon(I_FILL, track_x0 + 4, y0 + 16, S.fill_x1, y1 - 16);
+        resize_icon(I_NORMAL, vw - GAP - W_NORM, y0, vw - GAP, y1);
+        if (!S.fullscreen)
+            pic_make(vw >> S.xeig, (vh - CH) >> S.yeig, 0);
+        return;
+    }
     resize_icon(I_PLAY, x, y0, x + W_PLAY, y1);  x += W_PLAY + GAP;
     resize_icon(I_BACK, x, y0, x + W_SKIP, y1);  x += W_SKIP + GAP;
     resize_icon(I_FWD,  x, y0, x + W_SKIP, y1);
@@ -712,7 +839,14 @@ static void layout(int vw, int vh)
     resize_icon(I_TRACK, track_x0, y0 + 12, track_x1, y1 - 12);
     S.fill_x1 = track_x0 + 4;
     resize_icon(I_FILL, track_x0 + 4, y0 + 16, S.fill_x1, y1 - 16);
-    resize_icon(I_TIME, vw - GAP - W_FULL - GAP - W_TIME, y0, vw - GAP - W_FULL - GAP, y1);
+    {
+        int vx0, vx1;
+        vol_x(vw, &vx0, &vx1);
+        resize_icon(I_TIME, vx0 - GAP - W_TIME, y0, vx0 - GAP, y1);
+        resize_icon(I_VOL, vx0, y0 + 12, vx1, y1 - 12);
+        S.vol_fill_x1 = vx0 + 4 + (int)((W_VOL - 8) * S.vol);
+        resize_icon(I_VOLFILL, vx0 + 4, y0 + 16, S.vol_fill_x1, y1 - 16);
+    }
     resize_icon(I_FULL, vw - GAP - W_FULL, y0, vw - GAP, y1);
     if (!S.fullscreen)
         pic_make(vw >> S.xeig, (vh - CH) >> S.yeig, 0);
@@ -781,6 +915,11 @@ static void update_controls(int force)
         snprintf(text, sizeof(text), "%s / %s", pos, dur);
     else
         snprintf(text, sizeof(text), "%s", pos);
+    if (S.speed_i != 2 || S.ab) {           /* short marks: the icon is narrow */
+        size_t n = strlen(text);
+        snprintf(text + n, sizeof(text) - n, "%s%s%s", S.speed_i != 2 ? " " : "",
+                 S.speed_i != 2 ? speed_names[S.speed_i] : "", S.ab == 2 ? " AB" : S.ab == 1 ? " A" : "");
+    }
     if (force || strcmp(text, S.time_text)) {
         snprintf(S.time_text, sizeof(S.time_text), "%s", text);
         icon_refresh(I_TIME);
@@ -867,6 +1006,10 @@ static void show_frame_now(void)
     int w = S.fullscreen ? S.full : S.win;
     box_t pic = S.fullscreen ? (box_t){ 0, -S.vis_h, S.vis_w, 0 } : S.pic;
     sprite_draw_frame();
+    if (S.fullscreen && S.vsync) {      /* wait for the screen's refresh: no tearing */
+        r.r[0] = 19;                    /* OS_Byte 19 */
+        swi(0x06, &r);
+    }
     b[0] = w;
     b[1] = pic.x0; b[2] = pic.y0; b[3] = pic.x1; b[4] = pic.y1;
     r.r[1] = (intptr_t)b;
@@ -917,6 +1060,11 @@ static void set_fullscreen(int on)
 static void info_new_file(void);
 static void info_close(void);
 
+static void resume_note(void);
+static void list_clear(void);
+static void choices_save(void);
+static void mini_show(void);
+
 static void close_video(void)
 {
     _kernel_swi_regs r;
@@ -924,12 +1072,19 @@ static void close_video(void)
         char d[300];
         reelcore_debug(S.v, d, sizeof(d));
         lg("close: %s", d);
+        resume_note();
     }
+    list_clear();
     if (S.fullscreen)
         set_fullscreen(0);
     if (S.win) {
         r.r[1] = (intptr_t)&S.win;
         swi(Wimp_CloseWindow, &r);
+    }
+    if (mini) {                         /* the next video opens in the normal window */
+        mini = 0;
+        S.win = S.main_win;
+        choices_save();
     }
     info_close();
     reelcore_close(S.v);
@@ -944,6 +1099,217 @@ static const char *leaf(const char *path)
     return p ? p + 1 : path;
 }
 
+/* ---- Choices: the volume, and where each file was stopped ------------------
+
+   Read from Choices:Reel (ReelEGL), written to <Choices$Write>.Reel.
+   Reel$ChoicesDir (a directory) overrides both, for the host test. */
+
+#define RESUME_MAX 100
+
+static struct { double pos; char path[256]; } resume[RESUME_MAX];
+static int resume_n;
+
+static void choices_path(char *buf, size_t n, const char *leafname, int write)
+{
+    const char *dir = getenv(APP "$ChoicesDir");
+    if (dir && *dir)
+        snprintf(buf, n, "%s/%s", dir, leafname);
+    else if (write)
+        snprintf(buf, n, "<Choices$Write>." APP ".%s", leafname);
+    else
+        snprintf(buf, n, "Choices:" APP ".%s", leafname);
+}
+
+static FILE *choices_open(const char *leafname, int write)
+{
+    char path[300];
+    if (write && !getenv(APP "$ChoicesDir")) {
+        _kernel_swi_regs r;             /* OS_File 8: make the directory */
+        r.r[0] = 8;
+        r.r[1] = (intptr_t)"<Choices$Write>." APP;
+        r.r[4] = 0;
+        _kernel_swi(0x08, &r, &r);
+    }
+    choices_path(path, sizeof(path), leafname, write);
+    return fopen(path, write ? "w" : "r");
+}
+
+static void choices_save(void)
+{
+    FILE *f = choices_open("Choices", 1);
+    if (!f)
+        return;
+    fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_right %d\nmini_bottom %d\n", APP, S.vol,
+            S.ontop, S.mini_right, S.mini_bottom);
+    fclose(f);
+}
+
+static void resume_save(void)
+{
+    FILE *f = choices_open("Resume", 1);
+    if (!f)
+        return;
+    for (int i = 0; i < resume_n; i++)
+        fprintf(f, "%.2f\t%s\n", resume[i].pos, resume[i].path);
+    fclose(f);
+}
+
+static void choices_load(void)
+{
+    char line[300];
+    FILE *f = choices_open("Choices", 0);
+    if (f) {
+        double vol;
+        int n;
+        while (fgets(line, sizeof(line), f)) {
+            if (sscanf(line, "volume %lf", &vol) == 1 && vol >= 0 && vol <= 1)
+                S.vol = vol;
+            else if (sscanf(line, "keep_on_top %d", &n) == 1)
+                S.ontop = n != 0;
+            else if (sscanf(line, "mini_right %d", &n) == 1 && n >= 0)
+                S.mini_right = n;
+            else if (sscanf(line, "mini_bottom %d", &n) == 1 && n >= -1)
+                S.mini_bottom = n;
+        }
+        fclose(f);
+    }
+    if ((f = choices_open("Resume", 0)) != NULL) {
+        while (resume_n < RESUME_MAX && fgets(line, sizeof(line), f)) {
+            char *tab = strchr(line, '\t'), *nl = strchr(line, '\n');
+            if (!tab)
+                continue;
+            if (nl)
+                *nl = 0;
+            resume[resume_n].pos = atof(line);
+            snprintf(resume[resume_n].path, sizeof(resume[0].path), "%s", tab + 1);
+            resume_n++;
+        }
+        fclose(f);
+    }
+}
+
+static int resume_find(const char *path)
+{
+    for (int i = 0; i < resume_n; i++)
+        if (!strcmp(resume[i].path, path))
+            return i;
+    return -1;
+}
+
+/* Remembers where the current file was stopped (the newest first), or
+   forgets it if it was played to the end or hardly started. */
+static void resume_note(void)
+{
+    double pos, dur, margin;
+    int i;
+    if (!S.v)
+        return;
+    pos = reelcore_position(S.v);
+    dur = reelcore_duration(S.v);
+    margin = dur > 100 ? 10 : dur / 10;
+    if ((i = resume_find(S.file)) >= 0) {
+        memmove(&resume[i], &resume[i + 1], (resume_n - i - 1) * sizeof(resume[0]));
+        resume_n--;
+    }
+    if (dur > 0 && !S.ended && pos >= margin && pos <= dur - margin) {
+        if (resume_n == RESUME_MAX)
+            resume_n--;
+        memmove(&resume[1], &resume[0], resume_n * sizeof(resume[0]));
+        resume[0].pos = pos;
+        snprintf(resume[0].path, sizeof(resume[0].path), "%s", S.file);
+        resume_n++;
+        lg("remembered %.1f s for %s", pos, S.file);
+    }
+    resume_save();
+}
+
+/* "Carry on from 1:23?": Wimp_ReportError with two buttons of our own */
+static int resume_ask(double pos)
+{
+    _kernel_oserror e;
+    _kernel_swi_regs r;
+    char t[16];
+    format_time(t, sizeof(t), pos);
+    e.errnum = 0;
+    snprintf(e.errmess, sizeof(e.errmess), "%s was stopped at %s. Carry on from there?", S.title, t);
+    r.r[0] = (intptr_t)&e;
+    r.r[1] = (1 << 8) | (4 << 9);       /* new style, a question, only our buttons */
+    r.r[2] = (intptr_t)APP;
+    r.r[3] = (intptr_t)ICON;
+    r.r[4] = 1;                         /* the sprite is in the Wimp's pool */
+    r.r[5] = (intptr_t)"Carry on,From the start";
+    if (swi(Wimp_ReportError, &r))
+        return 0;
+    return r.r[1] == 3;
+}
+
+/* The options set in the menus, for a newly opened file */
+static void options_apply(void)
+{
+    reelcore_set_volume(S.v, S.vol * S.vol);
+    reelcore_set_fast(S.v, S.fast);
+    if (S.speed_i != 2)
+        reelcore_set_speed(S.v, speeds[S.speed_i]);
+}
+
+static void set_title(void)
+{
+    if (S.list_n > 1)
+        snprintf(S.title, sizeof(S.title), "%s (%d/%d)", leaf(S.file), S.list_i + 1, S.list_n);
+    else
+        snprintf(S.title, sizeof(S.title), "%s", leaf(S.file));
+}
+
+/* ---- the playlist ------------------------------------------------------------ */
+
+static void play_file(const char *file);
+
+static void list_clear(void)
+{
+    for (int i = 0; i < S.list_n; i++)
+        free(S.list[i]);
+    S.list_n = S.list_i = 0;
+}
+
+static void list_play(int i)
+{
+    if (i < 0 || i >= S.list_n)
+        return;
+    S.list_i = i;
+    lg("playlist: %d of %d", i + 1, S.list_n);
+    play_file(S.list[i]);
+}
+
+/* A file dropped or double-clicked. Files that arrive together (one drag
+   of several) make a playlist; with Shift held, they're added to it;
+   otherwise a new file replaces it. */
+static void list_arrived(const char *file)
+{
+    _kernel_swi_regs r;
+    int t = now_cs(), shift;
+    r.r[0] = 129;                       /* INKEY(-1): Shift */
+    r.r[1] = 0xFF;
+    r.r[2] = 0xFF;
+    shift = !swi(0x06, &r) && r.r[1] == 0xFF;
+    if (S.v && S.list_n > 0 && S.list_n < LIST_MAX && (t - S.last_drop_cs < 50 || shift)) {
+        S.list[S.list_n++] = strdup(file);
+        S.last_drop_cs = t;
+        lg("playlist: added %s (%d files)", file, S.list_n);
+        set_title();
+        if (S.win) {
+            r.r[0] = S.win;             /* the title shows the count */
+            r.r[1] = 0x4B534154;
+            r.r[2] = 3;
+            swi(Wimp_ForceRedraw, &r);
+        }
+        return;
+    }
+    list_clear();
+    S.list[S.list_n++] = strdup(file);
+    S.last_drop_cs = t;
+    list_play(0);
+}
+
 static void play_file(const char *file)
 {
     ReelCore *v;
@@ -951,7 +1317,8 @@ static void play_file(const char *file)
     int was_open = S.v != NULL;
 
     lg("open %s", file);
-    v = reelcore_open(file, S.loop ? REELCORE_LOOP : 0);
+    resume_note();                      /* where the one playing now was */
+    v = reelcore_open(file, S.loop && S.list_n <= 1 ? REELCORE_LOOP : 0);
     if (!v) {
         char msg[300];
         snprintf(msg, sizeof(msg), "%s: %s", leaf(file), reelcore_last_error());
@@ -964,6 +1331,8 @@ static void play_file(const char *file)
     }
     S.v = v;
     S.ended = 0;
+    S.ab = 0;
+    options_apply();
     {
         char info[256];
         reelcore_info(v, info, sizeof(info));
@@ -973,7 +1342,14 @@ static void play_file(const char *file)
     }
     info_new_file();
     snprintf(S.file, sizeof(S.file), "%s", file);
-    snprintf(S.title, sizeof(S.title), "%s", leaf(file));
+    set_title();
+    {
+        int i = resume_find(file);
+        if (i >= 0 && resume[i].pos < reelcore_duration(v) && resume_ask(resume[i].pos)) {
+            lg("carry on from %.1f s", resume[i].pos);
+            reelcore_seek(v, resume[i].pos);
+        }
+    }
     read_screen();
     if (!S.win && create_window() < 0) {
         report("Can't create the window.");
@@ -991,8 +1367,18 @@ static void play_file(const char *file)
     vh = h + CH;
     lg("window %dx%d OS units%s", vw, vh, S.fullscreen ? " (staying full screen)" : "");
     if (S.fullscreen) {                 /* stay full screen; the window follows later */
+        if (mini) {                     /* (that's the mini player: the normal window's size for later) */
+            S.main_st[3] = S.main_st[1] + vw;
+            S.main_st[2] = S.main_st[4] - vh;
+        }
         pic_make(S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1);
         force_redraw(S.full, 0, -8192, 8192, 0);
+        return;
+    }
+    if (mini) {                         /* stay in the mini player, sized for this video */
+        S.main_st[3] = S.main_st[1] + vw;   /* the normal window's size, for later */
+        S.main_st[2] = S.main_st[4] - vh;
+        mini_show();
         return;
     }
     if (was_open) {
@@ -1040,7 +1426,7 @@ static info_row_t *info_add(int heading, const char *label, const char *value)
 
 static const char *const stat_labels[] = {
     "Position", "Clock", "Pictures shown", "Decoded", "Decoding load", "Frame skipping",
-    "Converting", "Drawing", "Waiting", "Sound", "Reading", "Desktop"
+    "Converting", "Drawing", "Waiting", "Sound", "Reading", "Desktop", "Playback"
 };
 #define N_STATS ((int)(sizeof(stat_labels) / sizeof(stat_labels[0])))
 
@@ -1120,7 +1506,7 @@ static void info_stats(void)
         snprintf(r[7].value, sizeof(r[7].value), "%.1f ms a picture (%s)",
                  (S.draw_cs - info_prev_draw_cs) * 10.0 / draws,
 #ifdef REEL_EGL
-                 S.fullscreen ? (S.direct ? "EGL screen surface, direct" : "EGL screen surface")
+                 S.fullscreen ? (!S.vsync ? "EGL screen surface, direct" : "EGL screen surface, vsync")
                               : "EGL work area surface, with converting"
 #else
                  "OS_SpriteOp, with converting"
@@ -1144,6 +1530,19 @@ static void info_stats(void)
              (S.slept_cs - info_prev_slept) / dt, S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1 << S.log2bpp,
              S.trgb ? "TRGB" : "TBGR", S.fullscreen ? "; full screen" : "");
 
+    {
+        char ab[48] = "", pa[16], pb[16];
+        if (S.ab) {
+            format_time(pa, sizeof(pa), S.ab_a);
+            format_time(pb, sizeof(pb), S.ab_b);
+            snprintf(ab, sizeof(ab), S.ab == 2 ? "; A-B %s to %s" : "; A at %s", pa, pb);
+        }
+        snprintf(r[12].value, sizeof(r[12].value), "%s speed, picture %s%s; volume %.0f%%; sound track %d of %d; "
+                 "playlist %d of %d%s%s",
+                 speed_names[S.speed_i], pic_names[S.pic_mode], st.fast ? ", fast decode" : "", S.vol * 100,
+                 st.audio_track + 1, st.audio_tracks, S.list_n ? S.list_i + 1 : 0, S.list_n, ab,
+                 S.vsync ? "; vsync" : "");
+    }
     info_prev = st;
     info_prev_cs = t;
     info_prev_nulls = S.st_nulls;
@@ -1344,62 +1743,296 @@ static void info_toggle(void)
 
 /* ---- menus -------------------------------------------------------------------- */
 
-typedef struct { int flags, sub, iflags; char text[12]; } item_t;
+/* Menu items have indirected text, so they can be long (file names) */
+#define MENU_MAX 24
+typedef struct { int flags, sub, iflags; char *text; const char *valid; int len; } item_t;
 typedef struct {
     char title[12];
     unsigned char tfg, tbg, wfg, wbg;
     int width, height, gap;
-    item_t item[5];
+    item_t item[MENU_MAX];
 } menu_t;
-static menu_t menu;
+static menu_t menu, m_pic, m_speed, m_track, m_list;
+static char menu_text[5][MENU_MAX][72];
 static int menu_is_bar;                 /* the open menu: 1 icon bar, 0 window */
 static int menu_x, menu_y;
 
-static void menu_item(int i, const char *text, int tick, int last)
+/* The window menu */
+enum { WM_INFO, WM_FULL, WM_MINI, WM_ONTOP, WM_PIC, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_CLOSE, WM_N };
+
+static void menu_start(menu_t *m, const char *title)
 {
-    menu.item[i].flags = (tick ? 1 : 0) | (last ? 0x80 : 0);
-    menu.item[i].sub = -1;
-    menu.item[i].iflags = 0x07000021;
-    strncpy(menu.item[i].text, text, 12);
+    memset(m, 0, sizeof(*m));
+    snprintf(m->title, sizeof(m->title), "%s", title);
+    m->tfg = 7; m->tbg = 2; m->wfg = 7; m->wbg = 0;
+    m->width = 12 * 16 + 32;
+    m->height = 44;
+}
+
+/* Adds an item; sub: a submenu (NULL = none); shaded: can't be chosen */
+static void menu_add(menu_t *m, int which, int *n, const char *text, int tick, const menu_t *sub, int shaded)
+{
+    item_t *it = &m->item[*n];
+    char *t = menu_text[which][*n];
+    int w;
+    snprintf(t, sizeof(menu_text[0][0]), "%s", text);
+    it->flags = tick ? 1 : 0;
+    it->sub = sub ? (int)(intptr_t)sub : -1;
+    it->iflags = 0x07000021 | IF_INDIR | (shaded ? 1 << 22 : 0);
+    it->text = t;
+    it->valid = (const char *)-1;
+    it->len = (int)strlen(t) + 1;
+    w = (int)strlen(t) * 16 + 48;
+    if (w > m->width)
+        m->width = w;
+    (*n)++;
+}
+
+static void menu_end(menu_t *m, int n)
+{
+    if (n > 0)
+        m->item[n - 1].flags |= 0x80;
 }
 
 static void menu_open(int bar, int x, int y)
 {
     _kernel_swi_regs r;
-    int n;
-    memset(&menu, 0, sizeof(menu));
-    strcpy(menu.title, APP);
-    menu.tfg = 7; menu.tbg = 2; menu.wfg = 7; menu.wbg = 0;
-    menu.width = 12 * 16 + 32;
-    menu.height = 44;
+    int n = 0;
+    char t[80];
+    menu_start(&menu, APP);
     if (bar) {
-        menu_item(0, "Info", 0, 0);
-        menu_item(1, "Loop", S.loop, 0);
-        menu_item(2, "Log", 0, 0);
-        menu_item(3, "Quit", 0, 1);
-        n = 4;
+        menu_add(&menu, 0, &n, "Info", 0, NULL, 0);
+        menu_add(&menu, 0, &n, "Loop", S.loop, NULL, 0);
+        menu_add(&menu, 0, &n, "Log", 0, NULL, 0);
+        menu_add(&menu, 0, &n, "Quit", 0, NULL, 0);
         y = 96 + n * 44;
         x -= 64;
     } else {
-        menu_item(0, "Media info", S.info_open, 0);
-        menu_item(1, "Full screen", S.fullscreen, 0);
-        menu_item(2, "Loop", S.loop, 0);
-#ifdef REEL_EGL
-        menu_item(3, "Direct", S.direct, 0);     /* full screen straight into screen memory */
-        menu_item(4, "Close", 0, 1);
-        n = 5;
-#else
-        menu_item(3, "Close", 0, 1);
-        n = 4;
-#endif
+        int k = 0, tracks = S.v ? reelcore_audio_tracks(S.v) : 0;
+        menu_start(&m_pic, "Picture");
+        for (int i = 0; i < N_PIC; i++)
+            menu_add(&m_pic, 1, &k, pic_names[i], S.pic_mode == i, NULL, 0);
+        menu_end(&m_pic, k);
+        menu_start(&m_speed, "Speed");
+        k = 0;
+        for (int i = 0; i < N_SPEED; i++)
+            menu_add(&m_speed, 2, &k, speed_names[i], S.speed_i == i, NULL, 0);
+        menu_end(&m_speed, k);
+        menu_start(&m_track, "Sound track");
+        k = 0;
+        for (int i = 0; i < tracks && i < MENU_MAX; i++) {
+            char name[64];
+            reelcore_audio_track_name(S.v, i, name, sizeof(name));
+            snprintf(t, sizeof(t), "%d: %s", i + 1, name);
+            menu_add(&m_track, 3, &k, t, reelcore_audio_track(S.v) == i, NULL, 0);
+        }
+        menu_end(&m_track, k);
+        menu_start(&m_list, "Playlist");
+        k = 0;
+        for (int i = 0; i < S.list_n && i < MENU_MAX - 1; i++)
+            menu_add(&m_list, 4, &k, leaf(S.list[i]), S.list_i == i, NULL, 0);
+        if (k)
+            m_list.item[k - 1].flags |= 2;          /* a dotted line before Clear */
+        menu_add(&m_list, 4, &k, "Clear the rest", 0, NULL, S.list_n <= 1);
+        menu_end(&m_list, k);
+
+        menu_add(&menu, 0, &n, "Media info", S.info_open, NULL, 0);
+        menu_add(&menu, 0, &n, "Full screen", S.fullscreen, NULL, 0);
+        menu_add(&menu, 0, &n, "Mini player", mini, NULL, !S.v);
+        menu_add(&menu, 0, &n, "Keep on top", S.ontop, NULL, 0);
+        menu_add(&menu, 0, &n, "Picture", 0, &m_pic, 0);
+        snprintf(t, sizeof(t), "Speed (%s)", speed_names[S.speed_i]);
+        menu_add(&menu, 0, &n, t, 0, &m_speed, 0);
+        menu_add(&menu, 0, &n, "Sound track", 0, tracks > 1 ? &m_track : NULL, tracks < 2);
+        snprintf(t, sizeof(t), "Playlist (%d)", S.list_n);
+        menu_add(&menu, 0, &n, t, 0, &m_list, 0);
+        menu_add(&menu, 0, &n, S.ab == 0 ? "A-B repeat: set A" : S.ab == 1 ? "A-B repeat: set B" : "A-B repeat: off",
+                 S.ab == 2, NULL, !S.v);
+        menu_add(&menu, 0, &n, "Loop", S.loop, NULL, 0);
+        menu_add(&menu, 0, &n, "Fast decode", S.fast, NULL, 0);
+        menu_add(&menu, 0, &n, "Vsync (full screen)", S.vsync, NULL, 0);
+        menu_add(&menu, 0, &n, "Close", 0, NULL, 0);
+        menu.item[WM_ONTOP].flags |= 2;             /* dotted lines between the groups */
+        menu.item[WM_LIST].flags |= 2;
+        menu.item[WM_VSYNC].flags |= 2;
         x -= 64;
     }
+    menu_end(&menu, n);
     menu_is_bar = bar;
     menu_x = x; menu_y = y;
     r.r[1] = (intptr_t)&menu;
     r.r[2] = x;
     r.r[3] = y;
     swi(Wimp_CreateMenu, &r);
+}
+
+/* ---- the options ------------------------------------------------------------- */
+
+static void set_volume(double vol)
+{
+    S.vol = vol < 0 ? 0 : vol > 1 ? 1 : vol;
+    if (S.v)
+        reelcore_set_volume(S.v, S.vol * S.vol);    /* the bar is roughly how loud it sounds */
+    lg("volume %.0f%%", S.vol * 100);
+    choices_save();
+    if (S.win && !S.fullscreen)
+        layout(S.vis_w, S.vis_h), force_redraw(S.win, 0, -S.vis_h, S.vis_w, -S.vis_h + CH);
+}
+
+static void set_pic_mode(int mode)
+{
+    S.pic_mode = mode;
+    lg("picture: %s", pic_names[mode]);
+    pic_refresh();
+    force_redraw(S.fullscreen ? S.full : S.win, 0, -8192, 8192, 0);
+}
+
+static void set_speed_i(int i)
+{
+    S.speed_i = i;
+    if (S.v)
+        reelcore_set_speed(S.v, speeds[i]);
+    lg("speed %s", speed_names[i]);
+    update_controls(1);
+}
+
+static void set_fast(int on)
+{
+    S.fast = on;
+    if (S.v)
+        reelcore_set_fast(S.v, on);
+}
+
+/* A-B repeat: the first press marks A, the second B (and repeats), the
+   third turns it off */
+static void ab_press(void)
+{
+    if (!S.v)
+        return;
+    if (S.ab == 0) {
+        S.ab_a = reelcore_position(S.v);
+        S.ab = 1;
+        lg("A-B repeat: A at %.2f", S.ab_a);
+    } else if (S.ab == 1) {
+        S.ab_b = reelcore_position(S.v);
+        if (S.ab_b <= S.ab_a + 0.2) {       /* B before A: start again from here */
+            S.ab_a = S.ab_b;
+            return;
+        }
+        S.ab = 2;
+        lg("A-B repeat: B at %.2f, repeating", S.ab_b);
+    } else {
+        S.ab = 0;
+        lg("A-B repeat off");
+    }
+    update_controls(1);
+}
+
+static void set_vsync(int on)
+{
+    S.vsync = on;
+    lg("vsync %s", on ? "on" : "off");
+#ifdef REEL_EGL
+    if (S.fullscreen) {                     /* make the screen surface again */
+        surf_free();
+        pic_make(S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1);
+        pic_refresh();
+    }
+#endif
+}
+
+/* ---- the mini player ------------------------------------------------------------ */
+
+/* The top of the icon bar, OS units (the icon bar is window -2) */
+static int iconbar_top(void)
+{
+    int b[9];
+    _kernel_swi_regs r;
+    b[0] = -2;
+    r.r[1] = (intptr_t)b;
+    if (!swi(Wimp_GetWindowState, &r) && b[4] > 0 && b[4] < 512)
+        return b[4];
+    return 134;                         /* the usual height */
+}
+
+/* Opens (or moves and resizes) the mini player for the current video: 320
+   pixels wide on most screens, as tall as the video's shape needs, in the
+   bottom right just above the icon bar, or where it was dragged to. */
+static void mini_show(void)
+{
+    int vw = MINI_W, ph, vh, x1, y0, ystep;
+    read_screen();
+    ystep = 1 << S.yeig;
+    ph = reelcore_width(S.v) > 0 ? (int)((long long)vw * reelcore_height(S.v) / reelcore_width(S.v)) : vw * 9 / 16;
+    if (ph < 160) ph = 160;             /* very wide, or tall: the picture is letterboxed */
+    if (ph > 480) ph = 480;
+    ph -= ph % ystep;
+    vh = ph + CH;
+    x1 = S.scr_w - S.mini_right;
+    y0 = S.mini_bottom >= 0 ? S.mini_bottom : iconbar_top() + MINI_LIFT;
+    if (x1 > S.scr_w) x1 = S.scr_w;     /* on the screen, even after a mode change */
+    if (x1 < vw) x1 = vw;
+    if (y0 + vh > S.scr_h) y0 = S.scr_h - vh;
+    if (y0 < 0) y0 = 0;
+    lg("mini player %dx%d OS units at %d,%d", vw, vh, x1 - vw, y0);
+    open_window_at(x1 - vw, y0 + vh, vw, vh);
+    pic_refresh();
+    force_redraw(S.win, 0, -8192, 8192, 0);
+    update_controls(1);
+}
+
+/* Switches between the normal window and the mini player */
+static void set_mini(int on)
+{
+    _kernel_swi_regs r;
+    if (on == mini || !S.v || !S.win)
+        return;
+    if (S.fullscreen)
+        set_fullscreen(0);
+    lg("mini player %s", on ? "on" : "off");
+    pic_free();                         /* the EGL surface belongs to the window it was made for */
+    if (on) {
+        if (!S.mini_win && create_mini_window() < 0) {
+            report("Can't create the mini player.");
+            return;
+        }
+        window_state(S.main_win, S.main_st);    /* to come back to */
+        r.r[1] = (intptr_t)&S.main_win;
+        swi(Wimp_CloseWindow, &r);
+        mini = 1;
+        S.win = S.mini_win;
+        S.ontop_cs = now_cs();
+        mini_show();
+    } else {
+        r.r[1] = (intptr_t)&S.mini_win;
+        swi(Wimp_CloseWindow, &r);
+        mini = 0;
+        S.win = S.main_win;
+        open_window_at(S.main_st[1], S.main_st[4], S.main_st[3] - S.main_st[1], S.main_st[4] - S.main_st[2]);
+        pic_refresh();
+        force_redraw(S.win, 0, -8192, 8192, 0);
+        update_controls(1);
+    }
+    choices_save();                     /* (where the mini player was) */
+    set_caret(S.win);
+}
+
+/* Keep on top: while playing, about once a second, the mini player comes
+   back to the front if another window has been opened over it. It never
+   takes the caret. */
+static void mini_keep_on_top(int t)
+{
+    int st[9];
+    _kernel_swi_regs r;
+    if (!mini || !S.ontop || S.fullscreen || t - S.ontop_cs < 100)
+        return;
+    S.ontop_cs = t;
+    window_state(S.win, st);
+    if (st[7] == -1)                    /* already at the front */
+        return;
+    st[7] = -1;
+    r.r[1] = (intptr_t)st;
+    swi(Wimp_OpenWindow, &r);
 }
 
 static void quit(void)
@@ -1449,22 +2082,37 @@ static void menu_select(const int *sel)
         }
     } else {
         switch (sel[0]) {
-        case 0: info_toggle(); break;
-        case 1: set_fullscreen(!S.fullscreen); break;
-        case 2: S.loop = !S.loop; break;        /* applies from the next file */
-#ifdef REEL_EGL
-        case 3:
-            S.direct = !S.direct;
-            if (S.fullscreen) {                  /* make the screen surface again */
-                surf_free();
-                pic_make(S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1);
-                pic_refresh();
+        case WM_INFO: info_toggle(); break;
+        case WM_FULL: set_fullscreen(!S.fullscreen); break;
+        case WM_MINI: set_mini(!mini); break;
+        case WM_ONTOP:
+            S.ontop = !S.ontop;
+            lg("keep on top %s", S.ontop ? "on" : "off");
+            choices_save();
+            break;
+        case WM_PIC: if (sel[1] >= 0 && sel[1] < N_PIC) set_pic_mode(sel[1]); break;
+        case WM_SPEED: if (sel[1] >= 0 && sel[1] < N_SPEED) set_speed_i(sel[1]); break;
+        case WM_TRACK:
+            if (sel[1] >= 0 && S.v && reelcore_set_audio_track(S.v, sel[1]) == 0)
+                lg("sound track %d", sel[1] + 1);
+            break;
+        case WM_LIST:
+            if (sel[1] >= 0 && sel[1] < S.list_n && sel[1] < MENU_MAX - 1)
+                list_play(sel[1]);
+            else if (sel[1] >= 0 && S.list_n > 1) {     /* Clear the rest: keep the one playing */
+                char *keep = S.list[S.list_i];
+                S.list[S.list_i] = NULL;
+                list_clear();
+                S.list[0] = keep;
+                S.list_n = 1;
+                set_title();
             }
             break;
-        case 4: close_video(); return;
-#else
-        case 3: close_video(); return;
-#endif
+        case WM_AB: ab_press(); break;
+        case WM_LOOP: S.loop = !S.loop; break;          /* a single file: from the next one */
+        case WM_FAST: set_fast(!S.fast); break;
+        case WM_VSYNC: set_vsync(!S.vsync); break;
+        case WM_CLOSE: close_video(); return;
         }
     }
     r.r[1] = (intptr_t)b;
@@ -1543,6 +2191,10 @@ static void key(int *b)
         break;
     case 'q': case 'Q': close_video(); return;
     case 'i': case 'I': info_toggle(); return;
+    case 'm': case 'M': set_mini(!mini); return;
+    case 'a': case 'A': ab_press(); return;
+    case 'n': case 'N': if (S.list_i + 1 < S.list_n) list_play(S.list_i + 1); return;
+    case 'p': case 'P': if (S.list_i > 0) list_play(S.list_i - 1); return;
     }
     r.r[0] = b[6];
     swi(Wimp_ProcessKey, &r);
@@ -1564,8 +2216,20 @@ static void tick(void)
     } else if (r2 == REELCORE_END) {
         lg("end of the file");
         S.ended = 1;
+        if (S.list_i + 1 < S.list_n) {          /* the playlist: the next file */
+            list_play(S.list_i + 1);
+            return;
+        }
+        if (S.loop && S.list_n > 1) {           /* ... and round again */
+            list_play(0);
+            return;
+        }
         update_controls(1);
         return;
+    }
+    if (S.ab == 2 && reelcore_position(S.v) >= S.ab_b) {
+        reelcore_seek(S.v, S.ab_a);             /* A-B repeat: back to A */
+        update_controls(1);
     }
     swi(OS_ReadMonotonicTime, &r);
     t = r.r[0];
@@ -1578,6 +2242,7 @@ static void tick(void)
         S.log_cs = t;
         S.log_nulls = S.log_frames = 0;
     }
+    mini_keep_on_top(t);
     if (t - info_prev_cs >= 100) {        /* the stats: once a second */
         info_stats();
         info_update();
@@ -1632,14 +2297,14 @@ static void message(int *b)
             }
             snprintf(file, sizeof(file), "%s", (const char *)&b[11]);
             ack(b);
-            play_file(file);
+            list_arrived(file);
         }
         break;
     case MSG_DATAOPEN:
         if (is_video_type(b[10])) {
             snprintf(file, sizeof(file), "%s", (const char *)&b[11]);
             ack(b);                     /* claims it */
-            play_file(file);
+            list_arrived(file);
         }
         break;
     case MSG_MODECHANGE:
@@ -1647,6 +2312,8 @@ static void message(int *b)
         read_screen();
         if (S.fullscreen) {
             set_fullscreen(0);
+        } else if (S.v && mini) {
+            mini_show();                /* back on the screen, above the icon bar */
         } else if (S.v && S.win) {
             int st[9];
             window_state(S.win, st);
@@ -1704,10 +2371,12 @@ int reel_main(int argc, char **argv)
 
     memset(&S, 0, sizeof(S));
     snprintf(S.play_text, sizeof(S.play_text), "Pause");
-#ifdef REEL_EGL
-    S.direct = !getenv("ReelEGL$NoDirect");
-#endif
+    S.speed_i = 2;                      /* normal */
+    S.mini_right = MINI_EDGE;           /* the mini player: bottom right, above the icon bar */
+    S.mini_bottom = -1;
     S.nosleep = getenv(APP "$NoSleep") != NULL;
+    S.vsync = getenv(APP "$NoVsync") == NULL;
+    S.vol = 1;
     r.r[0] = 380;
     r.r[1] = 0x4B534154;
     r.r[2] = (intptr_t)APP;
@@ -1721,10 +2390,11 @@ int reel_main(int argc, char **argv)
         return 0;
     }
     log_open();
+    choices_load();
     read_screen();
     iconbar_icon();
     if (argc > 1)
-        play_file(argv[1]);
+        list_arrived(argv[1]);
 
     for (;;) {
         int playing = S.v && !S.ended && !reelcore_paused(S.v);
@@ -1751,8 +2421,14 @@ int reel_main(int argc, char **argv)
                 redraw(block);
             break;
         case 2: {                                          /* Open_Window_Request */
-            int resized = block[0] == S.win &&
+            int resized = block[0] == S.win && !mini &&
                           (block[3] - block[1] != S.vis_w || block[4] - block[2] != S.vis_h);
+            if (mini && block[0] == S.win) {           /* the mini player dragged: remember where */
+                S.mini_right = S.scr_w - block[3];
+                S.mini_bottom = block[2];
+                if (S.mini_right < 0) S.mini_right = 0;
+                if (S.mini_bottom < 0) S.mini_bottom = 0;
+            }
             if (resized)
                 layout(block[3] - block[1], block[4] - block[2]);
             r.r[1] = (intptr_t)block;
@@ -1797,12 +2473,32 @@ int reel_main(int argc, char **argv)
             if (block[3] != S.win)
                 break;
             set_caret(S.win);
+            if (mini && block[4] == -1) {              /* the mini player's picture */
+                if (block[2] & (64 | 16)) {             /* drag: move the window */
+                    int d[10];
+                    d[0] = S.win;
+                    d[1] = 1;                           /* drag type 1: the window's position */
+                    memset(d + 2, 0, 8 * sizeof(int));
+                    r.r[1] = (intptr_t)d;
+                    swi(Wimp_DragBox, &r);
+                } else if (block[2] & (4 | 1))          /* double-click: the normal window */
+                    set_mini(0);
+                break;
+            }
             switch (block[4]) {
             case I_PLAY: toggle_pause(); break;
             case I_BACK: seek_by(-10); break;
             case I_FWD:  seek_by(10); break;
             case I_TRACK: case I_FILL: click_track(block[0]); break;
+            case I_VOL: case I_VOLFILL: {
+                int st[9], vx0, vx1;
+                window_state(S.win, st);
+                vol_x(S.vis_w, &vx0, &vx1);
+                set_volume((block[0] - (st[1] - st[5]) - vx0 - 4) / (double)(W_VOL - 8));
+                break;
+            }
             case I_FULL: set_fullscreen(1); break;
+            case I_NORMAL: if (mini) set_mini(0); break;
             case -1:
                 if (S.v) {                     /* a click on the picture pauses */
                     int st[9];
@@ -1836,6 +2532,10 @@ const uint8_t *reel_test_sprite(int *w, int *h, int *rows)
 }
 #endif
 int reel_test_fullscreen(void) { return S.fullscreen; }
+int reel_test_pic_flags(void) { return pic_flags_of[S.pic_mode]; }
+int reel_test_ab(double *a, double *b) { *a = S.ab_a; *b = S.ab_b; return S.ab; }
+int reel_test_list(int *n) { *n = S.list_n; return S.list_i; }
+int reel_test_mini(int *ontop) { *ontop = S.ontop; return mini; }
 #endif
 
 #ifndef REEL_NO_MAIN

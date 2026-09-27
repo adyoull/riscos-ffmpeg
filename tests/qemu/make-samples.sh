@@ -56,6 +56,11 @@ $FF -f lavfi -i testsrc2=size=352x288:rate=25:duration=2,scroll=h=0.0071:v=0.011
 # A 6 s clip with sound for tests/host/reel_test (the player's controls)
 $FF -f lavfi -i testsrc2=size=322x184:rate=25:duration=6 -f lavfi -i sine=frequency=440:sample_rate=48000:duration=6 \
   -c:v libx264 -preset fast -pix_fmt yuv420p -c:a aac -shortest "$OUT/long_h264_aac_322_184.mp4"
+# Two sound tracks (440 Hz "eng", 880 Hz "fra") for choosing a track
+$FF -f lavfi -i testsrc2=size=322x184:rate=25:duration=4 -f lavfi -i sine=frequency=440:sample_rate=48000:duration=4 \
+  -f lavfi -i sine=frequency=880:sample_rate=44100:duration=4 -map 0 -map 1 -map 2 \
+  -c:v libx264 -preset fast -pix_fmt yuv420p -c:a aac -metadata:s:a:0 language=eng -metadata:s:a:1 language=fra \
+  -shortest "$OUT/twoaudio_h264_aac_322_184.mp4"
 # The same with the video read about a second ahead of its sound (fragments of
 # 1.5 s, video then sound), like the trailer that froze Reel 0.6 on the Pi
 $FF -i "$OUT/long_h264_aac_322_184.mp4" -c copy -movflags frag_keyframe+empty_moov+default_base_moof \

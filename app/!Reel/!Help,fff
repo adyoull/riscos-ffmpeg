@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.10
+!Reel - a video player for RISC OS                        0.1.11
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -14,12 +14,20 @@ Double-click !Reel: its icon (a film reel) appears on the icon bar. Then:
   - drop a video file on the icon, or on Reel's window; or
   - double-click a video file in the Filer (while Reel is loaded).
 
+Drop several files at once (one drag from the Filer) and they play one
+after another: a playlist. Hold Shift as you drop to add files to the
+playlist instead of starting a new one.
+
 The window shows the picture with a row of controls under it:
 
   Pause/Play    stop and start (a click on the picture does the same)
   < 10s  10s >  go back or forward 10 seconds
   the bar       click anywhere on it to go there
-  the time      where you are / how long the video is
+  the time      where you are / how long the video is; then the speed
+                if it isn't normal (e.g. 1.5x), and A or AB while
+                A-B repeat is set
+  the volume    the green bar: click along it to set the volume.
+                Reel remembers it for next time
   Full          full screen (Escape or F to come back)
 
 Keys (click in the window first):
@@ -28,12 +36,68 @@ Keys (click in the window first):
   Down, Up      back / forward 1 minute
   F             full screen on and off
   Escape        leave full screen
+  M             the mini player on and off
+  A             A-B repeat: set A, then B (it repeats), then off
+  N, P          the next / previous file in the playlist
   Q             close the video
   I             the media info window on and off
 
-The window can be resized: the picture keeps its shape. Menu on the
-window: Media info, Full screen, Loop, Close. Menu on the icon: Info,
-Loop, Log, Quit.
+The window can be resized: the picture keeps its shape. When a playlist
+is playing, the title shows which file it is, e.g. "(2/5)".
+
+Menu on the window:
+  Media info          the media info window (below)
+  Full screen         the whole screen (Escape to come back)
+  Mini player         a small player above the icon bar (below)
+  Keep on top         the mini player comes back to the front
+  Picture >           Fit: the whole picture, with black bars
+                      Fill (crop): fill the window, cutting off the edges
+                      Original size: pixel for pixel, centred
+                      Stretch: fill the window, out of shape
+  Speed >             0.5x to 2x; the sound keeps its pitch
+  Sound track >       for files with more than one (e.g. languages)
+  Playlist >          jump to a file; Clear the rest
+  A-B repeat          as the A key
+  Loop                play the file (or the playlist) again and again
+  Fast decode         cheaper, rougher decoding, for files that are too
+                      much for the machine (it skips the deblocking
+                      filter, so you may see blocks)
+  Vsync (full screen) full screen waits for the screen's refresh before
+                      each picture: no tearing. Untick it to draw at
+                      once (a little faster; you may see a tear line).
+                      *Set Reel$NoVsync 1 starts with it off
+  Close               close the video
+
+Menu on the icon: Info, Loop, Log, Quit.
+
+Mini player
+-----------
+M, or Mini player on the window menu, swaps the window for a small one
+with no title bar in the bottom right of the screen, just above the icon
+bar: the picture (320 pixels wide on most screens), Play/Pause, the
+position bar and Normal. Drag the picture to move it; it opens there
+next time. Double-click the picture, click Normal or press M for the
+normal window again. The menu, keys and everything else work as in the
+window. A small picture is also cheaper to draw than a big one.
+
+Keep on top: RISC OS has no "always on top" for ordinary windows, so
+another window can cover the mini player. With Keep on top ticked, the
+mini player looks about once a second while playing and, if something
+has been opened over it, comes back to the front. It never takes the
+keyboard from what you're typing in.
+
+Carrying on where you stopped
+-----------------------------
+Reel remembers where you stopped each file (the last 100). Open one
+again and it asks whether to carry on from there or start again. Files
+played to the end, or hardly started, aren't remembered.
+
+Choices
+-------
+The volume, Keep on top and where the mini player goes are saved in
+<Choices$Write>.Reel.Choices (ReelEGL for !ReelEGL); where files were
+stopped in <Choices$Write>.Reel.Resume. The other options are for this
+session only.
 
 Media info
 ----------
@@ -118,7 +182,7 @@ screen memory). See its !Help.
 
 Known limits
 ------------
-- One video at a time. No playlist or subtitles yet.
+- One video at a time (a playlist plays them in turn). No subtitles yet.
 - Files with no video (sound only) aren't played.
 
 Licence

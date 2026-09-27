@@ -3,6 +3,51 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel 0.1.11: playback options and a mini player (2026-09-27)
+
+- **Volume:** a green bar in the controls row; click along it. It's
+  remembered (`Choices:Reel.Choices`). The bar is roughly how loud it
+  sounds (the level given to SharedSoundBuffer is its square).
+- **Mini player** (M, or the window menu): a small window with no title
+  bar, bottom right just above the icon bar (it asks the Wimp where the
+  icon bar is): the picture, Play/Pause, the position bar and Normal.
+  Drag the picture to move it (remembered); double-click it, click
+  Normal or press M for the normal window again. **Keep on top** (window
+  menu, remembered): RISC OS has no always-on-top for ordinary windows,
+  so while playing the mini player looks once a second and, if another
+  window has been opened over it, comes back to the front (never taking
+  the caret).
+- **Vsync (full screen)**, on by default: full screen waits for the
+  screen's refresh before each picture (Reel: OS_Byte 19; ReelEGL:
+  eglSwapInterval 1 with a back buffer). Untick it for Direct (ReelEGL:
+  `EGL_SINGLE_BUFFER`, straight into screen memory). `<App>$NoVsync`
+  starts with it off (was ReelEGL's `Direct`, `ReelEGL$NoDirect`).
+- **Speed** 0.5x to 2x (window menu); the sound keeps its pitch. The time
+  shows e.g. "1.5x".
+- **Picture:** Fit (as before), Fill (crop), Original size, Stretch.
+- **Fast decode:** skips the deblocking filter, for files that are too
+  much for the machine.
+- **Sound track:** choose among a file's sound tracks.
+- **Playlist:** files dropped together (one drag) play in turn; Shift
+  adds to the list. N/P, and the Playlist submenu (with Clear the rest);
+  the title shows "(2/5)". Loop loops the list.
+- **Carry on:** Reel remembers where you stopped each file (the last 100,
+  `Choices:Reel.Resume`) and asks whether to carry on from there.
+- **A-B repeat** (A, or the window menu): set A, set B, off. The time
+  shows " A" / " AB".
+- The window menu is regrouped, with submenus; the time field is wider
+  (hour-long files and the new marks fit); the narrowest window is 1096
+  OS units.
+- **reelcore:** `reelcore_set_speed` (FFmpeg's atempo; programs now link
+  `-lavfilter -lpostproc`), `reelcore_set_fast`, `reelcore_volume`,
+  `reelcore_audio_tracks`, `_track`, `_track_name`, `set_audio_track`;
+  `REELCORE_FILL` and `REELCORE_ORIGINAL` for `reelcore_draw_pixels` and
+  `ffegl_draw_surface`. The riscos6 devkit has 0.1.10's reelcore; these
+  reach the devkit with the next FFmpeg release.
+- Tests: `options_test` (speed, fast decoding, sound tracks, picture
+  modes); `reel_test` drives all of the above through the fake Wimp in
+  the Reel, SharedSoundBuffer and ReelEGL builds.
+
 ## Reel 0.1.10: reelcore and ffegl split (2026-09-27)
 
 - **ffegl was a player core with EGL attached; now they are two
