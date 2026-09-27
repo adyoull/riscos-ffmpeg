@@ -1,5 +1,28 @@
 # Changes
 
+## Reel 0.9 (2026-09-27)
+
+- **Sleeps between pictures.** On the Pi, Media info showed ReelEGL
+  decoding the 1280x544 trailer in 23% of the time (9.6 ms a picture,
+  4.3x real time), converting and drawing in under 5 ms, yet Task
+  Manager showed 56%: the rest was 5200 null events a second asking
+  whether the next picture was due yet.
+  - ffegl: `ffegl_idle_time()` says how long the caller may sleep after
+    `ffegl_update()`: 0 while there's work (fewer than 3 pictures
+    decoded, sound under 0.35 s queued, a picture due), otherwise the
+    time to the next picture, at most 0.1 s.
+  - Reel polls with `Wimp_PollIdle` until then (whole centiseconds, so it
+    wakes on or just before time; the last few ms are polled as before).
+    The next pictures are decoded before sleeping, so showing one on
+    time needs only the wake-up.
+  - Media info's Desktop line and the log show how much of the time Reel
+    was asleep. `Reel$NoSleep` / `ReelEGL$NoSleep` polls flat out.
+- Test: `idle_test` plays the same clip polling every 0.5 ms and
+  sleeping as Reel does (waking up to 1 cs late at random, 8 ms a
+  decode): the same 150 pictures, none late, worst 4.7 ms after its time
+  (flat out: up to 5 ms early), with 607 wake-ups instead of 9633.
+  reel_test checks Wimp_PollIdle is used.
+
 ## Reel 0.8 (2026-09-27)
 
 - **Media info window** (window menu "Media info", or I), replacing the

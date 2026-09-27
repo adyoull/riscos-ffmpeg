@@ -63,6 +63,7 @@ int __dynamic_da_max_size = 512 << 20;
 #define Wimp_OpenWindow        0x400C5
 #define Wimp_CloseWindow       0x400C6
 #define Wimp_Poll              0x400C7
+#define Wimp_PollIdle          0x400E1
 #define Wimp_RedrawWindow      0x400C8
 #define Wimp_UpdateWindow      0x400C9
 #define Wimp_GetRectangle      0x400CA
@@ -136,10 +137,14 @@ static struct {
     int vis_w, vis_h;                   /* the window's visible size */
     int last_time_cs;
     int log_cs, log_nulls, log_frames;  /* for the once-a-second log line */
+    unsigned log_slept;
     int info, info_open;                /* the media info window */
     char info_title[80];
     unsigned st_nulls, draw_n;          /* for its stats: null events, pictures drawn ... */
     unsigned draw_cs;                   /* ... and the time drawing them took */
+    int nosleep;                        /* Reel$NoSleep: poll flat out, as before 0.9 */
+    int idle_cs;                        /* after a null: centiseconds we may sleep */
+    unsigned slept_cs;                  /* for the stats: sleep asked for */
 #ifdef REEL_EGL
     EGLDisplay dpy;
     EGLConfig cfg;
@@ -1015,7 +1020,7 @@ static info_row_t info_rows[INFO_MAX];
 static int info_n, info_stats_at;       /* rows, and the first of the stats */
 static FFEGLStats info_prev;
 static int info_prev_cs;
-static unsigned info_prev_nulls, info_prev_draw_n, info_prev_draw_cs;
+static unsigned info_prev_nulls, info_prev_draw_n, info_prev_draw_cs, info_prev_slept;
 
 static info_row_t *info_add(int heading, const char *label, const char *value)
 {
@@ -1130,8 +1135,9 @@ static void info_stats(void)
         snprintf(r[9].value, sizeof(r[9].value), "SDL: %.2f s queued", st.sound_queued);
     snprintf(r[10].value, sizeof(r[10].value), "%.2f Mbit/s (%.1f MB so far)",
              (st.bytes_read - info_prev.bytes_read) * 8 / dt / 1e6, st.bytes_read / 1048576.0);
-    snprintf(r[11].value, sizeof(r[11].value), "%.0f null events a second; screen %dx%d, %d bpp, %s%s",
-             (S.st_nulls - info_prev_nulls) / dt, S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1 << S.log2bpp,
+    snprintf(r[11].value, sizeof(r[11].value), "%.0f null events a second, %s %.0f%% of the time; screen %dx%d, %d bpp, %s%s",
+             (S.st_nulls - info_prev_nulls) / dt, S.nosleep ? "no sleeping (Reel$NoSleep):" : "asleep",
+             (S.slept_cs - info_prev_slept) / dt, S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1 << S.log2bpp,
              S.trgb ? "TRGB" : "TBGR", S.fullscreen ? "; full screen" : "");
 
     info_prev = st;
@@ -1139,6 +1145,7 @@ static void info_stats(void)
     info_prev_nulls = S.st_nulls;
     info_prev_draw_n = S.draw_n;
     info_prev_draw_cs = S.draw_cs;
+    info_prev_slept = S.slept_cs;
 }
 
 static void text_colour(unsigned fg)
@@ -1317,6 +1324,7 @@ static void info_new_file(void)
     info_prev_nulls = S.st_nulls;
     info_prev_draw_n = S.draw_n;
     info_prev_draw_cs = S.draw_cs;
+    info_prev_slept = S.slept_cs;
     info_close();
     if (was_open)
         info_open();
@@ -1545,6 +1553,7 @@ static void tick(void)
     r2 = ffegl_update(S.v);
     S.log_nulls++;
     S.st_nulls++;
+    S.idle_cs = S.nosleep ? 0 : (int)(ffegl_idle_time(S.v) * 100);  /* whole centiseconds: wake no later than due */
     if (r2 == FFEGL_NEW_FRAME) {
         show_frame();
         S.log_frames++;
@@ -1559,7 +1568,9 @@ static void tick(void)
     if (logf && t - S.log_cs >= 100) {    /* once a second */
         char d[300];
         ffegl_debug(S.v, d, sizeof(d));
-        lg("%s; %d nulls, %d pictures in %.2f s", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0);
+        lg("%s; %d nulls, %d pictures in %.2f s, asleep %u%%", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0,
+           (unsigned)((S.slept_cs - S.log_slept) * 100 / (t - S.log_cs)));
+        S.log_slept = S.slept_cs;
         S.log_cs = t;
         S.log_nulls = S.log_frames = 0;
     }
@@ -1692,6 +1703,7 @@ int reel_main(int argc, char **argv)
 #ifdef REEL_EGL
     S.direct = !getenv("ReelEGL$NoDirect");
 #endif
+    S.nosleep = getenv(APP "$NoSleep") != NULL;
     r.r[0] = 380;
     r.r[1] = 0x4B534154;
     r.r[2] = (intptr_t)APP;
@@ -1712,9 +1724,19 @@ int reel_main(int argc, char **argv)
 
     for (;;) {
         int playing = S.v && !S.ended && !ffegl_paused(S.v);
+        int sleep_cs = playing ? S.idle_cs : 0;
         r.r[0] = (playing ? 0 : 1) | (1 << 4) | (1 << 5);
         r.r[1] = (intptr_t)block;
-        if (swi(Wimp_Poll, &r))
+        S.idle_cs = 0;                  /* until the next null says otherwise */
+        if (sleep_cs > 0) {
+            /* nothing to do until the next picture is due: let other tasks
+               have the time (a null comes back at that time, or later if
+               the desktop is busy; events still come at once) */
+            r.r[2] = now_cs() + sleep_cs;
+            S.slept_cs += sleep_cs;
+            if (swi(Wimp_PollIdle, &r))
+                continue;
+        } else if (swi(Wimp_Poll, &r))
             continue;
         switch (r.r[0]) {
         case 0:  tick(); break;                            /* null */

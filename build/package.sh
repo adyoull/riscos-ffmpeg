@@ -86,7 +86,7 @@ rm -f "$DIST/FFmpeg-EGL-examples-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-EGL-examples-$V.zip" EGLExamples )
 
 # --- !Reel and !ReelEGL, the video player (sprite / EGL drawing) ---------
-RV=${REEL_VERSION:-0.8}
+RV=${REEL_VERSION:-0.9}
 RT=$TMP/Reel
 mkdir -p "$RT"
 for app in Reel ReelEGL; do

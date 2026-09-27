@@ -52,6 +52,13 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcode
 echo "== slow_test (decoding slower than real time)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/slow_test" "$SAMPLES/long_h264_aac_322_184.mp4" 2>&1 | grep -v "swscaler" || bad=1
 
+# sleeping between pictures (ffegl_idle_time) against polling flat out
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -I$HERE -c "$HERE/idle_test.c" -o "$O/idle_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcodec_send_packet -o "$O/idle_test" "$O/ffegl.o" \
+  "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/idle_test.o" $LIBS -lm 2>/dev/null
+echo "== idle_test (sleeping until the next picture is due)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/idle_test" "$SAMPLES/long_h264_aac_322_184.mp4" 2>&1 | grep -v "swscaler\|ffegl: " || bad=1
+
 # Reel (player/reel.c) with ffegl built without GL, fake Wimp, fake SDL audio
 $CC -DFFEGL_NO_GL -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_nogl.o"
 $CC -DREEL_TEST -DREEL_NO_MAIN -I$S/include -I$DEVKIT/include -I$TOP/ffegl -c "$TOP/player/reel.c" -o "$O/reel.o"

@@ -129,6 +129,14 @@ void ffegl_set_log(void (*fn)(int level, const char *line), int verbose);
    FFEGL_NEW_FRAME once a picture is decoded. */
 int ffegl_update(FFEGLVideo *v);
 
+/* After ffegl_update(): how long the caller can sleep (e.g. Wimp_PollIdle)
+   before calling it again, in seconds. 0 while there's work to do now
+   (pictures to decode, sound to top up, a picture due); otherwise the time
+   until the next picture is due, at most 0.1 s (the sound is kept 0.5 s
+   ahead, so that's plenty). Pictures are decoded ahead before sleeping, so
+   waking when one is due is enough to show it on time. */
+double ffegl_idle_time(FFEGLVideo *v);
+
 /* Position of the current frame in seconds. */
 double ffegl_position(const FFEGLVideo *v);
 

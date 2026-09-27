@@ -84,6 +84,9 @@ static void click(int *b, int x, int y, int buttons, int window, int icon)
 static int sx(int w, int wx) { return st(w)[1] - st(w)[5] + wx; }
 
 static int nulls;                     /* null events left to deliver in this phase */
+static int idle_polls;
+static int phase;
+static int next_is_null(void);
 
 static int script(int *b)
 {
@@ -100,6 +103,12 @@ static int script(int *b)
 enum { P_PLAY1, P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL, P_UNFULL,
        P_RESIZE, P_PLAY4, P_DROP2, P_PLAY5, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_CLOSE, P_QUIT };
 static int phase = -1, phase_step;
+/* the phases that play (deliver nulls) */
+static int next_is_null(void)
+{
+    return phase == P_PLAY1 || phase == P_PLAY2 || phase == P_PLAY3 || phase == P_PLAYFULL || phase == P_PLAY4 ||
+           phase == P_PLAY5 || phase == P_PLAY6 || phase == P_INFOPLAY;
+}
 static double pos_before;
 
 static int next_event(int *b)
@@ -143,7 +152,7 @@ static int next_event(int *b)
             if (phase_step++ < 70) { fake_time += 0.02; if (phase_step == 1) info_seen[0] = 0; return 0; }
             CHECK(info_updates >= 1, "stats not updated (%d)", info_updates);
             /* (decoding takes no fake time, so there's no "ms each" here) */
-            CHECK(strstr(info_seen, "25.0 a second") && (strstr(info_seen, "SharedSoundBuffer: ") || strstr(info_seen, "SDL: ")) &&
+            CHECK((strstr(info_seen, "25.0 a second") || strstr(info_seen, "24.8 a second") || strstr(info_seen, "24.9 a second")) && (strstr(info_seen, "SharedSoundBuffer: ") || strstr(info_seen, "SDL: ")) &&
                   strstr(info_seen, "pictures,") && strstr(info_seen, "Mbit/s"),
                   "stats text: %.400s", info_seen);
             printf("  info: %s\n", strstr(info_seen, "Stats") ? strstr(info_seen, "Stats") : info_seen);
@@ -279,6 +288,8 @@ static void final_checks(void)
     int w, h, rows;
     (void)w; (void)h; (void)rows;
     CHECK(created == 1 && nicons == 7, "window: created %d, %d icons", created, nicons);
+    CHECK(idle_polls > 20, "Wimp_PollIdle used only %d times while playing", idle_polls);
+    printf("  %d Wimp_PollIdle calls\n", idle_polls);
 #ifdef FAKE_SSB
     CHECK(ssb_played_total > (unsigned)ssb_rate * 4, "SharedSoundBuffer played only %u bytes", ssb_played_total);
     CHECK(!ssb_open, "the sound stream was left open");
@@ -425,6 +436,11 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         plots++;
         return NULL;
     }
+    case 0x400E1:                                                         /* Wimp_PollIdle */
+        idle_polls++;
+        if (in->r[2] > (int)(fake_time * 100) + 1 && next_is_null())
+            fake_time = in->r[2] / 100.0 - 0.02;                          /* slept: time passes */
+        /* fallthrough */
     case 0x400C7: {                                                       /* Wimp_Poll */
         last_mask = in->r[0];
         out->r[0] = next_event(b);

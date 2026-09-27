@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                           0.8
+!Reel - a video player for RISC OS                           0.9
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -53,7 +53,8 @@ at the top, "stats for nerds", updated every second while playing:
   Waiting           pictures decoded and packets read but not yet used
   Sound             the sound output and how much is queued
   Reading           how fast the file is being read
-  Desktop           null events a second, and the screen mode
+  Desktop           null events a second, how much of the time Reel
+                    was asleep, and the screen mode
 
 and below that what's in the file: the container, length, size and bit
 rate; the video's codec, profile, level, size, aspect, frame rate, pixel
@@ -89,6 +90,12 @@ smoothly, convert it once, e.g. on a faster computer:
 
 A smaller window is cheaper than full screen: the picture is scaled to
 the window.
+
+Between pictures Reel sleeps (Wimp_PollIdle) until the next one is due,
+having decoded the next few already, so other programs get the time and
+Task Manager shows Reel using about what decoding and drawing need.
+*Set Reel$NoSleep 1 (ReelEGL$NoSleep) before starting it polls flat out
+instead, as before 0.9, to compare.
 
 Needs
 -----

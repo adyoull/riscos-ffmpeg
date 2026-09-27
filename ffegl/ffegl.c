@@ -1167,6 +1167,29 @@ end_check:
     return FFEGL_SAME_FRAME;
 }
 
+#define IDLE_MAX 0.1
+
+double ffegl_idle_time(FFEGLVideo *v)
+{
+    double due;
+    if (v->paused)
+        return IDLE_MAX;
+    if (v->need_first)
+        return 0;
+    /* pictures still to decode */
+    if (v->qn < 3 && (v->vpk_n || !v->eof_demux || !v->vflushed))
+        return 0;
+    /* the sound to top up (fill() keeps it at v->ahead) */
+    if (v->dev && !v->stalled && !v->eof_demux && queued_audio(v) < v->ahead - IDLE_MAX - 0.05)
+        return 0;
+    if (!v->qn)
+        return v->eof_demux ? IDLE_MAX / 4 : 0;   /* the end: sound draining */
+    due = v->qpts[0] - clock_now(v);
+    if (due <= 0)
+        return 0;
+    return due > IDLE_MAX ? IDLE_MAX : due;
+}
+
 void ffegl_pause(FFEGLVideo *v, int paused)
 {
     paused = !!paused;
