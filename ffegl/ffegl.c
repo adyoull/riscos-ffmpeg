@@ -24,8 +24,22 @@
 #include "libswscale/swscale.h"
 #include "ffegl.h"
 
+/* On RISC OS the sound goes straight to SharedSoundBuffer/StreamManager
+   from this (the caller's) thread: StreamManager plays it from interrupts,
+   so nothing depends on a thread being scheduled. SDL's audio needs its own
+   thread to take the queued sound, and in a Wimp task that only runs while
+   the task is paged in, which on the Pi wasn't enough (Reel 0.4: the queue
+   never drained). FFEGL_AUDIO=sdl uses SDL anyway. FFEGL_SSB builds the
+   same code for the host test, with fake SWIs. */
+#if defined(__riscos__) || defined(FFEGL_SSB)
+#define USE_SSB 1
+#include <kernel.h>
+#endif
+
 #define QMAX          8      /* decoded frames kept ahead of the clock */
-#define AUDIO_AHEAD   0.25   /* seconds of sound kept queued */
+#define AUDIO_AHEAD   0.25   /* seconds of sound kept queued (SDL) */
+#define SSB_AHEAD     0.5    /* and with SharedSoundBuffer: rides out a busy desktop */
+#define SSB_BLOCK     2048   /* sample frames per StreamManager block */
 #define READ_BUDGET   64     /* packets read per ffegl_update at most */
 
 struct FFEGLVideo {
@@ -64,6 +78,15 @@ struct FFEGLVideo {
     uint8_t *abuf, *mixbuf;
     int abuf_size;
     int volume;                        /* 0..SDL_MIX_MAXVOLUME */
+    double ahead;                      /* seconds of sound to keep queued */
+#ifdef USE_SSB
+    int ssb;                           /* 1: SharedSoundBuffer, not SDL (dev is then 1) */
+    int ssb_handle, sm_stream;
+    int ssb_started, ssb_user_paused;
+    uint8_t *pend;                     /* sound not yet given to StreamManager */
+    unsigned pend_len, pend_size;
+    unsigned added_bytes, added_blocks;
+#endif
 
     /* timer clock (no sound, or after the sound ended) */
     int64_t t0;                        /* av_gettime_relative() at pts 0 */
@@ -98,11 +121,266 @@ static void set_error(const char *fmt, const char *arg)
 const char *ffegl_last_error(void) { return last_error; }
 
 
+/* ---------------------------------------------------------------- sound out */
+
+#ifdef USE_SSB
+#define OS_SWINumberFromString              0x39
+#define SharedSoundBuffer_OpenStream        0x55FC0
+#define SharedSoundBuffer_CloseStream       0x55FC1
+#define SharedSoundBuffer_Volume            0x55FC4
+#define SharedSoundBuffer_SampleRate        0x55FC5
+#define SharedSoundBuffer_Pause             0x55FC9
+#define SharedSoundBuffer_ReturnStreamHandle 0x55FCE
+#define StreamManager_AddBlock              0x57282
+#define StreamManager_SetBuffer             0x57287
+#define StreamManager_BufferStats           0x57288
+#define SSB_BLOCK_BYTES (SSB_BLOCK * 4)
+
+static _kernel_oserror *ssb_swi(int n, int r0, int r1, int r2, _kernel_swi_regs *out)
+{
+    _kernel_swi_regs r;
+    memset(&r, 0, sizeof(r));
+    r.r[0] = r0; r.r[1] = r1; r.r[2] = r2;
+    return _kernel_swi(n, &r, out ? out : &r);
+}
+
+static int ssb_have(const char *swi)
+{
+    _kernel_swi_regs r;
+    memset(&r, 0, sizeof(r));
+    r.r[1] = (int)(intptr_t)swi;
+    return _kernel_swi(OS_SWINumberFromString, &r, &r) == NULL;
+}
+
+/* Opens the stream, paused; 0 or an error message. */
+static const char *ssb_start(FFEGLVideo *v)
+{
+    _kernel_swi_regs r;
+    _kernel_oserror *e;
+    static char msg[96];
+    if ((e = ssb_swi(SharedSoundBuffer_OpenStream, 2, (int)(intptr_t)"ffegl", SSB_BLOCK_BYTES, &r))) {
+        snprintf(msg, sizeof(msg), "SharedSoundBuffer_OpenStream: %.60s", e->errmess);
+        return msg;
+    }
+    v->ssb_handle = r.r[0];
+    if ((e = ssb_swi(SharedSoundBuffer_ReturnStreamHandle, v->ssb_handle, 0, 0, &r))) {
+        ssb_swi(SharedSoundBuffer_CloseStream, v->ssb_handle, 0, 0, NULL);
+        v->ssb_handle = 0;
+        snprintf(msg, sizeof(msg), "SharedSoundBuffer_ReturnStreamHandle: %.50s", e->errmess);
+        return msg;
+    }
+    v->sm_stream = r.r[0];
+    /* room for far more than we keep queued, so AddBlock doesn't refuse */
+    ssb_swi(StreamManager_SetBuffer, v->sm_stream, v->rate * 4 * 2 + SSB_BLOCK_BYTES * 4, 0, NULL);
+    ssb_swi(SharedSoundBuffer_SampleRate, v->ssb_handle, v->rate * 1024, 0, NULL);
+    ssb_swi(SharedSoundBuffer_Volume, v->ssb_handle, (int)0xFFFFFFFF, 0, NULL);
+    ssb_swi(SharedSoundBuffer_Pause, v->ssb_handle, 0, 0, NULL);     /* R1 bit 0 clear: paused */
+    v->ssb_started = 0;
+    v->pend_len = 0;
+    v->added_bytes = v->added_blocks = 0;
+    return NULL;
+}
+
+static void ssb_stop(FFEGLVideo *v)
+{
+    if (v->ssb_handle)
+        ssb_swi(SharedSoundBuffer_CloseStream, v->ssb_handle, 0, 0, NULL);
+    v->ssb_handle = v->sm_stream = 0;
+}
+
+/* Bytes StreamManager holds that haven't been played. BufferStats gives
+   added and played; if they turn out to count blocks, convert. */
+static unsigned ssb_unplayed(FFEGLVideo *v)
+{
+    _kernel_swi_regs r;
+    unsigned added, played;
+    if (!v->sm_stream || ssb_swi(StreamManager_BufferStats, v->sm_stream, 0, 0, &r))
+        return 0;
+    added = (unsigned)r.r[0];
+    played = (unsigned)r.r[1];
+    if (added == v->added_blocks && added != v->added_bytes) {
+        added *= SSB_BLOCK_BYTES;
+        played *= SSB_BLOCK_BYTES;
+    }
+    return added > played ? added - played : 0;
+}
+
+/* Gives StreamManager whole blocks (all of it, padded, when FINAL), and
+   starts playing once two blocks are there. */
+static void ssb_push(FFEGLVideo *v, int final)
+{
+    unsigned off = 0;
+    if (!v->ssb_handle)
+        return;
+    while (v->pend_len - off >= SSB_BLOCK_BYTES || (final && v->pend_len > off)) {
+        unsigned n = v->pend_len - off;
+        if (n < SSB_BLOCK_BYTES) {                 /* the last bit: pad with silence */
+            memset(v->pend + off + n, 0, SSB_BLOCK_BYTES - n);
+            v->pend_len = off + SSB_BLOCK_BYTES;
+        }
+        if (ssb_swi(StreamManager_AddBlock, v->sm_stream, (int)(intptr_t)(v->pend + off), SSB_BLOCK_BYTES, NULL))
+            break;                                 /* full: try again next time */
+        off += SSB_BLOCK_BYTES;
+        v->added_bytes += SSB_BLOCK_BYTES;
+        v->added_blocks++;
+    }
+    if (off) {
+        memmove(v->pend, v->pend + off, v->pend_len - off);
+        v->pend_len -= off;
+    }
+    if (!v->ssb_started && !v->ssb_user_paused &&
+        (v->added_blocks >= 2 || (final && v->added_blocks > 0))) {
+        ssb_swi(SharedSoundBuffer_Pause, v->ssb_handle, 1, 0, NULL);   /* play */
+        v->ssb_started = 1;
+    }
+}
+#endif
+
+/* Opens the sound output at about FREQ; 0, or -1 with audio_note set. */
+static int aud_open(FFEGLVideo *v, int freq)
+{
+    SDL_AudioSpec want, have;
+#ifdef USE_SSB
+    const char *which = getenv("FFEGL_AUDIO");
+    if (!which || strcmp(which, "sdl")) {
+        const char *err;
+        if (!ssb_have("SharedSoundBuffer_OpenStream") || !ssb_have("StreamManager_AddBlock")) {
+            snprintf(v->audio_note, sizeof(v->audio_note), "SharedSoundBuffer/StreamManager not loaded");
+            return -1;
+        }
+        v->rate = freq;
+        if ((err = ssb_start(v)) != NULL) {
+            snprintf(v->audio_note, sizeof(v->audio_note), "%s", err);
+            return -1;
+        }
+        v->ssb = 1;
+        v->dev = 1;
+        v->bytes_per_sec = freq * 4;
+        v->latency = 0.02;                         /* SharedSound's own buffer, about */
+        v->ahead = SSB_AHEAD;
+        v->ssb_user_paused = 1;                    /* until ffegl_open unpauses */
+        return 0;
+    }
+#endif
+#ifdef __riscos__
+    /* Only SDL's RISC OS driver (SharedSoundBuffer + StreamManager) plays
+       reliably. Without it SDL would fall back to UnixLib's /dev/dsp, which
+       takes the sound and may never play it; better to say what's missing.
+       SDL_AUDIODRIVER set by the user still wins. */
+    if (!SDL_getenv("SDL_AUDIODRIVER"))
+        SDL_setenv("SDL_AUDIODRIVER", "riscos", 1);
+#endif
+    if (!SDL_WasInit(SDL_INIT_AUDIO) && SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
+        snprintf(v->audio_note, sizeof(v->audio_note), "%s", SDL_GetError());
+        return -1;
+    }
+    memset(&want, 0, sizeof(want));
+    want.freq = freq;
+    want.format = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples = 2048;
+    v->dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
+    if (!v->dev) {
+        snprintf(v->audio_note, sizeof(v->audio_note), "%s", SDL_GetError());
+        return -1;
+    }
+    v->rate = have.freq;
+    v->bytes_per_sec = have.freq * 4;
+    v->latency = have.samples / (double)have.freq;
+    v->ahead = AUDIO_AHEAD;
+    return 0;
+}
+
+static unsigned aud_queued(FFEGLVideo *v)
+{
+#ifdef USE_SSB
+    if (v->ssb)
+        return ssb_unplayed(v) + v->pend_len;
+#endif
+    return SDL_GetQueuedAudioSize(v->dev);
+}
+
+static void aud_queue(FFEGLVideo *v, const void *data, unsigned bytes)
+{
+#ifdef USE_SSB
+    if (v->ssb) {
+        /* room for the new sound plus padding to a whole block */
+        if (v->pend_len + bytes + SSB_BLOCK_BYTES > v->pend_size) {
+            unsigned size = v->pend_len + bytes + SSB_BLOCK_BYTES * 2;
+            uint8_t *p = av_realloc(v->pend, size);
+            if (!p)
+                return;
+            v->pend = p;
+            v->pend_size = size;
+        }
+        memcpy(v->pend + v->pend_len, data, bytes);
+        v->pend_len += bytes;
+        ssb_push(v, 0);
+        return;
+    }
+#endif
+    SDL_QueueAudio(v->dev, data, bytes);
+}
+
+/* The sound has all been decoded: play what's left. */
+static void aud_flush(FFEGLVideo *v)
+{
+#ifdef USE_SSB
+    if (v->ssb)
+        ssb_push(v, 1);
+#else
+    (void)v;
+#endif
+}
+
+static void aud_pause(FFEGLVideo *v, int paused)
+{
+#ifdef USE_SSB
+    if (v->ssb) {
+        v->ssb_user_paused = paused;
+        if (v->ssb_started)
+            ssb_swi(SharedSoundBuffer_Pause, v->ssb_handle, paused ? 0 : 1, 0, NULL);
+        else if (!paused)
+            ssb_push(v, 0);
+        return;
+    }
+#endif
+    SDL_PauseAudioDevice(v->dev, paused);
+}
+
+/* Throws away everything queued (seek). */
+static void aud_clear(FFEGLVideo *v)
+{
+#ifdef USE_SSB
+    if (v->ssb) {
+        /* StreamManager has no "empty the buffer": start a new stream */
+        ssb_stop(v);
+        if (ssb_start(v))
+            v->stalled = 1;                        /* can't: carry on without sound */
+        return;
+    }
+#endif
+    SDL_ClearQueuedAudio(v->dev);
+}
+
+static void aud_close(FFEGLVideo *v)
+{
+#ifdef USE_SSB
+    if (v->ssb) {
+        ssb_stop(v);
+        av_freep(&v->pend);
+        v->dev = 0;
+        return;
+    }
+#endif
+    SDL_CloseAudioDevice(v->dev);
+}
+
 /* ---------------------------------------------------------------- clock */
 
 static double queued_audio(const FFEGLVideo *v)
 {
-    return v->dev && !v->stalled ? SDL_GetQueuedAudioSize(v->dev) / (double)v->bytes_per_sec : 0;
+    return v->dev && !v->stalled ? aud_queued((FFEGLVideo *)v) / (double)v->bytes_per_sec : 0;
 }
 
 /* If the sound device takes none of the queued sound for this long while
@@ -115,8 +393,8 @@ static void audio_stalled(FFEGLVideo *v, double c)
 {
     av_log(NULL, AV_LOG_WARNING, "ffegl: the sound device isn't playing; carrying on without sound\n");
     v->stalled = 1;
-    SDL_ClearQueuedAudio(v->dev);
-    SDL_PauseAudioDevice(v->dev, 1);
+    aud_clear(v);
+    aud_pause(v, 1);
     v->audio_clock = 0;
     v->t0 = av_gettime_relative() - (int64_t)(c * 1e6);
 }
@@ -177,42 +455,19 @@ static AVCodecContext *open_decoder(AVStream *st)
 
 static int open_audio(FFEGLVideo *v)
 {
-    SDL_AudioSpec want, have;
     AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
+    int freq = v->adec->sample_rate > 0 ? v->adec->sample_rate : 44100;
 
-#ifdef __riscos__
-    /* Only SDL's RISC OS driver (SharedSoundBuffer + StreamManager) plays
-       reliably. Without it SDL would fall back to UnixLib's /dev/dsp, which
-       takes the sound and may never play it; better to say what's missing.
-       SDL_AUDIODRIVER set by the user still wins. */
-    if (!SDL_getenv("SDL_AUDIODRIVER"))
-        SDL_setenv("SDL_AUDIODRIVER", "riscos", 1);
-#endif
-    if (!SDL_WasInit(SDL_INIT_AUDIO) && SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
-        av_log(NULL, AV_LOG_WARNING, "ffegl: no sound (%s)\n", SDL_GetError());
-        snprintf(v->audio_note, sizeof(v->audio_note), "%s", SDL_GetError());
+    if (freq != 44100 && freq != 48000 && freq != 22050)
+        freq = 48000;
+    if (aud_open(v, freq) < 0) {
+        av_log(NULL, AV_LOG_WARNING, "ffegl: no sound (%s)\n", v->audio_note);
         return -1;
     }
-    memset(&want, 0, sizeof(want));
-    want.freq = v->adec->sample_rate > 0 ? v->adec->sample_rate : 44100;
-    if (want.freq != 44100 && want.freq != 48000 && want.freq != 22050)
-        want.freq = 48000;
-    want.format = AUDIO_S16SYS;
-    want.channels = 2;
-    want.samples = 2048;
-    v->dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
-    if (!v->dev) {
-        av_log(NULL, AV_LOG_WARNING, "ffegl: no sound (%s)\n", SDL_GetError());
-        snprintf(v->audio_note, sizeof(v->audio_note), "%s", SDL_GetError());
-        return -1;
-    }
-    v->rate = have.freq;
-    v->bytes_per_sec = have.freq * 4;
-    v->latency = have.samples / (double)have.freq;
     if (swr_alloc_set_opts2(&v->swr, &stereo, AV_SAMPLE_FMT_S16, v->rate,
                             &v->adec->ch_layout, v->adec->sample_fmt, v->adec->sample_rate,
                             0, NULL) < 0 || swr_init(v->swr) < 0) {
-        SDL_CloseAudioDevice(v->dev);
+        aud_close(v);
         v->dev = 0;
         return -1;
     }
@@ -283,7 +538,7 @@ FFEGLVideo *ffegl_open(const char *url, int flags)
         v->paused = 1;
         v->pause_pos = 0;
     } else if (v->dev)
-        SDL_PauseAudioDevice(v->dev, 0);
+        aud_pause(v, 0);
     timer_set(v, 0);
     return v;
 
@@ -306,7 +561,7 @@ void ffegl_close(FFEGLVideo *v)
     if (!v)
         return;
     if (v->dev)
-        SDL_CloseAudioDevice(v->dev);
+        aud_close(v);
     clear_queue(v);
     av_frame_free(&v->cur);
     av_frame_free(&v->frame);
@@ -420,11 +675,11 @@ static void got_audio(FFEGLVideo *v, AVFrame *f)
         uint8_t *m = av_mallocz(bytes);
         if (m) {
             SDL_MixAudioFormat(m, v->abuf, AUDIO_S16SYS, bytes, v->volume);
-            SDL_QueueAudio(v->dev, m, bytes);
+            aud_queue(v, m, bytes);
             av_free(m);
         }
     } else
-        SDL_QueueAudio(v->dev, v->abuf, bytes);
+        aud_queue(v, v->abuf, bytes);
     v->audio_end += n / (double)v->rate;
 }
 
@@ -437,7 +692,7 @@ static void decode(FFEGLVideo *v, AVCodecContext *dec, AVPacket *pkt, int video)
     for (;;) {
         ret = avcodec_receive_frame(dec, v->frame);
         if (ret == AVERROR_EOF) {
-            if (video) v->eof_video = 1; else v->eof_audio = 1;
+            if (video) v->eof_video = 1; else { v->eof_audio = 1; if (v->dev && !v->stalled) aud_flush(v); }
             return;
         }
         if (ret < 0)
@@ -452,7 +707,7 @@ static void fill(FFEGLVideo *v)
 {
     for (int budget = READ_BUDGET; budget > 0 && !v->eof_demux; budget--) {
         int need_v = v->qn < 3;
-        int need_a = v->dev && !v->stalled && queued_audio(v) < AUDIO_AHEAD;
+        int need_a = v->dev && !v->stalled && queued_audio(v) < v->ahead;
         int ret;
         if (!need_v && !need_a)
             break;
@@ -539,14 +794,14 @@ void ffegl_pause(FFEGLVideo *v, int paused)
         v->pause_pos = v->cur ? clock_now(v) : 0;
         v->paused = 1;
         if (v->dev)
-            SDL_PauseAudioDevice(v->dev, 1);
+            aud_pause(v, 1);
     } else {
         v->paused = 0;
         v->stall_since = 0;                 /* the device needs a moment to start again */
         if (!v->audio_clock || v->audio_end < 0)
             timer_set(v, v->pause_pos);
         if (v->dev)
-            SDL_PauseAudioDevice(v->dev, 0);
+            aud_pause(v, 0);
     }
 }
 
@@ -562,8 +817,8 @@ int ffegl_seek(FFEGLVideo *v, double seconds)
     avcodec_flush_buffers(v->vdec);
     if (v->adec)
         avcodec_flush_buffers(v->adec);
-    if (v->dev)
-        SDL_ClearQueuedAudio(v->dev);
+    if (v->dev && !v->stalled)
+        aud_clear(v);
     if (v->swr)
         swr_init(v->swr);                 /* drop what it buffered */
     clear_queue(v);

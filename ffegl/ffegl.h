@@ -14,8 +14,9 @@
  *     later the texture shares ffegl's pixels through an EGLImage (no copy).
  *   - ffegl_draw_pixels(): into any 32bpp memory, e.g. a sprite.
  *
- * Sound plays through SDL2's audio (SharedSoundBuffer on RISC OS) and is the
- * clock the pictures follow. There are no threads: decoding happens inside
+ * Sound plays through SharedSoundBuffer/StreamManager on RISC OS, given
+ * the sound from ffegl_update() itself (SDL2's audio elsewhere, or with
+ * FFEGL_AUDIO=sdl), and is the clock the pictures follow. There are no threads: decoding happens inside
  * ffegl_update(), so call it often (every Wimp null event, or every frame).
  *
  *   FFEGLVideo *v = ffegl_open("SDFS::Pi.$.clip/mp4", 0);

@@ -244,11 +244,21 @@ static int next_event(int *b)
     }
 }
 
+#ifdef FAKE_SSB
+static int ssb_open, ssb_opens;
+static unsigned ssb_played_total;
+static int ssb_rate;
+#endif
 static void final_checks(void)
 {
     int w, h, rows;
     (void)w; (void)h; (void)rows;
     CHECK(created == 1 && nicons == 7, "window: created %d, %d icons", created, nicons);
+#ifdef FAKE_SSB
+    CHECK(ssb_played_total > (unsigned)ssb_rate * 4, "SharedSoundBuffer played only %u bytes", ssb_played_total);
+    CHECK(!ssb_open, "the sound stream was left open");
+    printf("  SharedSoundBuffer: %d streams, %.1f s played\n", ssb_opens, ssb_rate ? ssb_played_total / (ssb_rate * 4.0) : 0);
+#endif
 #ifdef REEL_EGL
     CHECK(fake_swaps > 20 && fake_plots > 0, "frames: %d swaps, %d redraw plots", fake_swaps, fake_plots);
     printf("  %d swaps, %d redraw plots, window %dx%d, %d acks\n", fake_swaps, fake_plots, opened_w, opened_h, acks);
@@ -266,10 +276,59 @@ static int vis_pic_y0(int w) { return w == FULL ? st(w)[2] : st(w)[2] + 64; }
 
 static int pending_rect;
 
+#ifdef FAKE_SSB
+/* SharedSoundBuffer + StreamManager: plays what was added at the stream's
+   rate while not paused, going by fake_time. */
+static int ssb_playing;
+static unsigned ssb_added, ssb_played, ssb_limit;
+static double ssb_last;
+static void ssb_advance(void)
+{
+    if (ssb_open && ssb_playing && fake_time > ssb_last) {
+        unsigned n = (unsigned)((fake_time - ssb_last) * ssb_rate * 4) & ~3u;
+        if (n > ssb_added - ssb_played) n = ssb_added - ssb_played;
+        ssb_played += n;
+        ssb_played_total += n;
+    }
+    ssb_last = fake_time;
+}
+static int fake_ssb(int swi, _kernel_swi_regs *in, _kernel_swi_regs *out, _kernel_oserror **e)
+{
+    static _kernel_oserror full = { 2, "full" }, unknown = { 3, "No such SWI" };
+    ssb_advance();
+    switch (swi) {
+    case 0x39:                                                    /* OS_SWINumberFromString */
+        *e = strncmp((char *)(intptr_t)in->r[1], "SharedSoundBuffer_", 18) &&
+             strncmp((char *)(intptr_t)in->r[1], "StreamManager_", 14) ? &unknown : NULL;
+        return 1;
+    case 0x55FC0: ssb_open = 1; ssb_opens++; ssb_playing = 1; ssb_added = ssb_played = 0;
+                  out->r[0] = 7; *e = NULL; return 1;             /* OpenStream (plays until paused) */
+    case 0x55FCE: out->r[0] = 9; *e = NULL; return 1;             /* ReturnStreamHandle */
+    case 0x57287: ssb_limit = in->r[1]; *e = NULL; return 1;      /* SetBuffer */
+    case 0x55FC5: ssb_rate = in->r[1] / 1024; *e = NULL; return 1;/* SampleRate */
+    case 0x55FC4: *e = NULL; return 1;                            /* Volume */
+    case 0x55FC9: ssb_playing = in->r[1] & 1; *e = NULL; return 1;/* Pause */
+    case 0x55FC1: ssb_open = 0; *e = NULL; return 1;              /* CloseStream */
+    case 0x57282:                                                 /* AddBlock */
+        if (ssb_added - ssb_played + in->r[2] > ssb_limit) { *e = &full; return 1; }
+        ssb_added += in->r[2]; *e = NULL; return 1;
+    case 0x57288: out->r[0] = ssb_added; out->r[1] = ssb_played; *e = NULL; return 1;   /* BufferStats */
+    }
+    return 0;
+}
+#endif
+
 _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *out)
 {
     static _kernel_oserror err = { 1, "fake" };
     int *b = (int *)(intptr_t)in->r[1];
+#ifdef FAKE_SSB
+    {
+        _kernel_oserror *e;
+        if (fake_ssb(swi, in, out, &e))
+            return e;
+    }
+#endif
     switch (swi) {
     case 0x400C0: out->r[1] = 0x1234; return NULL;                        /* Wimp_Initialise */
     case 0x42681: out->r[0] = -1; return NULL;                            /* EnumerateTasks */

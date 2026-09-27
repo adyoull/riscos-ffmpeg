@@ -1,5 +1,23 @@
 # Changes
 
+## Reel 0.5 (2026-09-27)
+
+- **Still no sound on the Pi with the modules loaded.** With SharedSound,
+  StreamManager and SharedSoundBuffer loaded (`*Help SharedSoundBuffer`
+  shows 0.07), ReelEGL still said "the sound device isn't playing": SDL's
+  RISC OS driver opened, but the sound queued with `SDL_QueueAudio` was
+  never taken. SDL takes it on its own audio thread, and in a Wimp task
+  UnixLib's threads only run while the task is paged in; Reel spends most
+  of its time in `Wimp_Poll` or decoding.
+- ffegl now gives the sound to SharedSoundBuffer/StreamManager itself on
+  RISC OS, from `ffegl_update()`, in 2048-frame blocks (0.5 s kept
+  queued). StreamManager plays it from interrupts, so no thread is
+  involved. The clock is `StreamManager_BufferStats` (added - played).
+  Seeking closes and reopens the stream. `FFEGL_AUDIO=sdl` goes back to
+  SDL. This covers Reel, ReelEGL, videowin and videocube.
+- Test: `reel_ssb_test` runs the Reel script with ffegl built
+  `-DFFEGL_SSB` against fake SharedSoundBuffer SWIs.
+
 ## Reel 0.4, and !FFmpeg 5.1.10-riscos5 repackaged (2026-09-27)
 
 - **No sound on the Pi:** SharedSoundBuffer, StreamManager and SharedSound

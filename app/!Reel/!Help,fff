@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                           0.4
+!Reel - a video player for RISC OS                           0.5
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -56,9 +56,11 @@ SharedSoundBuffer and StreamManager (ssb.zip, from the RDPClient page at
 orac.co.uk), merged into !System: Reel's !Run loads them. Without them
 Reel plays the picture, keeps time itself, and File info says why there
 is no sound.
-If a sound device opens but doesn't play (for about a second nothing it
-was given is used up), Reel carries on without sound; File info then
-says "the sound device isn't playing".
+Reel gives the sound straight to SharedSoundBuffer (from 0.5; before,
+it went through SDL). If the stream opens but doesn't play (for about a
+second nothing it was given is used up), Reel carries on without sound;
+File info then says "the sound device isn't playing". To try SDL's sound
+instead: *Set FFEGL_AUDIO sdl before starting Reel.
 
 !ReelEGL
 --------

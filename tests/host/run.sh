@@ -56,6 +56,15 @@ echo "== reel_test (the player, scripted desktop)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/reel_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
   grep -v "swscaler\|ffegl: " || bad=1
 
+# Reel again with the sound going straight to (fake) SharedSoundBuffer, as on RISC OS
+$CC -DFFEGL_NO_GL -DFFEGL_SSB -I$HERE/fake -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_ssb.o"
+$CC -DFAKE_SSB -I$S/include -I$DEVKIT/include -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reel_ssb_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reel_ssb_test" "$O/reel_ssb_test.o" "$O/reel.o" \
+  "$O/ffegl_ssb.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
+echo "== reel_ssb_test (the player, sound through SharedSoundBuffer)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/reel_ssb_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
+  grep -v "swscaler\|ffegl: " || bad=1
+
 # ReelEGL: the same player drawing through (fake) EGL surfaces
 $CC -DFFEGL_NO_TEXTURE -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_notex.o"
 $CC -DREEL_EGL -DREEL_TEST -DREEL_NO_MAIN -I$HERE/fake -I$S/include -I$DEVKIT/include -I$TOP/ffegl -c "$TOP/player/reel.c" -o "$O/reelegl.o"
