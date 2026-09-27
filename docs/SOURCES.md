@@ -14,7 +14,8 @@ unpacked.
 | libvorbis | 1.3.7 | libvorbis_1.3.7.orig.tar.gz | the Warzone 2100 port's dl-cache |
 | SDL | 2.26.0 | SDL-2.26.0.tgz | the Warzone 2100 port's dl-cache (= libsdl-org tag release-2.26.0) |
 | SDL RISC OS overlay | riscos-mesa 4f859d5 | patches/sdl2/*.p | riscos-mesa `tools/sdl-overlay-export.sh` (riscos-mesa is the authoritative copy) |
-| zlib | 1.3.1 | (library) | the riscos-mesa devkit 20.3.5-7pre8 |
+| zlib | 1.3.1 | (library) | the riscos-mesa devkit 20.3.5-7pre12 |
+| EGL, OSMesa (GL), GLU, freeglut | riscos-mesa 20.3.5-7pre12 (70ebe8e) | (libraries) | the riscos-mesa devkit 20.3.5-7pre12, md5 95059f254a5ab98affe31fb02d774db5 (EGLImage) |
 
 Test-only (not in any release):
 

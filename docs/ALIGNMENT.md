@@ -62,23 +62,30 @@ Notes on the rewrite:
   uint16 CDFs, int32 tables.
 - **Callers that pass lanes through such a macro** were written out by
   hand so the tool can see them:
-  - FFmpeg `ff_hevc_put_qpel_uw_pixels_w4/w12` (patch 0007);
+  - FFmpeg `ff_hevc_put_qpel_uw_pixels_w4/w12` (patch 0008);
   - x264 `pixel_avg_weight_w4_*` (`patches/x264`).
 
   FFmpeg's checkasm caught the first of these.
+- **Alignment qualifiers** (`[r0,:128]`) are left alone by the tool: they
+  fault on Linux too, so the code already guarantees them. One didn't
+  hold for RISC OS callers: swscale's YUV→RGBA `vst4.8 {…}, [dst,:128]!`
+  assumed a 16-byte aligned destination, which FFmpeg's own buffers are
+  but an EGL surface, a window surface or a sprite at an odd x need not
+  be. Patch 0009 drops the qualifier (the ffegl and egl output device
+  host tests found it).
 
 ### 2. Core ARM loads and stores (patches)
 
 **FFmpeg:**
 
-- `libavutil/arm/cpu.c` (patch 0005) never reports ARMv6/ARMv6T2, so the
+- `libavutil/arm/cpu.c` (patch 0006) never reports ARMv6/ARMv6T2, so the
   ARMv6 media routines (`ldr` at byte addresses) are never picked. Every
   one of them has a NEON or C replacement. Inline asm is compile-time and
   unaffected: the CABAC reader and mathops don't touch unaligned memory.
   CABAC even keeps its 16-bit reads aligned on purpose.
-- `vp56_arith.h` (0004) and `arm/vp8.h` (0005): the VP5/6/8/9 range coder's
+- `vp56_arith.h` (0005) and `arm/vp8.h` (0006): the VP5/6/8/9 range coder's
   `ldrh` bitstream refill is replaced by C.
-- swscale's `rgbx_to_nv12_neon` (0006) is left out. It crashes even
+- swscale's `rgbx_to_nv12_neon` (0007) is left out. It crashes even
   unmodified (it reads past the source) and has nothing to do with
   alignment.
 

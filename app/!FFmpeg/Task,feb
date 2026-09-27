@@ -1,0 +1,5 @@
+| Task: runs one of the programs in this directory (the first argument)
+| with the application space it needs. ffplay uses it to start itself as
+| a desktop task of its own when it is run in a TaskWindow.
+WimpSlot -min 44032K -max 44032K
+Run <Obey$Dir>.%*0

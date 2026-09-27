@@ -1,4 +1,4 @@
-!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos1
+!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos2
 ===================================================================
 
 FFmpeg converts, plays and inspects audio and video. This is FFmpeg
@@ -35,6 +35,36 @@ ffplay plays sound through SharedSoundBuffer and StreamManager
 (John Duffell's ssb.zip, from the RDPClient page at orac.co.uk) when they
 are loaded.
 
+A TaskWindow can't open windows of its own, so when ffplay is started in
+one it starts itself again as a separate desktop task (as *WimpTask
+would) and the TaskWindow is free at once. Its messages then go to the
+file ffplay/log in the scrap directory (<Wimp$ScrapDir>). Set
+FFPLAY_NEWTASK to 0 to stop this.
+
+ffplay converts and scales each picture straight into its window, in one
+pass. Two system variables change that:
+  Set FFPLAY_SCALE bilinear   the scaler when the window is not the
+                              video's size: fast_bilinear (the default),
+                              bilinear, bicubic, neighbor or area
+  Set FFPLAY_RENDERER sdl     SDL's own drawing instead (slower)
+
+Video into EGL and OpenGL
+-------------------------
+ffmpeg can show video through riscos-mesa's EGL, with no sound:
+
+  ffmpeg -re -i clip/mp4 -map 0:v -f egl "Holiday"
+  ffmpeg -re -i clip/mp4 -map 0:v -f egl -fullscreen 1 -
+
+From a TaskWindow a window isn't possible (see ffplay above): use
+-fullscreen 1, or start ffmpeg as its own task:
+  WimpTask ffmpeg -nostats -re -i clip/mp4 -map 0:v -f egl "Holiday"
+
+Programmers can play videos (with sound) into EGL surfaces and OpenGL
+textures with the ffegl library in the riscos-ffmpeg devkit. docs.EGL
+explains both. The FFmpeg-EGL-examples zip has two small programs that
+use it: videowin (a player window) and videocube (a video on a spinning
+cube).
+
 What is in it
 -------------
 Decoders for almost everything FFmpeg knows (H.264, HEVC, VP8, VP9, AV1
@@ -65,8 +95,9 @@ with generic C), and the last whose ffmpeg command doesn't need threads
 
 Memory
 ------
-Each program needs about 32MB of application space (the Boot file sets
-it). Memory for pictures and sound comes from a dynamic area called
+Each program is about 31MB and needs about 43MB of application space
+(the Boot file sets it). They are bigger than before because they now
+include riscos-mesa's EGL and OpenGL for the egl output device. Memory for pictures and sound comes from a dynamic area called
 "FFmpeg Heap" (up to 512MB), which goes away when the program quits.
 
 Needs
@@ -77,6 +108,8 @@ Known limits
 ------------
 - ffplay has no desktop front end: start it from a TaskWindow or Obey
   file. It uses the whole CPU while it plays.
+- Version riscos1's ffplay stopped with "Window Manager is currently in
+  use" when started in a TaskWindow; riscos2 starts itself as its own task.
 - If ffmpeg seems to wait for a key in a TaskWindow, add -nostdin.
 - No https (no TLS library), no hardware decoding.
 

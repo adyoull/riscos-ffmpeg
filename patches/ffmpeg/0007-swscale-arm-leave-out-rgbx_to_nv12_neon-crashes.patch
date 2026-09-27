@@ -1,7 +1,7 @@
-From fa0d5ffdfc47ddf6dc55c985986fb53b3fdc2490 Mon Sep 17 00:00:00 2001
+From 18a9a6d32923edcad3272e7001fbda412809a8f6 Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Sun, 27 Sep 2026 09:45:15 +0100
-Subject: [PATCH] swscale arm: leave out rgbx_to_nv12_neon (crashes)
+Subject: [PATCH 07/11] swscale arm: leave out rgbx_to_nv12_neon (crashes)
 
 ---
  libswscale/arm/swscale_unscaled.c | 5 ++++-

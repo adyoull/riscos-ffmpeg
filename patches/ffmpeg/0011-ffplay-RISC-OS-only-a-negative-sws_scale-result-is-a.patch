@@ -1,0 +1,23 @@
+From 932c4eb0d4ae21b0ccf5e65475c637be51009aaf Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 11:56:43 +0100
+Subject: [PATCH 11/11] ffplay, RISC OS: only a negative sws_scale result is a
+ failure
+
+---
+ fftools/ffplay.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/fftools/ffplay.c b/fftools/ffplay.c
+index 1f2a746..934212f 100644
+--- a/fftools/ffplay.c
++++ b/fftools/ffplay.c
+@@ -997,7 +997,7 @@ static int riscos_draw_frame(AVFrame *frame, SDL_Rect rect, struct SwsContext **
+     dst[0] = (uint8_t *)surf->pixels + rect.y * surf->pitch + rect.x * bpp;
+     dst_stride[0] = surf->pitch;
+     if (sws_scale(*ctx, (const uint8_t * const *)frame->data, frame->linesize,
+-                  0, frame->height, dst, dst_stride) <= 0)
++                  0, frame->height, dst, dst_stride) < 0)
+         ret = -1;
+     if (SDL_MUSTLOCK(surf))
+         SDL_UnlockSurface(surf);

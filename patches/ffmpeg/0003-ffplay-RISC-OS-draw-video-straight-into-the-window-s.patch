@@ -1,0 +1,244 @@
+From df4b47200df6914ca7fa4d22d7504df631b1de44 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 11:48:02 +0100
+Subject: [PATCH 03/11] ffplay, RISC OS: draw video straight into the window
+ surface
+
+One swscale call converts and scales each frame into SDL's window surface
+(the sprite the RISC OS driver plots, or the screen memory in full screen)
+instead of going through a texture and SDL's C scaler. FFPLAY_SCALE picks
+the scaler, FFPLAY_RENDERER=sdl the old path.
+---
+ fftools/ffplay.c | 177 ++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 175 insertions(+), 2 deletions(-)
+
+diff --git a/fftools/ffplay.c b/fftools/ffplay.c
+index 99c93e5..1f2a746 100644
+--- a/fftools/ffplay.c
++++ b/fftools/ffplay.c
+@@ -31,6 +31,7 @@
+ #include <signal.h>
+ #include <stdint.h>
+ 
++#include "libavutil/avassert.h"
+ #include "libavutil/avstring.h"
+ #include "libavutil/channel_layout.h"
+ #include "libavutil/eval.h"
+@@ -873,6 +874,137 @@ static void calculate_display_rect(SDL_Rect *rect,
+     rect->h = FFMAX((int)height, 1);
+ }
+ 
++#ifdef __riscos__
++/* RISC OS: draw video straight into the window.
++ *
++ * SDL's RISC OS driver has no accelerated renderer: the "software" renderer
++ * draws into the window's framebuffer surface (a sprite the driver plots in
++ * the window, or the screen memory itself in full screen). Going through a
++ * texture costs a whole-frame copy, and when the window isn't the video's
++ * size SDL scales in plain C. Instead each frame is converted AND scaled by
++ * one swscale call, writing into that surface at the display rectangle:
++ * YUV -> the screen's format uses swscale's NEON code when no scaling is
++ * needed. The renderer is still used for the borders, subtitles and the
++ * audio visualisation, and to present the frame.
++ *
++ * FFPLAY_SCALE picks the scaler used when the window isn't the video's
++ * size: fast_bilinear (default), bilinear, bicubic, neighbor, area.
++ * FFPLAY_RENDERER=sdl turns all this off (SDL's own path, as elsewhere). */
++static int riscos_direct = -1;      /* -1: not decided yet */
++static int riscos_scale_flags = SWS_FAST_BILINEAR;
++
++static enum AVPixelFormat riscos_surface_format(Uint32 sdl_fmt)
++{
++    switch (sdl_fmt) {
++    case SDL_PIXELFORMAT_XBGR8888: return AV_PIX_FMT_RGBA;   /* R,G,B,x bytes; NEON */
++    case SDL_PIXELFORMAT_XRGB8888: return AV_PIX_FMT_BGRA;   /* B,G,R,x bytes; NEON */
++    case SDL_PIXELFORMAT_BGR565:   return AV_PIX_FMT_BGR565;
++    case SDL_PIXELFORMAT_RGB565:   return AV_PIX_FMT_RGB565;
++    case SDL_PIXELFORMAT_XBGR1555: return AV_PIX_FMT_BGR555;
++    case SDL_PIXELFORMAT_XRGB1555: return AV_PIX_FMT_RGB555;
++    default:                       return AV_PIX_FMT_NONE;
++    }
++}
++
++static void riscos_direct_init(void)
++{
++    const char *e = getenv("FFPLAY_RENDERER");
++    const char *sc = getenv("FFPLAY_SCALE");
++    riscos_direct = !(e && !strcmp(e, "sdl")) &&
++                    renderer_info.name && !strcmp(renderer_info.name, "software");
++    if (sc) {
++        if      (!strcmp(sc, "bilinear")) riscos_scale_flags = SWS_BILINEAR;
++        else if (!strcmp(sc, "bicubic"))  riscos_scale_flags = SWS_BICUBIC;
++        else if (!strcmp(sc, "neighbor")) riscos_scale_flags = SWS_POINT;
++        else if (!strcmp(sc, "area"))     riscos_scale_flags = SWS_AREA;
++    }
++    av_log(NULL, AV_LOG_VERBOSE, "Video drawn %s.\n",
++           riscos_direct ? "straight into the window surface" : "through SDL textures");
++}
++
++/* Fills the parts of the window outside rect with black. */
++static void riscos_fill_borders(const SDL_Rect *r, int w, int h)
++{
++    SDL_Rect b[4];
++    int n = 0;
++    if (r->y > 0)             b[n++] = (SDL_Rect){ 0, 0, w, r->y };
++    if (r->y + r->h < h)      b[n++] = (SDL_Rect){ 0, r->y + r->h, w, h - r->y - r->h };
++    if (r->x > 0)             b[n++] = (SDL_Rect){ 0, r->y, r->x, r->h };
++    if (r->x + r->w < w)      b[n++] = (SDL_Rect){ r->x + r->w, r->y, w - r->x - r->w, r->h };
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++    if (n)
++        SDL_RenderFillRects(renderer, b, n);
++}
++
++/* Converts and scales frame into the window surface at rect.
++ * Returns 0 on success, <0 to fall back to the texture path. */
++static int riscos_draw_frame(AVFrame *frame, SDL_Rect rect, struct SwsContext **ctx)
++{
++    /* what the colour details were last set for (the context pointer alone
++     * isn't enough: a new context can reuse the old one's address) */
++    static struct SwsContext *cs_ctx;
++    static int cs_key[8] = { -1 };
++    SDL_Surface *surf;
++    enum AVPixelFormat dst_fmt;
++    uint8_t *dst[4] = { NULL };
++    int dst_stride[4] = { 0 };
++    int out_w, out_h, bpp, ret = 0, flags;
++
++    /* Borders first, and make the renderer finish them (and anything else
++     * it has queued) before we write into the same surface. */
++    if (SDL_GetRendererOutputSize(renderer, &out_w, &out_h) < 0)
++        return -1;
++    riscos_fill_borders(&rect, out_w, out_h);
++    SDL_RenderFlush(renderer);
++
++    surf = SDL_GetWindowSurface(window);
++    if (!surf)
++        return -1;
++    dst_fmt = riscos_surface_format(surf->format->format);
++    if (dst_fmt == AV_PIX_FMT_NONE)
++        return -1;
++    /* clip the display rectangle to the surface */
++    if (rect.x < 0 || rect.y < 0 || rect.x + rect.w > surf->w || rect.y + rect.h > surf->h ||
++        rect.w < 1 || rect.h < 1)
++        return -1;
++
++    flags = (rect.w == frame->width && rect.h == frame->height) ? SWS_POINT : riscos_scale_flags;
++    *ctx = sws_getCachedContext(*ctx, frame->width, frame->height, frame->format,
++                                rect.w, rect.h, dst_fmt, flags, NULL, NULL, NULL);
++    if (!*ctx)
++        return -1;
++    {
++        /* The frame's colour space and range, as SDL_SetYUVConversionMode
++         * does on the texture path. Setting them rebuilds swscale's tables,
++         * so only when they (or the context) change. */
++        int cs = frame->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 : SWS_CS_ITU601;
++        int full = frame->color_range == AVCOL_RANGE_JPEG;
++        int *inv, *tab, src_range, dst_range, b, c, sat;
++        int key[8] = { cs, full, frame->width, frame->height, frame->format,
++                       rect.w, rect.h, dst_fmt };
++        if ((*ctx != cs_ctx || memcmp(key, cs_key, sizeof(key))) &&
++            sws_getColorspaceDetails(*ctx, &inv, &src_range, &tab, &dst_range, &b, &c, &sat) >= 0) {
++            sws_setColorspaceDetails(*ctx, sws_getCoefficients(cs), full,
++                                     tab, dst_range, b, c, sat);
++            cs_ctx = *ctx;
++            memcpy(cs_key, key, sizeof(key));
++        }
++    }
++
++    if (SDL_MUSTLOCK(surf) && SDL_LockSurface(surf) < 0)
++        return -1;
++    bpp = surf->format->BytesPerPixel;
++    dst[0] = (uint8_t *)surf->pixels + rect.y * surf->pitch + rect.x * bpp;
++    dst_stride[0] = surf->pitch;
++    if (sws_scale(*ctx, (const uint8_t * const *)frame->data, frame->linesize,
++                  0, frame->height, dst, dst_stride) <= 0)
++        ret = -1;
++    if (SDL_MUSTLOCK(surf))
++        SDL_UnlockSurface(surf);
++    return ret;
++}
++#endif
++
+ static void get_sdl_pix_fmt_and_blendmode(int format, Uint32 *sdl_pix_fmt, SDL_BlendMode *sdl_blendmode)
+ {
+     int i;
+@@ -1011,6 +1143,18 @@ static void video_image_display(VideoState *is)
+     }
+ 
+     calculate_display_rect(&rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
++#ifdef __riscos__
++    if (riscos_direct > 0) {
++        if (riscos_draw_frame(vp->frame, rect, &is->img_convert_ctx) >= 0)
++            goto subtitles;
++        /* The screen's format isn't one we can write (256 colours, say):
++         * clear what the borders didn't and use textures from now on. */
++        riscos_direct = 0;
++        av_log(NULL, AV_LOG_VERBOSE, "Can't draw into this screen mode; using SDL textures.\n");
++        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++        SDL_RenderClear(renderer);
++    }
++#endif
+     set_sdl_yuv_conversion_mode(vp->frame);
+ 
+     if (!vp->uploaded) {
+@@ -1024,6 +1168,9 @@ static void video_image_display(VideoState *is)
+ 
+     SDL_RenderCopyEx(renderer, is->vid_texture, NULL, &rect, 0, NULL, vp->flip_v ? SDL_FLIP_VERTICAL : 0);
+     set_sdl_yuv_conversion_mode(NULL);
++#ifdef __riscos__
++subtitles:
++#endif
+     if (sp) {
+ #if USE_ONEPASS_SUBTITLE_RENDER
+         SDL_RenderCopy(renderer, is->sub_texture, NULL, &rect);
+@@ -1351,8 +1498,16 @@ static void video_display(VideoState *is)
+     if (!is->width)
+         video_open(is);
+ 
+-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+-    SDL_RenderClear(renderer);
++#ifdef __riscos__
++    /* drawing straight into the window: only the borders need clearing,
++     * which riscos_draw_frame does */
++    if (!(riscos_direct > 0 && is->video_st &&
++          !(is->audio_st && is->show_mode != SHOW_MODE_VIDEO)))
++#endif
++    {
++        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++        SDL_RenderClear(renderer);
++    }
+     if (is->audio_st && is->show_mode != SHOW_MODE_VIDEO)
+         video_audio_display(is);
+     else if (is->video_st)
+@@ -1859,6 +2014,21 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
+         }
+     }
+     pix_fmts[nb_pix_fmts] = AV_PIX_FMT_NONE;
++#ifdef __riscos__
++    /* Drawing directly: keep the decoder's format (YUV) so that one swscale
++     * pass does the conversion and the scaling. The common ones are listed;
++     * anything else is converted to the first by the filter graph. */
++    if (riscos_direct > 0) {
++        static const enum AVPixelFormat direct_fmts[15] = {
++            AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_NV12,
++            AV_PIX_FMT_YUV422P, AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUV444P,
++            AV_PIX_FMT_YUVJ444P, AV_PIX_FMT_YUV420P10, AV_PIX_FMT_RGBA,
++            AV_PIX_FMT_BGRA, AV_PIX_FMT_RGB24, AV_PIX_FMT_BGR24, AV_PIX_FMT_PAL8,
++            AV_PIX_FMT_GRAY8, AV_PIX_FMT_NONE };
++        av_assert0(FF_ARRAY_ELEMS(pix_fmts) >= FF_ARRAY_ELEMS(direct_fmts));
++        memcpy(pix_fmts, direct_fmts, sizeof(direct_fmts));
++    }
++#endif
+ 
+     while ((e = av_dict_get(sws_dict, "", e, AV_DICT_IGNORE_SUFFIX))) {
+         if (!strcmp(e->key, "sws_flags")) {
+@@ -3739,6 +3909,9 @@ int main(int argc, char **argv)
+             if (renderer) {
+                 if (!SDL_GetRendererInfo(renderer, &renderer_info))
+                     av_log(NULL, AV_LOG_VERBOSE, "Initialized %s renderer.\n", renderer_info.name);
++#ifdef __riscos__
++                riscos_direct_init();
++#endif
+             }
+         }
+         if (!window || !renderer || !renderer_info.num_texture_formats) {

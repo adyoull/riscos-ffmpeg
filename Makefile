@@ -1,14 +1,16 @@
 # riscos-ffmpeg. See README.md. GCCSDK_ENV, DEVKIT, JOBS: see build/env.sh.
-VERSION ?= 5.1.10-riscos1
-.PHONY: help sources deps ffmpeg package test-build test clean
+VERSION ?= 5.1.10-riscos2
+.PHONY: help sources deps ffmpeg ffegl package test-build test clean
 help:
-	@echo "make sources | deps | ffmpeg | package [VERSION=...] | test-build | test (QEMU=...) | clean"
+	@echo "make sources | deps | ffmpeg | ffegl | package [VERSION=...] | test-build | test (QEMU=...) | clean"
 sources:
 	cd dl && sha256sum -c ../build/SHA256SUMS
 deps:
 	build/build-deps.sh
 ffmpeg:
 	build/build-ffmpeg.sh
+ffegl:
+	build/build-ffegl.sh
 package:
 	build/package.sh $(VERSION)
 test-build:

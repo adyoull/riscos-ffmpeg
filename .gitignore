@@ -9,3 +9,6 @@
 /tests/qemu/out/
 /tools/elf2aif/elf2aif
 *START-HERE*.md
+/tests/host/fake/EGL/
+/tests/host/fake/KHR/
+src-host/

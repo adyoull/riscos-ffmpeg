@@ -1,0 +1,52 @@
+From 699b4a629e9931ddb8573433bfb48d70203852b0 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 11:56:42 +0100
+Subject: [PATCH 10/11] swscale arm: NEON unscaled converters return the lines
+ written
+
+They returned 0, so sws_scale() reported 0 output lines for NEON YUV->RGB
+conversions (callers checking the result took it as a failure).
+---
+ libswscale/arm/swscale_unscaled.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/libswscale/arm/swscale_unscaled.c b/libswscale/arm/swscale_unscaled.c
+index 0fe252e..1461d39 100644
+--- a/libswscale/arm/swscale_unscaled.c
++++ b/libswscale/arm/swscale_unscaled.c
+@@ -45,7 +45,7 @@ static int rgbx_to_nv12_neon_32_wrapper(SwsContext *context, const uint8_t *src[
+             dstStride[0], dstStride[1], srcStride[0],
+             context->input_rgb2yuv_table);
+ 
+-    return 0;
++    return srcSliceH;   /* lines written, as the C converters return */
+ }
+ 
+ static int rgbx_to_nv12_neon_16_wrapper(SwsContext *context, const uint8_t *src[],
+@@ -59,7 +59,7 @@ static int rgbx_to_nv12_neon_16_wrapper(SwsContext *context, const uint8_t *src[
+             dstStride[0], dstStride[1], srcStride[0],
+             context->input_rgb2yuv_table);
+ 
+-    return 0;
++    return srcSliceH;   /* lines written, as the C converters return */
+ }
+ 
+ #define YUV_TO_RGB_TABLE                                                                    \
+@@ -92,7 +92,7 @@ static int ifmt##_to_##ofmt##_neon_wrapper(SwsContext *c, const uint8_t *src[],
+                                  c->yuv2rgb_y_offset >> 6,                                  \
+                                  c->yuv2rgb_y_coeff);                                       \
+                                                                                             \
+-    return 0;                                                                               \
++    return srcSliceH;                                                                       \
+ }                                                                                           \
+ 
+ #define DECLARE_FF_YUVX_TO_ALL_RGBX_FUNCS(yuvx)                                             \
+@@ -125,7 +125,7 @@ static int ifmt##_to_##ofmt##_neon_wrapper(SwsContext *c, const uint8_t *src[],
+                                  c->yuv2rgb_y_offset >> 6,                                  \
+                                  c->yuv2rgb_y_coeff);                                       \
+                                                                                             \
+-    return 0;                                                                               \
++    return srcSliceH;                                                                       \
+ }                                                                                           \
+ 
+ #define DECLARE_FF_NVX_TO_ALL_RGBX_FUNCS(nvx)                                               \

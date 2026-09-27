@@ -37,9 +37,18 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
   both for input and output. The `/ext` part picks the output format.
 - **Memory:** the heap goes in a dynamic area, "FFmpeg Heap" (up to
   512 MB).
-- **ffplay:** hands SDL frames already in the screen's pixel format.
-  swscale's NEON YUV→RGB does the conversion, and the plot is a plain
-  copy.
+- **ffplay:** converts and scales each frame straight into its window's
+  surface, in the screen's pixel format, with swscale (NEON YUV→RGB). SDL
+  only plots the window. `FFPLAY_SCALE` picks the scaler, and
+  `FFPLAY_RENDERER=sdl` goes back to SDL's texture drawing. Started in a
+  TaskWindow (which can't open windows), it starts itself as a desktop
+  task of its own.
+- **EGL:** `ffmpeg -f egl` shows video through riscos-mesa's EGL (a
+  window or the whole screen), and the **ffegl** library plays videos,
+  with sound, into EGL surfaces and OpenGL textures. With riscos-mesa
+  20.3.5-7pre12 or later a texture shares ffegl's pixels through an
+  EGLImage, with no copy. See [docs/EGL.md](docs/EGL.md); the
+  FFmpeg-EGL-examples zip has `videowin` and `videocube`.
 
 ## Alignment: the main porting work
 
@@ -72,12 +81,13 @@ and the ARM assembly in FFmpeg, dav1d and x264 relies on that.
 
 On an x86-64 Linux with the GCCSDK GCC 10.2 environment in `~/gccsdk/env`
 (the Warzone 2100 port's `gccsdk-gcc10.2-x86_64-linux-env.tgz`) and the
-riscos-mesa devkit unpacked in `devkit/`:
+riscos-mesa devkit (20.3.5-7pre12 or later) unpacked in `devkit/`:
 
 ```
 make sources      # checks dl/ against build/SHA256SUMS (fetch them first)
 make deps         # SDL2 (riscos-mesa overlay, no GL), x264, dav1d, LAME, ...
 make ffmpeg       # FFmpeg 5.1.10 + patches/ffmpeg + the NEON rewrite
+make ffegl        # libffegl and the videowin/videocube examples
 make package      # dist/FFmpeg-VERSION.zip, dist/riscos-ffmpeg-devkit-VERSION.tgz
 make test         # the same code for arm-linux, run under the trapping qemu
 ```

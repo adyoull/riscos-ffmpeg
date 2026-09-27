@@ -3,8 +3,9 @@
 | line or TaskWindow.
 If "<FFmpeg$Dir>"="" Then Set FFmpeg$Dir <Obey$Dir>
 IconSprites <FFmpeg$Dir>.!Sprites
-| Each program is about 23MB and needs about 32MB of application space
-| (its heap is in a dynamic area, "FFmpeg Heap").
-Set Alias$ffmpeg  WimpSlot -min 34816K|MRun <FFmpeg$Dir>.ffmpeg %%*0
-Set Alias$ffprobe WimpSlot -min 34816K|MRun <FFmpeg$Dir>.ffprobe %%*0
-Set Alias$ffplay  WimpSlot -min 34816K|MRun <FFmpeg$Dir>.ffplay %%*0
+| Each program is about 31MB (code 31MB, zeroed data 8.5MB) and needs
+| about 43MB of application space (its heap is in a dynamic area,
+| "FFmpeg Heap").
+Set Alias$ffmpeg  WimpSlot -min 44032K|MRun <FFmpeg$Dir>.ffmpeg %%*0
+Set Alias$ffprobe WimpSlot -min 44032K|MRun <FFmpeg$Dir>.ffprobe %%*0
+Set Alias$ffplay  WimpSlot -min 44032K|MRun <FFmpeg$Dir>.ffplay %%*0

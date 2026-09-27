@@ -49,6 +49,17 @@ dep_sdl2() {
   make -j"$JOBS" >/dev/null && make install >/dev/null
 }
 
+# riscos-mesa's EGL, OpenGL (OSMesa), GLU and freeglut, for the egl output
+# device and ffegl: headers and static libraries from the devkit.
+dep_egl() {
+  for d in EGL KHR GL GLES GLES2; do
+    [ -d "$DEVKIT/include/$d" ] && cp -r "$DEVKIT/include/$d" "$STAGE/include/"
+  done
+  for l in EGL OSMesa GLU glut; do
+    cp "$DEVKIT/lib/lib$l.a" "$STAGE/lib/"
+  done
+}
+
 dep_ogg() {
   unpack libogg-1.3.5 libogg_1.3.5.orig.tar.gz
   cd "$SRC/libogg-1.3.5" && ac_configure >/dev/null && make -j"$JOBS" >/dev/null && make install >/dev/null
@@ -156,7 +167,7 @@ EOF
   sed -i 's/ -pthread//' "$STAGE/lib/pkgconfig/dav1d.pc"
 }
 
-ALL="zlib sdl2 ogg vorbis lame opus x264 dav1d"
+ALL="zlib sdl2 egl ogg vorbis lame opus x264 dav1d"
 [ -n "${LINUX_ARM_TEST:-}" ] && ALL="ogg vorbis lame opus x264 dav1d"
 for d in ${*:-$ALL}; do
   echo "== $d"

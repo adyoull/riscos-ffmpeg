@@ -1,0 +1,99 @@
+From f337a06e792d0065e5108fb0683f168f95663015 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 12:55:00 +0100
+Subject: [PATCH] ffplay (RISC OS): in a TaskWindow, run as a desktop task of
+ its own
+
+SDL can't open a window from a TaskWindow (Wimp_Initialise: "Window
+Manager is currently in use"). ffplay starts itself again with
+Wimp_StartTask, through the Obey file Task next to it (WimpSlot), with
+its messages in <Wimp$ScrapDir>.ffplay/log. FFPLAY_NEWTASK=0 turns it off.
+
+---
+ fftools/ffplay.c | 63 ++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 63 insertions(+)
+
+diff --git a/fftools/ffplay.c b/fftools/ffplay.c
+index 934212f..d661046 100644
+--- a/fftools/ffplay.c
++++ b/fftools/ffplay.c
+@@ -874,6 +874,65 @@ static void calculate_display_rect(SDL_Rect *rect,
+     rect->h = FFMAX((int)height, 1);
+ }
+ 
++#ifdef __riscos__
++#include <kernel.h>
++
++/* RISC OS: a program running in a TaskWindow can't open windows: the
++ * TaskWindow is already its Wimp task, so SDL's Wimp_Initialise fails with
++ * "Window Manager is currently in use". ffplay then starts itself again as
++ * a desktop task of its own (Wimp_StartTask, as *WimpTask does), through
++ * the Obey file "Task" next to it, which sets the WimpSlot and runs the
++ * program named in its first argument from the same directory. Its messages go
++ * to <Wimp$ScrapDir>.ffplay/log, and the TaskWindow is free at once.
++ * FFPLAY_NEWTASK=0 turns this off. Returns only if it didn't happen. */
++static void riscos_leave_taskwindow(int argc, char **argv)
++{
++    _kernel_swi_regs r;
++    const char *no = getenv("FFPLAY_NEWTASK"), *scrap = getenv("Wimp$ScrapDir");
++    char self[256], cmd[1024], log[256];
++    const char *env, *leaf;
++    size_t n;
++    AVBPrint bp;
++
++    if (no && *no == '0')
++        return;
++    r.r[0] = 0;                                   /* TaskWindow_TaskInfo 0 */
++    if (_kernel_swi(0x43380, &r, &r) || r.r[0] == 0)
++        return;                                   /* not in a TaskWindow */
++    /* this program's own RISC OS path: the first word of its command line */
++    if (_kernel_swi(0x10 /* OS_GetEnv */, &r, &r))
++        return;
++    env = (const char *)(intptr_t)r.r[0];
++    for (n = 0; env[n] > ' ' && n < sizeof(self) - 1; n++)
++        self[n] = env[n];
++    self[n] = 0;
++    leaf = strrchr(self, '.');
++    if (!leaf || !scrap || !*scrap) {
++        av_log(NULL, AV_LOG_WARNING, "ffplay: can't start a desktop task from here "
++               "(run it with *WimpTask)\n");
++        return;
++    }
++    snprintf(log, sizeof(log), "%s.ffplay/log", scrap);
++    av_bprint_init_for_buffer(&bp, cmd, sizeof(cmd));
++    av_bprintf(&bp, "Obey %.*sTask %s -nostats -hide_banner", (int)(leaf + 1 - self), self, leaf + 1);
++    for (int i = 1; i < argc; i++)
++        av_bprintf(&bp, strchr(argv[i], ' ') ? " \"%s\"" : " %s", argv[i]);
++    av_bprintf(&bp, " > %s 2>&1", log);
++    if (!av_bprint_is_complete(&bp)) {
++        av_log(NULL, AV_LOG_WARNING, "ffplay: command line too long for a new task\n");
++        return;
++    }
++    fprintf(stderr, "ffplay: a TaskWindow can't open windows, so ffplay runs as its own\n"
++                    "desktop task. Its messages go to %s\n", log);
++    r.r[0] = (intptr_t)cmd;
++    if (_kernel_swi(0x400DE /* Wimp_StartTask */, &r, &r)) {
++        av_log(NULL, AV_LOG_WARNING, "ffplay: Wimp_StartTask failed\n");
++        return;
++    }
++    exit(0);
++}
++#endif
++
+ #ifdef __riscos__
+ /* RISC OS: draw video straight into the window.
+  *
+@@ -3862,6 +3921,10 @@ int main(int argc, char **argv)
+     if (display_disable) {
+         video_disable = 1;
+     }
++#ifdef __riscos__
++    if (!display_disable)
++        riscos_leave_taskwindow(argc, argv);
++#endif
+     flags = SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER;
+     if (audio_disable)
+         flags &= ~SDL_INIT_AUDIO;
+-- 
+2.43.0
+

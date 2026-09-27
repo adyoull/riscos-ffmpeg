@@ -1,8 +1,8 @@
-From 05ff439bc0e803d908fef3d50d1f92701ec3eee6 Mon Sep 17 00:00:00 2001
+From c129e8efc17b94795b17fddd2255bbb2f71ebb5b Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Sun, 27 Sep 2026 09:01:30 +0100
-Subject: [PATCH 4/4] RISC OS: no ldrh bitstream refill in the VP5/6/8/9 range
- coder (alignment)
+Subject: [PATCH 05/11] RISC OS: no ldrh bitstream refill in the VP5/6/8/9
+ range coder (alignment)
 
 ---
  libavcodec/arm/vp56_arith.h | 6 +++++-

@@ -37,9 +37,11 @@ if [ ! -f ffbuild/config.mak ] || [ -n "${RECONFIGURE:-}" ]; then
     # Linked dynamically against glibc: its string functions assume unaligned
     # access works, so tests/qemu traps alignment only inside the program.
     VARIANT="--disable-sdl2 --disable-ffplay --disable-zlib"
+    OUTDEVS=
     LINK=-no-pie
   else
-    VARIANT="--enable-zlib --enable-sdl2 --enable-ffplay"
+    VARIANT="--enable-zlib --enable-sdl2 --enable-ffplay --enable-riscos-egl"
+    OUTDEVS="--enable-outdev=egl"   # after --disable-outdevs
     LINK=-static
   fi
   ./configure \
@@ -56,12 +58,12 @@ if [ ! -f ffbuild/config.mak ] || [ -n "${RECONFIGURE:-}" ]; then
     --enable-libx264 --enable-libmp3lame --enable-libopus --enable-libvorbis \
     --enable-libdav1d $VARIANT \
     --enable-network --disable-gnutls --disable-openssl \
-    --disable-indevs --enable-indev=lavfi --disable-outdevs --disable-linux-perf \
+    --disable-indevs --enable-indev=lavfi --disable-outdevs $OUTDEVS --disable-linux-perf \
     --disable-xlib --disable-libxcb --disable-vaapi --disable-vdpau \
     --disable-v4l2-m2m --disable-libdrm \
     --enable-ffmpeg --enable-ffprobe \
     --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages \
-    --extra-version=riscos1 \
+    --extra-version=riscos2 \
     > "$SRC/ffmpeg-configure.log"
   tail -n +1 "$SRC/ffmpeg-configure.log" | sed -n '1,200p' | grep -E "^(ARCH|big-endian|NEON|runtime|pthreads|External libraries:)" || true
 fi
@@ -69,6 +71,9 @@ fi
 for c in NEON VFP ARMV6 FAST_UNALIGNED PTHREADS; do
   printf '%-16s %s\n' "HAVE_$c" "$(grep -E "^#define HAVE_$c " config.h | awk '{print $3}')"
 done
+# the version is the release, not the git commit of this repository
+# (ffbuild/version.sh would otherwise use "git describe" of the tree above)
+export revision=$(cat RELEASE)
 make -j"$JOBS" >"$SRC/ffmpeg-make.log" 2>&1 || { tail -40 "$SRC/ffmpeg-make.log"; exit 1; }
 make install >/dev/null
 ls -la ffmpeg_g ffprobe_g ffplay_g 2>/dev/null || true

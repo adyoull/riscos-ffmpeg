@@ -1,8 +1,8 @@
-From 87fdb471213c6aa7c042ace7b8c38f4aba212f4c Mon Sep 17 00:00:00 2001
+From 4226546701cc6fde776a94f7cf831802eb68240c Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Sun, 27 Sep 2026 09:27:42 +0100
-Subject: [PATCH] RISC OS: never select the ARMv6 media routines (unaligned
- word access)
+Subject: [PATCH 06/11] RISC OS: never select the ARMv6 media routines
+ (unaligned word access)
 
 ---
  libavcodec/arm/vp8.h |  4 +++-

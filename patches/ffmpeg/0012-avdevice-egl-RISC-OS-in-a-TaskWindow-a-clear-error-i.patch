@@ -1,0 +1,57 @@
+From 423aae7cd293d585ecca6289f8dd4bd14a4a28c6 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 12:55:00 +0100
+Subject: [PATCH 12/13] avdevice/egl (RISC OS): in a TaskWindow, a clear error
+ instead of full screen
+
+A TaskWindow is already the program's Wimp task, so Wimp_Initialise fails
+("Window Manager is currently in use"). Say so and suggest *WimpTask or
+-fullscreen 1, rather than silently taking over the screen under the
+running desktop.
+
+---
+ libavdevice/riscos_egl.c | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/libavdevice/riscos_egl.c b/libavdevice/riscos_egl.c
+index 86dc0af..eb8bafb 100644
+--- a/libavdevice/riscos_egl.c
++++ b/libavdevice/riscos_egl.c
+@@ -103,13 +103,14 @@ static int wimp_start(EGLOutContext *e)
+ {
+     static const int messages[] = { 0 };     /* Message_Quit only */
+     _kernel_swi_regs r;
+-    /* Wimp_ReadSysInfo 0: number of active tasks; 0 = no desktop */
++    /* Wimp_ReadSysInfo 0: number of active tasks; 0 = no desktop.
++       Returns 1 = a Wimp task now, 0 = no desktop, -1 = can't (a TaskWindow) */
+     r.r[0] = 0;
+     if (_kernel_swi(Wimp_ReadSysInfo, &r, &r) || r.r[0] == 0)
+         return 0;
+     r.r[0] = 380; r.r[1] = TASK_WORD; r.r[2] = (int)"FFmpeg video"; r.r[3] = (int)messages;
+     if (_kernel_swi(Wimp_Initialise, &r, &r))
+-        return 0;
++        return -1;      /* the desktop is running but we can't be a task: a TaskWindow */
+     e->task = r.r[1];
+     return 1;
+ }
+@@ -304,7 +305,16 @@ static int egl_write_header(AVFormatContext *s)
+         win_w = av_rescale(win_w, e->sar.num, e->sar.den);
+     if (e->window_handle) {
+         e->handle = e->window_handle;
+-    } else if (!e->fullscreen && wimp_start(e)) {
++    } else if (!e->fullscreen && (ret = wimp_start(e)) != 0) {
++        if (ret < 0) {
++            /* A TaskWindow is already this program's Wimp task, so it can't
++               open windows of its own; taking over the screen under the
++               running desktop without being asked would be worse. */
++            av_log(s, AV_LOG_ERROR, "Can't open a window from a TaskWindow: run ffmpeg as its own "
++                   "task (*WimpTask ffmpeg -nostats ...), or use -fullscreen 1.\n");
++            ret = AVERROR(EINVAL);
++            goto fail;
++        }
+         if ((ret = wimp_open_window(s, win_w, win_h)) < 0)
+             goto fail;
+     } else {
+-- 
+2.43.0
+

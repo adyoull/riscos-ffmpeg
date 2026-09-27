@@ -1,8 +1,8 @@
-From d54f171316b19c5ef65821ba486e2a33ded4f564 Mon Sep 17 00:00:00 2001
+From deb473912b2765523dd2cade87263fc744b4ecc0 Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Sun, 27 Sep 2026 09:47:25 +0100
-Subject: [PATCH] hevc arm: write out the w4/w12 pixel copies (single lanes)
- for neon-align
+Subject: [PATCH 08/11] hevc arm: write out the w4/w12 pixel copies (single
+ lanes) for neon-align
 
 ---
  libavcodec/arm/hevcdsp_qpel_neon.S | 43 ++++++++++++++++++++++++++++--

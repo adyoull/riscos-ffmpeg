@@ -1,0 +1,562 @@
+From ab2cfd4c0fe4a04ea0c374ae4538e2094f66cf74 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sun, 27 Sep 2026 11:48:02 +0100
+Subject: [PATCH 04/11] avdevice: egl output device (RISC OS, riscos-mesa EGL)
+
+ffmpeg -re -i clip -f egl title: frames are converted and scaled by
+swscale straight into a locked EGL window surface (EGL_KHR_lock_surface)
+and shown with eglSwapBuffers, in a Wimp window of its own, an existing
+window, or full screen (optionally straight into screen memory).
+--enable-riscos-egl.
+---
+ configure                |   5 +
+ libavdevice/Makefile     |   1 +
+ libavdevice/alldevices.c |   1 +
+ libavdevice/riscos_egl.c | 477 +++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 484 insertions(+)
+ create mode 100644 libavdevice/riscos_egl.c
+
+diff --git a/configure b/configure
+index db8b953..3bfb777 100755
+--- a/configure
++++ b/configure
+@@ -323,6 +323,7 @@ External library support:
+   --disable-schannel       disable SChannel SSP, needed for TLS support on
+                            Windows if openssl and gnutls are not used [autodetect]
+   --disable-sdl2           disable sdl2 [autodetect]
++  --enable-riscos-egl      enable RISC OS EGL (riscos-mesa) output device [no]
+   --disable-securetransport disable Secure Transport, needed for TLS support
+                            on OSX if openssl and gnutls are not used [autodetect]
+   --enable-vapoursynth     enable VapourSynth demuxer [no]
+@@ -1808,6 +1809,7 @@ EXTERNAL_LIBRARY_GPLV3_LIST="
+ "
+ 
+ EXTERNAL_LIBRARY_LIST="
++    riscos_egl
+     $EXTERNAL_LIBRARY_GPL_LIST
+     $EXTERNAL_LIBRARY_NONFREE_LIST
+     $EXTERNAL_LIBRARY_VERSION3_LIST
+@@ -3534,6 +3536,7 @@ libcdio_indev_deps="libcdio"
+ libdc1394_indev_deps="libdc1394"
+ openal_indev_deps="openal"
+ opengl_outdev_deps="opengl"
++egl_outdev_deps="riscos_egl swscale"
+ opengl_outdev_suggest="sdl2"
+ oss_indev_deps_any="sys_soundcard_h"
+ oss_outdev_deps_any="sys_soundcard_h"
+@@ -6720,6 +6723,8 @@ enabled opencl            && { check_pkg_config opencl OpenCL CL/cl.h clEnqueueN
+                              { test_cpp_condition "OpenCL/cl.h" "defined(CL_VERSION_1_2)" ||
+                                test_cpp_condition "CL/cl.h" "defined(CL_VERSION_1_2)" ||
+                                die "ERROR: opencl must be installed and version must be 1.2 or compatible"; }
++# riscos-mesa's EGL (RISC OS): the egl output device
++enabled riscos_egl        && require riscos_egl EGL/eglext_riscos.h eglGetDisplay -lEGL -lOSMesa -lstdc++ -lz -lm
+ enabled opengl            && { check_lib opengl GL/glx.h glXGetProcAddress "-lGL" ||
+                                check_lib opengl windows.h wglGetProcAddress "-lopengl32 -lgdi32" ||
+                                check_lib opengl OpenGL/gl3.h glGetError "-Wl,-framework,OpenGL" ||
+diff --git a/libavdevice/Makefile b/libavdevice/Makefile
+index bbe2f69..661d7ee 100644
+--- a/libavdevice/Makefile
++++ b/libavdevice/Makefile
+@@ -43,6 +43,7 @@ OBJS-$(CONFIG_PULSE_INDEV)               += pulse_audio_dec.o \
+ OBJS-$(CONFIG_PULSE_OUTDEV)              += pulse_audio_enc.o \
+                                             pulse_audio_common.o
+ OBJS-$(CONFIG_SDL2_OUTDEV)               += sdl2.o
++OBJS-$(CONFIG_EGL_OUTDEV)                += riscos_egl.o
+ OBJS-$(CONFIG_SNDIO_INDEV)               += sndio_dec.o sndio.o
+ OBJS-$(CONFIG_SNDIO_OUTDEV)              += sndio_enc.o sndio.o
+ OBJS-$(CONFIG_V4L2_INDEV)                += v4l2.o v4l2-common.o timefilter.o
+diff --git a/libavdevice/alldevices.c b/libavdevice/alldevices.c
+index 22323a0..a00853b 100644
+--- a/libavdevice/alldevices.c
++++ b/libavdevice/alldevices.c
+@@ -32,6 +32,7 @@ extern const AVOutputFormat ff_caca_muxer;
+ extern const AVInputFormat  ff_decklink_demuxer;
+ extern const AVOutputFormat ff_decklink_muxer;
+ extern const AVInputFormat  ff_dshow_demuxer;
++extern const AVOutputFormat ff_egl_muxer;
+ extern const AVInputFormat  ff_fbdev_demuxer;
+ extern const AVOutputFormat ff_fbdev_muxer;
+ extern const AVInputFormat  ff_gdigrab_demuxer;
+diff --git a/libavdevice/riscos_egl.c b/libavdevice/riscos_egl.c
+new file mode 100644
+index 0000000..86dc0af
+--- /dev/null
++++ b/libavdevice/riscos_egl.c
+@@ -0,0 +1,477 @@
++/*
++ * RISC OS EGL video output device (riscos-mesa's EGL)
++ * Copyright (c) 2026 Andrew Youll
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * Shows video through riscos-mesa's EGL: in a desktop window (its own Wimp
++ * task), full screen, or in a window that another task gives us.
++ *
++ * No OpenGL drawing is involved. Each frame is converted (and scaled to the
++ * surface, keeping its aspect ratio) by swscale straight into the EGL window
++ * surface's memory (EGL_KHR_lock_surface), and eglSwapBuffers shows it:
++ * a sprite plot in a window, a plot after the vsync wait full screen, or
++ * nothing at all with direct=1 (the surface is the screen memory).
++ *
++ *   ffmpeg -re -i clip.mp4 -f egl "My video"          (a desktop window)
++ *   ffmpeg -re -i clip.mp4 -f egl -fullscreen 1 -     (the whole screen)
++ *
++ * Without -re frames are shown as fast as they can be decoded (a benchmark).
++ * The window's close icon, Escape or Q stops ffmpeg.
++ */
++
++#define EGL_EGLEXT_PROTOTYPES 1
++#include <EGL/egl.h>
++#include <EGL/eglext.h>
++#include <EGL/eglext_riscos.h>
++#include <kernel.h>
++#include <swis.h>
++#include <string.h>
++
++#include "libavutil/avstring.h"
++#include "libavutil/imgutils.h"
++#include "libavutil/internal.h"
++#include "libavutil/opt.h"
++#include "libavutil/parseutils.h"
++#include "libavutil/pixdesc.h"
++#include "libswscale/swscale.h"
++#include "avdevice.h"
++
++#define TASK_WORD 0x4B534154    /* "TASK" */
++
++typedef struct EGLOutContext {
++    AVClass *class;
++
++    /* options */
++    char *window_title;
++    int   window_width, window_height;   /* -window_size; 0 = the video's */
++    int   window_x, window_y;            /* pixels from the top left; -1 = centred */
++    int   fullscreen;
++    int   direct;                        /* full screen: draw into screen memory */
++    int   vsync;                         /* full screen: swap interval */
++    int   window_handle;                 /* draw in this (existing) window; 0 = ours */
++    char *scale;                         /* swscale algorithm when scaling */
++
++    /* Wimp */
++    int   task;                          /* our task handle, 0 = not a task */
++    int   own_window;                    /* we created the window */
++    int   handle;                        /* the EGL native window */
++    char  title[128];                    /* indirected title text */
++
++    /* EGL */
++    EGLDisplay dpy;
++    EGLSurface surf;
++    enum AVPixelFormat surf_fmt;         /* the surface's bytes as a pixel format */
++
++    /* video */
++    int   width, height;
++    enum AVPixelFormat pix_fmt;
++    AVRational sar;
++    struct SwsContext *sws;
++    int   sws_flags;
++    int   last_sw, last_sh;              /* surface size last drawn at */
++    int   quit;
++} EGLOutContext;
++
++static int vdu_var(int var)
++{
++    int in[2] = { var, -1 }, out[1] = { 0 };
++    _kernel_swi_regs r;
++    r.r[0] = (int)in; r.r[1] = (int)out;
++    _kernel_swi(OS_ReadVduVariables, &r, &r);
++    return out[0];
++}
++
++static int wimp_start(EGLOutContext *e)
++{
++    static const int messages[] = { 0 };     /* Message_Quit only */
++    _kernel_swi_regs r;
++    /* Wimp_ReadSysInfo 0: number of active tasks; 0 = no desktop */
++    r.r[0] = 0;
++    if (_kernel_swi(Wimp_ReadSysInfo, &r, &r) || r.r[0] == 0)
++        return 0;
++    r.r[0] = 380; r.r[1] = TASK_WORD; r.r[2] = (int)"FFmpeg video"; r.r[3] = (int)messages;
++    if (_kernel_swi(Wimp_Initialise, &r, &r))
++        return 0;
++    e->task = r.r[1];
++    return 1;
++}
++
++static int wimp_open_window(AVFormatContext *s, int width, int height)
++{
++    EGLOutContext *e = s->priv_data;
++    int wb[23], block[8];
++    int xeig = vdu_var(4), yeig = vdu_var(5);
++    int sw = (vdu_var(11) + 1) << xeig, sh = (vdu_var(12) + 1) << yeig;
++    int ow = width << xeig, oh = height << yeig, x0, y1;
++    _kernel_oserror *err;
++    _kernel_swi_regs r;
++
++    /* no bigger than the screen */
++    if (ow > sw - 64) { oh = (int)((int64_t)oh * (sw - 64) / ow); ow = sw - 64; }
++    if (oh > sh - 96) { ow = (int)((int64_t)ow * (sh - 96) / oh); oh = sh - 96; }
++    x0 = e->window_x < 0 ? (sw - ow) / 2 : e->window_x << xeig;
++    y1 = e->window_y < 0 ? sh - (sh - oh) / 2 : sh - (e->window_y << yeig);
++
++    av_strlcpy(e->title, e->window_title ? e->window_title : s->url, sizeof(e->title));
++    memset(wb, 0, sizeof(wb));
++    wb[0] = x0; wb[1] = y1 - oh; wb[2] = x0 + ow; wb[3] = y1;
++    wb[6] = -1;                                  /* on top */
++    wb[7] = (int)0xAF000002u;                    /* moveable; back, close, title, toggle, adjust */
++    wb[8] = 7 | (2 << 8) | (7 << 16) | (4 << 24);
++    wb[9] = 3 | (1 << 8) | (12 << 16);
++    wb[11] = -sh; wb[12] = sw;                   /* work area: the screen's size */
++    wb[14] = 0x07000119;                         /* indirected text title */
++    wb[16] = 1;
++    wb[18] = (int)e->title; wb[19] = -1; wb[20] = sizeof(e->title);
++    r.r[1] = (int)wb;
++    if ((err = _kernel_swi(Wimp_CreateWindow, &r, &r))) {
++        av_log(s, AV_LOG_ERROR, "Wimp_CreateWindow: %s\n", err->errmess);
++        return AVERROR_EXTERNAL;
++    }
++    e->handle = r.r[0];
++    e->own_window = 1;
++    block[0] = e->handle;
++    memcpy(&block[1], wb, 7 * sizeof(int));
++    r.r[1] = (int)block;
++    _kernel_swi(Wimp_OpenWindow, &r, &r);
++    return 0;
++}
++
++/* Handle what's waiting in the Wimp's queue, without waiting. */
++static void wimp_poll(AVFormatContext *s)
++{
++    EGLOutContext *e = s->priv_data;
++    int block[64];
++    _kernel_swi_regs r;
++
++    if (!e->task)
++        return;
++    for (;;) {
++        r.r[0] = 0;                                /* null events on: return at once */
++        r.r[1] = (int)block;
++        if (_kernel_swi(Wimp_Poll, &r, &r))
++            return;
++        switch (r.r[0]) {
++        case 0:                                    /* nothing left */
++            return;
++        case 1:                                    /* Redraw_Window_Request */
++            if (!eglRedrawWindowRISCOS(e->dpy, block)) {
++                r.r[1] = (int)block;
++                _kernel_swi(Wimp_RedrawWindow, &r, &r);
++                while (r.r[0]) { r.r[1] = (int)block; _kernel_swi(Wimp_GetRectangle, &r, &r); }
++            }
++            break;
++        case 2:                                    /* Open_Window_Request */
++            r.r[1] = (int)block;
++            _kernel_swi(Wimp_OpenWindow, &r, &r);
++            break;
++        case 3:                                    /* Close_Window_Request */
++            if (block[0] == e->handle)
++                e->quit = 1;
++            break;
++        case 6:                                    /* Mouse_Click: take the caret */
++            if (block[3] == e->handle) {
++                r.r[0] = e->handle; r.r[1] = -1; r.r[2] = 0; r.r[3] = 0;
++                r.r[4] = 1 << 25; r.r[5] = -1;
++                _kernel_swi(Wimp_SetCaretPosition, &r, &r);
++            }
++            break;
++        case 8:                                    /* Key_Pressed */
++            if (block[6] == 0x1B || block[6] == 'q' || block[6] == 'Q')
++                e->quit = 1;
++            else {
++                r.r[0] = block[6];
++                _kernel_swi(Wimp_ProcessKey, &r, &r);
++            }
++            break;
++        case 17: case 18:                          /* Message_Quit */
++            if (block[4] == 0)
++                e->quit = 1;
++            break;
++        }
++    }
++}
++
++/* Escape outside the desktop (full screen from the command line). */
++static int escape_pressed(void)
++{
++    _kernel_swi_regs r;
++    r.r[0] = 121; r.r[1] = 0x70 ^ 0x80;           /* scan for Escape (internal key 112) */
++    _kernel_swi(OS_Byte, &r, &r);
++    return r.r[1] == 0xFF;
++}
++
++static int egl_write_trailer(AVFormatContext *s)
++{
++    EGLOutContext *e = s->priv_data;
++    _kernel_swi_regs r;
++
++    if (e->dpy != EGL_NO_DISPLAY) {
++        if (e->surf != EGL_NO_SURFACE)
++            eglDestroySurface(e->dpy, e->surf);
++        eglTerminate(e->dpy);
++    }
++    e->surf = EGL_NO_SURFACE;
++    e->dpy = EGL_NO_DISPLAY;
++    if (e->own_window && e->handle) {
++        int block[1] = { e->handle };
++        r.r[1] = (int)block;
++        _kernel_swi(Wimp_DeleteWindow, &r, &r);
++    }
++    e->handle = 0;
++    if (e->task) {
++        r.r[0] = e->task; r.r[1] = TASK_WORD;
++        _kernel_swi(Wimp_CloseDown, &r, &r);
++        e->task = 0;
++    } else if (e->fullscreen) {
++        /* started from the desktop's command line: repaint what we covered */
++        r.r[0] = -1; r.r[1] = 0; r.r[2] = 0; r.r[3] = 1 << 30; r.r[4] = 1 << 30;
++        _kernel_swi(Wimp_ForceRedraw, &r, &r);
++    }
++    sws_freeContext(e->sws);
++    e->sws = NULL;
++    return 0;
++}
++
++static int egl_write_header(AVFormatContext *s)
++{
++    EGLOutContext *e = s->priv_data;
++    AVCodecParameters *par;
++    EGLConfig cfg;
++    EGLint n, visual = 0;
++    EGLint cfg_attr[] = {
++        EGL_SURFACE_TYPE, EGL_WINDOW_BIT | EGL_LOCK_SURFACE_BIT_KHR,
++        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
++        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
++        EGL_DEPTH_SIZE, 0,
++        EGL_NONE };
++    EGLint surf_attr[5] = { EGL_NONE }, *a = surf_attr;
++    int win_w, win_h, ret;
++
++    e->dpy = EGL_NO_DISPLAY;
++    e->surf = EGL_NO_SURFACE;
++    if (s->nb_streams != 1 || s->streams[0]->codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
++        s->streams[0]->codecpar->codec_id != AV_CODEC_ID_RAWVIDEO) {
++        av_log(s, AV_LOG_ERROR, "Only a single raw video stream is supported "
++               "(use -map 0:v for the video of a file with sound).\n");
++        return AVERROR(EINVAL);
++    }
++    par = s->streams[0]->codecpar;
++    e->width = par->width;
++    e->height = par->height;
++    e->pix_fmt = par->format;
++    e->sar = s->streams[0]->sample_aspect_ratio.num ? s->streams[0]->sample_aspect_ratio
++                                                    : par->sample_aspect_ratio;
++    if (!sws_isSupportedInput(e->pix_fmt)) {
++        av_log(s, AV_LOG_ERROR, "Pixel format %s can't be converted.\n",
++               av_get_pix_fmt_name(e->pix_fmt));
++        return AVERROR(EINVAL);
++    }
++
++    e->sws_flags = SWS_FAST_BILINEAR;
++    if (e->scale) {
++        if      (!strcmp(e->scale, "bilinear")) e->sws_flags = SWS_BILINEAR;
++        else if (!strcmp(e->scale, "bicubic"))  e->sws_flags = SWS_BICUBIC;
++        else if (!strcmp(e->scale, "neighbor")) e->sws_flags = SWS_POINT;
++        else if (!strcmp(e->scale, "area"))     e->sws_flags = SWS_AREA;
++        else if (strcmp(e->scale, "fast_bilinear"))
++            av_log(s, AV_LOG_WARNING, "Unknown scale '%s', using fast_bilinear.\n", e->scale);
++    }
++
++    /* Where to draw: a window of ours (from the desktop), one we were given,
++     * or the whole screen. */
++    win_w = e->window_width  ? e->window_width  : e->width;
++    win_h = e->window_height ? e->window_height : e->height;
++    if (!e->window_width && e->sar.num > 0 && e->sar.den > 0)
++        win_w = av_rescale(win_w, e->sar.num, e->sar.den);
++    if (e->window_handle) {
++        e->handle = e->window_handle;
++    } else if (!e->fullscreen && wimp_start(e)) {
++        if ((ret = wimp_open_window(s, win_w, win_h)) < 0)
++            goto fail;
++    } else {
++        if (!e->fullscreen)
++            av_log(s, AV_LOG_INFO, "No desktop: showing the video full screen.\n");
++        e->fullscreen = 1;
++        e->handle = (int)EGL_RISCOS_SCREEN_WINDOW;
++        if (e->direct) {
++            *a++ = EGL_RENDER_BUFFER; *a++ = EGL_SINGLE_BUFFER;
++        }
++    }
++    *a = EGL_NONE;
++
++    e->dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
++    if (e->dpy == EGL_NO_DISPLAY || !eglInitialize(e->dpy, NULL, NULL)) {
++        av_log(s, AV_LOG_ERROR, "eglInitialize failed (0x%x)\n", eglGetError());
++        ret = AVERROR_EXTERNAL;
++        goto fail;
++    }
++    /* the first config is in the screen's own colour order */
++    if (!eglChooseConfig(e->dpy, cfg_attr, &cfg, 1, &n) || n < 1) {
++        av_log(s, AV_LOG_ERROR, "No EGL config with EGL_KHR_lock_surface.\n");
++        ret = AVERROR_EXTERNAL;
++        goto fail;
++    }
++    eglGetConfigAttrib(e->dpy, cfg, EGL_NATIVE_VISUAL_ID, &visual);
++    /* 0x00BBGGRR = bytes R,G,B,x; 0x00RRGGBB = bytes B,G,R,x. RGBA/BGRA get
++     * swscale's NEON converters; the fourth byte isn't shown. */
++    e->surf_fmt = visual == EGL_RISCOS_VISUAL_TRGB ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA;
++    e->surf = eglCreateWindowSurface(e->dpy, cfg, (EGLNativeWindowType)e->handle, surf_attr);
++    if (e->surf == EGL_NO_SURFACE) {
++        av_log(s, AV_LOG_ERROR, "eglCreateWindowSurface failed (0x%x)\n", eglGetError());
++        ret = AVERROR_EXTERNAL;
++        goto fail;
++    }
++    if (e->fullscreen)
++        eglSwapInterval(e->dpy, e->vsync);
++    av_log(s, AV_LOG_VERBOSE, "%dx%d %s -> EGL %s surface (%s)\n", e->width, e->height,
++           av_get_pix_fmt_name(e->pix_fmt), e->fullscreen ? "full screen" : "window",
++           av_get_pix_fmt_name(e->surf_fmt));
++    return 0;
++
++fail:
++    egl_write_trailer(s);
++    return ret;
++}
++
++/* The largest rectangle with the video's shape that fits sw x sh, centred. */
++static void display_rect(EGLOutContext *e, int sw, int sh, int *x, int *y, int *w, int *h)
++{
++    AVRational dar = { e->width, e->height };
++    if (e->sar.num > 0 && e->sar.den > 0)
++        dar = av_mul_q(dar, e->sar);
++    *h = sh;
++    *w = (int)av_rescale(sh, dar.num, dar.den) & ~1;
++    if (*w > sw) {
++        *w = sw;
++        *h = (int)av_rescale(sw, dar.den, dar.num) & ~1;
++    }
++    *w = FFMAX(*w, 1);
++    *h = FFMAX(*h, 1);
++    *x = (sw - *w) / 2;
++    *y = (sh - *h) / 2;
++}
++
++static void fill_black(uint8_t *p, int pitch, int x, int y, int w, int h)
++{
++    for (int j = 0; j < h; j++)
++        memset(p + (y + j) * pitch + x * 4, 0, w * 4);
++}
++
++static int egl_write_packet(AVFormatContext *s, AVPacket *pkt)
++{
++    EGLOutContext *e = s->priv_data;
++    const uint8_t *src[4];
++    int src_stride[4];
++    uint8_t *dst[4] = { NULL };
++    int dst_stride[4] = { 0 };
++    EGLint lock_attr[] = { EGL_LOCK_USAGE_HINT_KHR, EGL_WRITE_SURFACE_BIT_KHR, EGL_NONE };
++    EGLAttribKHR ptr = 0;
++    EGLint pitch = 0, sw = 0, sh = 0;
++    int x, y, w, h;
++
++    wimp_poll(s);
++    if (e->quit || (!e->task && escape_pressed()))
++        return AVERROR_EXIT;
++
++    if (av_image_fill_arrays((uint8_t **)src, src_stride, pkt->data, e->pix_fmt,
++                             e->width, e->height, 1) < 0)
++        return AVERROR(EINVAL);
++
++    if (!eglLockSurfaceKHR(e->dpy, e->surf, lock_attr)) {
++        av_log(s, AV_LOG_ERROR, "eglLockSurfaceKHR failed (0x%x)\n", eglGetError());
++        return AVERROR_EXTERNAL;
++    }
++    eglQuerySurface64KHR(e->dpy, e->surf, EGL_BITMAP_POINTER_KHR, &ptr);   /* lock_surface3 */
++    eglQuerySurface(e->dpy, e->surf, EGL_BITMAP_PITCH_KHR, &pitch);
++    eglQuerySurface(e->dpy, e->surf, EGL_WIDTH, &sw);
++    eglQuerySurface(e->dpy, e->surf, EGL_HEIGHT, &sh);
++    if (!ptr || sw < 1 || sh < 1) {
++        eglUnlockSurfaceKHR(e->dpy, e->surf);
++        return AVERROR_EXTERNAL;
++    }
++
++    display_rect(e, sw, sh, &x, &y, &w, &h);
++    /* Borders: whenever the surface changed size (it follows the window),
++     * and on every frame when drawing into the screen itself. */
++    if (sw != e->last_sw || sh != e->last_sh || e->direct) {
++        fill_black((uint8_t *)ptr, pitch, 0, 0, sw, y);
++        fill_black((uint8_t *)ptr, pitch, 0, y + h, sw, sh - y - h);
++        fill_black((uint8_t *)ptr, pitch, 0, y, x, h);
++        fill_black((uint8_t *)ptr, pitch, x + w, y, sw - x - w, h);
++        e->last_sw = sw;
++        e->last_sh = sh;
++    }
++
++    e->sws = sws_getCachedContext(e->sws, e->width, e->height, e->pix_fmt, w, h, e->surf_fmt,
++                                  (w == e->width && h == e->height) ? SWS_POINT : e->sws_flags,
++                                  NULL, NULL, NULL);
++    if (!e->sws) {
++        eglUnlockSurfaceKHR(e->dpy, e->surf);
++        return AVERROR(ENOMEM);
++    }
++    dst[0] = (uint8_t *)ptr + y * pitch + x * 4;
++    dst_stride[0] = pitch;
++    sws_scale(e->sws, src, src_stride, 0, e->height, dst, dst_stride);
++    eglUnlockSurfaceKHR(e->dpy, e->surf);
++
++    if (!eglSwapBuffers(e->dpy, e->surf)) {
++        av_log(s, AV_LOG_ERROR, "eglSwapBuffers failed (0x%x)\n", eglGetError());
++        return AVERROR_EXTERNAL;
++    }
++    return 0;
++}
++
++#define OFFSET(x) offsetof(EGLOutContext, x)
++#define ENC AV_OPT_FLAG_ENCODING_PARAM
++static const AVOption options[] = {
++    { "window_title",  "window title (default: the output name)", OFFSET(window_title), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, ENC },
++    { "window_size",   "window size (default: the video's)", OFFSET(window_width), AV_OPT_TYPE_IMAGE_SIZE, { .str = NULL }, 0, 0, ENC },
++    { "window_x",      "window position from the left, pixels (-1: centred)", OFFSET(window_x), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, INT_MAX, ENC },
++    { "window_y",      "window position from the top, pixels (-1: centred)",  OFFSET(window_y), AV_OPT_TYPE_INT, { .i64 = -1 }, -1, INT_MAX, ENC },
++    { "window_handle", "draw in this existing Wimp window instead of opening one", OFFSET(window_handle), AV_OPT_TYPE_INT, { .i64 = 0 }, INT_MIN, INT_MAX, ENC },
++    { "fullscreen",    "use the whole screen", OFFSET(fullscreen), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, ENC },
++    { "direct",        "full screen: write into screen memory (fastest; may tear)", OFFSET(direct), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, ENC },
++    { "vsync",         "full screen: vertical syncs to wait for each frame", OFFSET(vsync), AV_OPT_TYPE_INT, { .i64 = 1 }, 0, 4, ENC },
++    { "scale",         "scaler: fast_bilinear, bilinear, bicubic, neighbor, area", OFFSET(scale), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, ENC },
++    { NULL },
++};
++
++static const AVClass egl_class = {
++    .class_name = "egl outdev",
++    .item_name  = av_default_item_name,
++    .option     = options,
++    .version    = LIBAVUTIL_VERSION_INT,
++    .category   = AV_CLASS_CATEGORY_DEVICE_VIDEO_OUTPUT,
++};
++
++const AVOutputFormat ff_egl_muxer = {
++    .name           = "egl",
++    .long_name      = NULL_IF_CONFIG_SMALL("RISC OS EGL output device"),
++    .priv_data_size = sizeof(EGLOutContext),
++    .audio_codec    = AV_CODEC_ID_NONE,
++    .video_codec    = AV_CODEC_ID_RAWVIDEO,
++    .write_header   = egl_write_header,
++    .write_packet   = egl_write_packet,
++    .write_trailer  = egl_write_trailer,
++    .flags          = AVFMT_NOFILE | AVFMT_VARIABLE_FPS | AVFMT_NOTIMESTAMPS,
++    .priv_class     = &egl_class,
++};
