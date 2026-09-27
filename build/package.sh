@@ -6,11 +6,11 @@
 #   dist/riscos-ffmpeg-devkit-VERSION.tgz  static libraries (and libffegl) + headers + .pc
 # Filetypes go in the zip's Acorn extra fields (tools/mkrozip.py), so SparkFS
 # and RISC OS unzip give the files their real types.
-# Usage: build/package.sh [VERSION]      (default 5.1.10-riscos4)
+# Usage: build/package.sh [VERSION]      (default 5.1.10-riscos5)
 #        ELF2AIF=path/to/elf2aif        (host elf2aif; see tools/elf2aif)
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
-V=${1:-5.1.10-riscos4}
+V=${1:-5.1.10-riscos5}
 ELF2AIF=${ELF2AIF:-$TOP/tools/elf2aif/elf2aif}
 [ -x "$ELF2AIF" ] || { echo "no elf2aif at $ELF2AIF (make -C tools/elf2aif GCCSDK_SRC=...)" >&2; exit 1; }
 FF=$SRC/ffmpeg-5.1.10
@@ -27,6 +27,8 @@ for p in ffmpeg ffprobe ffplay; do
   ${CROSS}strip -o "$TMP/$p.elf" "$FF/${p}_g"
   "$ELF2AIF" -e "$TMP/$p.elf" "$A/$p,ff8" >/dev/null
 done
+${CROSS}strip -o "$TMP/fffront.elf" "$STAGE/bin/fffront"
+"$ELF2AIF" -e "$TMP/fffront.elf" "$A/!RunImage,ff8" >/dev/null
 D=$A/docs
 mkdir -p "$D/Licences" "$D/source"
 cp "$TOP/README.md" "$D/ReadMe,fff"
@@ -45,7 +47,7 @@ cp "$SRC/libvorbis-1.3.7/COPYING" "$D/Licences/Vorbis,fff"
 cp "$SRC/SDL-release-2.26.0/LICENSE.txt" "$D/Licences/SDL2,fff"
 # Corresponding source for the GPL: this port's changes and how it is built
 # (the upstream tarballs are named, with checksums, in SOURCES).
-( cd "$TOP" && tar cf - build patches tools app ffegl tests/qemu/*.sh tests/qemu/*.md tests/qemu/*.patch \
+( cd "$TOP" && tar cf - build patches tools app ffegl frontend tests/qemu/*.sh tests/qemu/*.md tests/qemu/*.patch \
     README.md CHANGELOG.md docs Makefile 2>/dev/null ) | tar xf - -C "$D/source"
 rm -f "$DIST/FFmpeg-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-$V.zip" '!FFmpeg' )

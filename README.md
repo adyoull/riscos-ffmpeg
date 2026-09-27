@@ -29,6 +29,8 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
 
 - **Programs:** `ffmpeg`, `ffprobe`, and `ffplay` (SDL2 from riscos-mesa:
   Wimp window, SharedSoundBuffer sound).
+- **Icon bar:** double-click `!FFmpeg` and drop video files on its icon to
+  play them (`frontend/fffront.c`).
 - **Codec libraries:** x264 (H.264 encoding), dav1d (AV1 decoding, NEON),
   LAME, Opus, Vorbis, and zlib.
 - **Network:** http, tcp, udp, rtp, rtmp and hls. There is no https.

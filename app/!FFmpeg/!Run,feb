@@ -1,7 +1,7 @@
 | !Run for !FFmpeg (FFmpeg 5.1.10 LTS for RISC OS)
-| FFmpeg has no desktop front end: double-clicking !FFmpeg sets up the
-| *ffmpeg, *ffprobe and *ffplay commands (as !Boot does) and checks the
-| modules they need. Then use them from a TaskWindow (Ctrl-F12).
+| Double-clicking !FFmpeg sets up the *ffmpeg, *ffprobe and *ffplay
+| commands (as !Boot does), checks the modules they need, and puts the
+| FFmpeg icon on the icon bar: drop a video or sound file on it to play it.
 Set FFmpeg$Dir <Obey$Dir>
 Run <FFmpeg$Dir>.!Boot
 
@@ -13,3 +13,7 @@ RMEnsure ARMEABISupport 0 Error FFmpeg needs the ARMEABISupport module. Install 
 | ffplay's sound uses SharedSoundBuffer and StreamManager (John Duffell's
 | ssb.zip, from the RDPClient page at orac.co.uk) when they are loaded;
 | without them SDL falls back to UnixLib's /dev/dsp (DigitalRenderer).
+
+| --- The icon bar front end (one copy; it checks) -------------------
+WimpSlot -min 512K -max 512K
+Run <FFmpeg$Dir>.!RunImage

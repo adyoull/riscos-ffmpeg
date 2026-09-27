@@ -5,6 +5,7 @@
 # (tests/qemu/aligntrap.sh), so they also catch unaligned accesses.
 #   egl_outdev_test: libavdevice/riscos_egl.c (the -f egl output device)
 #   ffegl_test:      ffegl/ffegl.c (the library)
+#   fffront_test:    frontend/fffront.c (!FFmpeg's icon bar front end), host gcc
 #   mesa/run.sh:     ffegl_texture() with riscos-mesa's real libEGL/libOSMesa
 # Usage: QEMU=path/to/patched/qemu-arm tests/host/run.sh
 set -euo pipefail
@@ -44,5 +45,8 @@ for clip in h264_aac_640_360.mp4 h264_aac_322_182.mp4; do
   echo "== ffegl_test $clip"
   "$TOP/tests/qemu/aligntrap.sh" "$O/ffegl_test" "$SAMPLES/$clip" 2>&1 | grep -v "swscaler\|ffegl: " || bad=1
 done
+echo "== fffront_test (the icon bar front end, on this host)"
+gcc -O1 -DFFFRONT_NO_MAIN -I"$HERE/fake" "$TOP/frontend/fffront.c" "$HERE/fffront_test.c" \
+  -o "$O/fffront_test" 2>/dev/null && "$O/fffront_test" || bad=1
 "$HERE/mesa/run.sh" || bad=1
 exit $bad

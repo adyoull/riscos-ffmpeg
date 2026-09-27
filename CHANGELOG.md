@@ -1,5 +1,16 @@
 # Changes
 
+## 5.1.10-riscos5 (2026-09-27)
+
+- **An icon bar icon:** double-clicking `!FFmpeg` now puts the FFmpeg icon
+  on the icon bar, as well as setting up the commands.
+  - Drop a video or sound file on the icon and it plays in ffplay. Each
+    file gets its own window and task, and messages go to
+    `<Wimp$ScrapDir>.ffplay/log`.
+  - The icon's menu has Info, Full screen (plays with `-fs`) and Quit.
+  - It's a small C program (`frontend/fffront.c`, `!RunImage`, 512K); only
+    one copy runs. It has a host test with a scripted fake Wimp.
+
 ## 5.1.10-riscos4 (2026-09-27)
 
 - **The real cause of the Pi crash** ("abort on data transfer", which
