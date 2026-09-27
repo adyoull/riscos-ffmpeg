@@ -5,7 +5,9 @@
 #define EGL_EGLEXT_PROTOTYPES 1
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#ifndef FFEGL_NO_GL
 #include <GL/gl.h>
+#endif
 #include <SDL.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -63,6 +65,7 @@ struct FFEGLVideo {
     int64_t t0;                        /* av_gettime_relative() at pts 0 */
     int paused;
     double pause_pos;
+    unsigned dropped;                  /* late frames skipped */
 
     /* conversion */
     struct SwsContext *sws;
@@ -284,6 +287,26 @@ int ffegl_height(const FFEGLVideo *v)       { return v->h; }
 double ffegl_frame_rate(const FFEGLVideo *v) { return v->fps; }
 double ffegl_duration(const FFEGLVideo *v)  { return v->duration; }
 int ffegl_has_audio(const FFEGLVideo *v)    { return v->dev != 0; }
+unsigned ffegl_dropped_frames(const FFEGLVideo *v) { return v->dropped; }
+
+int ffegl_info(const FFEGLVideo *v, char *buf, int size)
+{
+    const AVCodecParameters *vp = v->fmt->streams[v->vs]->codecpar;
+    int n = snprintf(buf, size, "%s %dx%d", avcodec_get_name(vp->codec_id), vp->width, vp->height);
+    if (v->fps > 0 && n < size)
+        n += snprintf(buf + n, size - n, ", %.3g fps", v->fps);
+    if (v->as >= 0 && n < size) {
+        const AVCodecParameters *ap = v->fmt->streams[v->as]->codecpar;
+        n += snprintf(buf + n, size - n, "; %s %d Hz, %d channel%s%s", avcodec_get_name(ap->codec_id),
+                      ap->sample_rate, ap->ch_layout.nb_channels, ap->ch_layout.nb_channels == 1 ? "" : "s",
+                      v->dev ? "" : " (no sound device)");
+    } else if (n < size)
+        n += snprintf(buf + n, size - n, "; no sound");
+    if (v->fmt->iformat && n < size)
+        n += snprintf(buf + n, size - n, "; %s", v->fmt->iformat->name);
+    return n;
+}
+
 double ffegl_position(const FFEGLVideo *v)
 {
     double start = v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time / (double)AV_TIME_BASE : 0;
@@ -442,8 +465,10 @@ int ffegl_update(FFEGLVideo *v)
     now = clock_now(v);
     if (v->qn && v->qpts[0] <= now + 0.005) {
         /* skip the frames that are already late */
-        while (v->qn > 1 && v->qpts[1] <= now)
+        while (v->qn > 1 && v->qpts[1] <= now) {
             take_frame(v);
+            v->dropped++;
+        }
         take_frame(v);
         return FFEGL_NEW_FRAME;
     }
@@ -571,6 +596,7 @@ int ffegl_draw_pixels(FFEGLVideo *v, void *pixels, int pitch, int w, int h, int 
                    bgr ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA);
 }
 
+#ifndef FFEGL_NO_GL   /* built without it: no EGL surfaces or GL textures */
 int ffegl_draw_surface(FFEGLVideo *v, EGLDisplay dpy, EGLSurface surf,
                        int x, int y, int w, int h, int flags)
 {
@@ -799,3 +825,6 @@ int ffegl_texture(FFEGLVideo *v, unsigned int tex, unsigned int *tex_out)
                         GL_RGBA, GL_UNSIGNED_BYTE, v->rgba);
     return 0;
 }
+#else
+static void texture_image_free(FFEGLVideo *v, int unlink) { (void)v; (void)unlink; }
+#endif

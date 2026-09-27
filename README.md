@@ -31,6 +31,9 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
   Wimp window, SharedSoundBuffer sound).
 - **Icon bar:** double-click `!FFmpeg` and drop video files on its icon to
   play them (`frontend/fffront.c`).
+- **!Reel:** a video player for the desktop (`player/reel.c`, its own zip).
+  It shows a proper Wimp window with Play/Pause, skip, a position bar, time
+  and full screen, and is built on ffegl.
 - **Codec libraries:** x264 (H.264 encoding), dav1d (AV1 decoding, NEON),
   LAME, Opus, Vorbis, and zlib.
 - **Network:** http, tcp, udp, rtp, rtmp and hls. There is no https.
@@ -89,7 +92,7 @@ riscos-mesa devkit (20.3.5-7pre12 or later) unpacked in `devkit/`:
 make sources      # checks dl/ against build/SHA256SUMS (fetch them first)
 make deps         # SDL2 (riscos-mesa overlay, no GL), x264, dav1d, LAME, ...
 make ffmpeg       # FFmpeg 5.1.10 + patches/ffmpeg + the NEON rewrite
-make ffegl        # libffegl and the videowin/videocube examples
+make ffegl        # libffegl, the videowin/videocube examples, !Reel, the icon bar front end
 make package      # dist/FFmpeg-VERSION.zip, dist/riscos-ffmpeg-devkit-VERSION.tgz
 make test         # the same code for arm-linux, run under the trapping qemu
 ```

@@ -5,7 +5,8 @@ picks the 90 dpi sprite and scales it). 32 bpp (TBGR) new-format sprites
 with a 1 bpp mask. The picture is our own: a film frame with a play
 triangle, drawn from shapes here.
 
-Usage: mksprites.py OUT_FILE   (write it as !Sprites,ff9)
+Usage: mksprites.py [--reel] OUT_FILE   (write it as !Sprites,ff9;
+       --reel: !Reel's film reel icon instead)
 """
 import struct
 import sys
@@ -41,8 +42,43 @@ def draw(size):
     return rows
 
 
-def sprite(name, size):
-    rows = draw(size)
+def draw_reel(size):
+    """!Reel: a film reel (a grey disc with five holes and a hub) with a
+    strip of film running off it to the right."""
+    import math
+    s = size / 34.0
+    rows = []
+    for y in range(size):
+        row = []
+        for x in range(size):
+            fx, fy = (x + 0.5) / s, (y + 0.5) / s
+            px = None
+            # film strip: along the bottom right
+            if 17 <= fx <= 33 and 25 <= fy <= 31:
+                px = (40, 44, 52)
+                if (fy < 26.6 or fy > 29.4) and int(fx) % 3 == 0:
+                    px = (230, 230, 230)
+            cx, cy, r = 15.5, 15.5, 13.5
+            d = math.hypot(fx - cx, fy - cy)
+            if d <= r:
+                px = (175, 180, 190) if d > r - 1.2 else (205, 210, 218)
+                ang = math.atan2(fy - cy, fx - cx)
+                for k in range(5):
+                    hx = cx + 7.2 * math.cos(ang * 0 + k * 2 * math.pi / 5 - math.pi / 2)
+                    hy = cy + 7.2 * math.sin(k * 2 * math.pi / 5 - math.pi / 2)
+                    if math.hypot(fx - hx, fy - hy) <= 3.3:
+                        px = (40, 44, 52)
+                if d <= 2.4:
+                    px = (200, 40, 40)
+                if d <= 1.0:
+                    px = (40, 44, 52)
+            row.append(px)
+        rows.append(row)
+    return rows
+
+
+def sprite(name, size, drawer=None):
+    rows = (drawer or draw)(size)
     w, h = size, size
     img = bytearray()
     mask = bytearray()
@@ -74,7 +110,11 @@ def sprite(name, size):
 
 
 def main():
-    sprites = [sprite("!ffmpeg", 34), sprite("sm!ffmpeg", 17)]
+    if len(sys.argv) > 2 and sys.argv[1] == "--reel":
+        sys.argv.pop(1)
+        sprites = [sprite("!reel", 34, draw_reel), sprite("sm!reel", 17, draw_reel)]
+    else:
+        sprites = [sprite("!ffmpeg", 34), sprite("sm!ffmpeg", 17)]
     body = b"".join(sprites)
     # file = sprite area without its first word: count, first, free
     area = struct.pack("<iii", len(sprites), 16, 16 + len(body)) + body

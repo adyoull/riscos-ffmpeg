@@ -70,6 +70,14 @@ double ffegl_frame_rate(const FFEGLVideo *v);
 double ffegl_duration(const FFEGLVideo *v);
 int ffegl_has_audio(const FFEGLVideo *v);
 
+/* A one-line description of the streams, e.g. "h264 1280x720, 30 fps;
+   aac 48000 Hz, 2 channels; mov,mp4,m4a,3gp,3g2,mj2". Returns its length
+   (as snprintf). */
+int ffegl_info(const FFEGLVideo *v, char *buf, int size);
+
+/* Frames skipped because they were already late (the CPU fell behind). */
+unsigned ffegl_dropped_frames(const FFEGLVideo *v);
+
 /* Decodes what is needed and chooses the frame for "now".
    Returns FFEGL_NEW_FRAME, FFEGL_SAME_FRAME, FFEGL_END, or a negative
    AVERROR code. The first call after opening (or seeking) always gives
@@ -98,6 +106,9 @@ int ffegl_draw_surface(FFEGLVideo *v, EGLDisplay dpy, EGLSurface surf,
    bgr = 1: bytes B,G,R,x (0x00RRGGBB). */
 int ffegl_draw_pixels(FFEGLVideo *v, void *pixels, int pitch, int w, int h,
                       int bgr, int flags);
+
+/* (ffegl_draw_surface and ffegl_texture are left out of a build with
+   FFEGL_NO_GL defined, for programs that don't link EGL and OpenGL.) */
 
 /* Puts the current frame into an OpenGL texture (GL_TEXTURE_2D, the
    video's size). Needs a current GL context. tex = 0 creates a texture and

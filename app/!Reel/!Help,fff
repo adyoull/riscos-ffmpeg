@@ -1,0 +1,67 @@
+!Reel - a video player for RISC OS                           0.1
+===================================================================
+
+Reel plays video files in a desktop window, with sound. It uses FFmpeg
+5.1 (the riscos-ffmpeg port, with its NEON code), so it plays almost
+anything: MP4, MKV, WebM, AVI, MOV, MPEG; H.264, HEVC, VP8, VP9, AV1,
+MPEG-1/2/4, Theora and more. It needs an ARMv7 machine with NEON
+(Raspberry Pi 2/3/4/400, Titanium, IGEPv5, ...).
+
+Using it
+--------
+Double-click !Reel: its icon (a film reel) appears on the icon bar. Then:
+
+  - drop a video file on the icon, or on Reel's window; or
+  - double-click a video file in the Filer (while Reel is loaded).
+
+The window shows the picture with a row of controls under it:
+
+  Pause/Play    stop and start (a click on the picture does the same)
+  < 10s  10s >  go back or forward 10 seconds
+  the bar       click anywhere on it to go there
+  the time      where you are / how long the video is
+  Full          full screen (Escape or F to come back)
+
+Keys (click in the window first):
+  Space         pause / play
+  Left, Right   back / forward 10 seconds
+  Down, Up      back / forward 1 minute
+  F             full screen on and off
+  Escape        leave full screen
+  Q             close the video
+
+The window can be resized: the picture keeps its shape. Menu on the
+window: File info (codec, size, frame rate, sound, and how many late
+frames were skipped), Full screen, Loop, Close. Menu on the icon: Info,
+Loop, Quit.
+
+Speed
+-----
+Everything is decoded on the one CPU core. On a Raspberry Pi 4, 720p
+H.264 plays well at normal bitrates (up to about 5 Mbit/s); very high
+bitrate files (like 25 Mbit/s camera or "HD" downloads) fall behind and
+Reel skips frames to keep up with the sound. To make a file play
+smoothly, convert it once, e.g. on a faster computer:
+
+  ffmpeg -i in.mp4 -c:v libx264 -preset slow -tune fastdecode -b:v 3M
+         -vf scale=-2:720 -c:a aac -b:a 128k out.mp4
+
+A smaller window is cheaper than full screen: the picture is scaled to
+the window.
+
+Needs
+-----
+SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan). For sound:
+SharedSoundBuffer and StreamManager (ssb.zip, from the RDPClient page at
+orac.co.uk). Without them Reel plays the picture and keeps time itself.
+
+Known limits
+------------
+- One video at a time. No playlist or subtitles yet.
+- Files with no video (sound only) aren't played.
+
+Licence
+-------
+GNU GPL, version 2 or later: Reel includes FFmpeg built with x264. The
+docs directory has the licences and Reel's source; FFmpeg's source and
+the port's patches are in the riscos-ffmpeg package (!FFmpeg.docs.source).

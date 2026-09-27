@@ -1,0 +1,17 @@
+| !Run for !Reel (a video player, from riscos-ffmpeg)
+| Puts Reel on the icon bar. Drop a video on it, or double-click a video
+| in the Filer while Reel is loaded. %*0 = a file to play at once.
+Set Reel$Dir <Obey$Dir>
+IconSprites <Reel$Dir>.!Sprites
+
+RMEnsure SharedUnixLibrary 1.16 IfThere System:Modules.SharedULib Then RMLoad System:Modules.SharedULib
+RMEnsure SharedUnixLibrary 1.16 Error Reel needs SharedUnixLibrary 1.16 or later. Install it with PackMan.
+RMEnsure ARMEABISupport 0 IfThere System:Modules.ARMEABISupport Then RMLoad System:Modules.ARMEABISupport
+RMEnsure ARMEABISupport 0 Error Reel needs the ARMEABISupport module. Install it with PackMan.
+| Sound: SharedSoundBuffer and StreamManager (John Duffell's ssb.zip) when
+| they are loaded.
+
+| The program is about 29MB; its memory for pictures and sound is in a
+| dynamic area ("Reel Heap").
+WimpSlot -min 40960K -max 40960K
+Run <Reel$Dir>.!RunImage %*0

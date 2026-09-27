@@ -1,5 +1,35 @@
 # Changes
 
+## Reel 0.1 (2026-09-27)
+
+- **!Reel, a video player for the desktop** (`player/reel.c`,
+  `dist/Reel-0.1.zip`). It's a native Wimp app built on ffegl: an icon
+  bar icon, and a window with the picture above a row of controls.
+  - Controls: Play/Pause, back and forward 10 s, a position bar you can
+    click, the time, and Full. Keys: Space, the arrow keys, F, Escape
+    and Q.
+  - Open a video by dropping it on the icon or the window. Double-clicking
+    in the Filer also works while Reel is loaded, for filetypes MimeMap
+    calls video/*.
+  - The picture is scaled into the window by swscale (NEON), letterboxed,
+    and plotted as a 32bpp sprite in the screen's colour order. The window
+    can be resized.
+  - Full screen is a borderless window over the whole screen.
+  - Sound goes through SDL2 (SharedSoundBuffer) and is the clock. There
+    are no threads of its own: decoding happens on null events.
+  - The window menu has File info (codec, size, fps, sound, frames
+    skipped), Full screen, Loop and Close. The icon menu has Info, Loop
+    and Quit.
+  - It uses no EGL or OpenGL (ffegl built with `FFEGL_NO_GL`), so it's a
+    20 MB program.
+  - **Test:** `tests/host/reel_test.c` drives the whole app through a
+    scripted fake desktop, with real decoding under the alignment-trapping
+    QEMU. It checks playing (the plotted pixels are the frame),
+    pause/resume, the position bar, full screen and back, resize, a second
+    file, a directory refused, and double-click claiming only video types.
+- ffegl: `ffegl_info()` (a description of the streams),
+  `ffegl_dropped_frames()`, and the `FFEGL_NO_GL` build option.
+
 ## 5.1.10-riscos5 (2026-09-27)
 
 - **An icon bar icon:** double-clicking `!FFmpeg` now puts the FFmpeg icon

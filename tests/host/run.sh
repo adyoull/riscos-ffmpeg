@@ -45,6 +45,17 @@ for clip in h264_aac_640_360.mp4 h264_aac_322_182.mp4; do
   echo "== ffegl_test $clip"
   "$TOP/tests/qemu/aligntrap.sh" "$O/ffegl_test" "$SAMPLES/$clip" 2>&1 | grep -v "swscaler\|ffegl: " || bad=1
 done
+# Reel (player/reel.c) with ffegl built without GL, fake Wimp, fake SDL audio
+$CC -DFFEGL_NO_GL -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_nogl.o"
+$CC -DREEL_TEST -DREEL_NO_MAIN -I$S/include -I$DEVKIT/include -I$TOP/ffegl -c "$TOP/player/reel.c" -o "$O/reel.o"
+$CC -DFAKE_SDL_ONLY -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$HERE -c "$HERE/fake_sdl_gl.c" -o "$O/fake_sdl_only.o"
+$CC -I$S/include -I$DEVKIT/include -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reel_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reel_test" "$O/reel_test.o" "$O/reel.o" \
+  "$O/ffegl_nogl.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
+echo "== reel_test (the player, scripted desktop)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/reel_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
+  grep -v "swscaler\|ffegl: " || bad=1
+
 echo "== fffront_test (the icon bar front end, on this host)"
 gcc -O1 -DFFFRONT_NO_MAIN -I"$HERE/fake" "$TOP/frontend/fffront.c" "$HERE/fffront_test.c" \
   -o "$O/fffront_test" 2>/dev/null && "$O/fffront_test" || bad=1

@@ -53,6 +53,10 @@ $FF $M -c:v libtheora -q:v 5 "$OUT/mv_theora.ogv"
 $FF $M -c:v wmv2 -q:v 5 "$OUT/mv_wmv2.wmv"
 $FF -f lavfi -i testsrc2=size=352x288:rate=25:duration=2,scroll=h=0.0071:v=0.0113 -c:v h263 -q:v 5 "$OUT/mv_h263.3gp"
 
+# A 6 s clip with sound for tests/host/reel_test (the player's controls)
+$FF -f lavfi -i testsrc2=size=322x184:rate=25:duration=6 -f lavfi -i sine=frequency=440:sample_rate=48000:duration=6 \
+  -c:v libx264 -preset fast -pix_fmt yuv420p -c:a aac -shortest "$OUT/long_h264_aac_322_184.mp4"
+
 # H.263 needs a standard size
 $FF -f lavfi -i testsrc2=size=352x288:rate=25:duration=1 -c:v h263 "$OUT/h263_352_288.3gp"
 

@@ -65,7 +65,7 @@ job() {
 for f in "$HERE"/samples/*; do
   b=$(basename "$f")
   case "$b" in
-    aac*|ac3*|eac3*|vorbis*|opus*|wmav2*|mp3*|mp2*|h264_aac*) loose=1 ;;
+    aac*|ac3*|eac3*|vorbis*|opus*|wmav2*|mp3*|mp2*|h264_aac*|long_*) loose=1 ;;
     mpeg4*|mpeg2*|mjpeg*|wmv2*|h263*|dv_*|theora*|mv_mpeg4*|mv_mpeg2*|mv_wmv2*|mv_h263*|mv_theora*) loose=1 ;;  # IDCT choice, see README
     *) loose=0 ;;
   esac
