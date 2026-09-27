@@ -31,9 +31,19 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
   Wimp window, SharedSoundBuffer sound).
 - **Icon bar:** double-click `!FFmpeg` and drop video files on its icon to
   play them (`frontend/fffront.c`).
-- **!Reel:** a video player for the desktop (`player/reel.c`, its own zip).
-  It shows a proper Wimp window with Play/Pause, skip, a position bar, time
-  and full screen, and is built on ffegl.
+- **!Reel:** a video player for the desktop (`player/reel.c`, its own zip),
+  built on ffegl, with **!ReelEGL**, the same player drawing through
+  riscos-mesa's EGL.
+  - A Wimp window with Play/Pause, skip, a position bar, time and full
+    screen; drop a file on the icon or double-click it in the Filer.
+  - Sound straight to SharedSoundBuffer, which is also the clock the
+    pictures follow; late frames are skipped (and, when far behind,
+    non-reference frames aren't decoded).
+  - **Media info** window: the file's codecs and formats, and "stats for
+    nerds" every second (pictures shown and decoded, decode time and
+    speed, drawing time, queues, sound, reading rate).
+  - Sleeps between pictures (Wimp_PollIdle), and writes a log
+    (`<Wimp$ScrapDir>.ReelLog`).
 - **Codec libraries:** x264 (H.264 encoding), dav1d (AV1 decoding, NEON),
   LAME, Opus, Vorbis, and zlib.
 - **Network:** http, tcp, udp, rtp, rtmp and hls. There is no https.
@@ -54,6 +64,21 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
   20.3.5-7pre12 or later a texture shares ffegl's pixels through an
   EGLImage, with no copy. See [docs/EGL.md](docs/EGL.md); the
   FFmpeg-EGL-examples zip has `videowin` and `videocube`.
+
+## Downloads
+
+From [Releases](../../releases):
+
+- `FFmpeg-5.1.10-riscosN.zip`: `!FFmpeg` with the programs.
+- `FFmpeg-EGL-examples-5.1.10-riscosN.zip`: `videowin` and `videocube`.
+- `riscos-ffmpeg-devkit-5.1.10-riscosN.tgz`: headers and static libraries
+  (FFmpeg, ffegl, codecs) for GCCSDK.
+- `Reel-X.Y.Z.zip`: `!Reel` and `!ReelEGL`.
+
+They need SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan).
+For sound: SharedSoundBuffer and StreamManager (`ssb.zip` from the
+RDPClient page at orac.co.uk), merged into `!System`; the apps' `!Run`
+files load them. The EGL examples and !ReelEGL need riscos-mesa.
 
 ## Alignment: the main porting work
 
@@ -93,7 +118,7 @@ make sources      # checks dl/ against build/SHA256SUMS (fetch them first)
 make deps         # SDL2 (riscos-mesa overlay, no GL), x264, dav1d, LAME, ...
 make ffmpeg       # FFmpeg 5.1.10 + patches/ffmpeg + the NEON rewrite
 make ffegl        # libffegl, the videowin/videocube examples, !Reel, the icon bar front end
-make package      # dist/FFmpeg-VERSION.zip, dist/riscos-ffmpeg-devkit-VERSION.tgz
+make package      # dist/: the FFmpeg, EGL examples and Reel zips, the devkit
 make test         # the same code for arm-linux, run under the trapping qemu
 ```
 
@@ -110,18 +135,23 @@ make test         # the same code for arm-linux, run under the trapping qemu
 ## Layout
 
 ```
-build/      env.sh, build-deps.sh, build-ffmpeg.sh, package.sh, SHA256SUMS
+build/      env.sh, build-deps.sh, build-ffmpeg.sh, build-ffegl.sh, package.sh, SHA256SUMS
 patches/    ffmpeg/ (git format-patch series), dav1d/, x264/, lame/, sdl2/ (riscos-mesa overlay copy)
+ffegl/      the ffegl library (ffegl.h, ffegl.c) and the videowin/videocube examples
+player/     reel.c: !Reel and !ReelEGL
+frontend/   fffront.c: !FFmpeg's icon bar front end
 tools/      neon-align.py (+ *.allow lists), mkrozip.py, mksprites.py, elf2aif/, check-stack-probes.py
-app/        !FFmpeg (the parts that aren't built)
+app/        !FFmpeg, !Reel, !ReelEGL (the parts that aren't built)
 tests/qemu/ the alignment rig: qemu patch, sample maker, runners
-docs/       ALIGNMENT.md, SOURCES.md
+tests/host/ ffegl, Reel and front end tests with fake Wimp/SDL/EGL, under the trapping qemu
+docs/       ALIGNMENT.md, EGL.md, SOURCES.md
 ```
 
 ## Licence
 
-The build scripts, tools and patches are GPL version 2 or later, like the
-FFmpeg build they make. That build includes x264, so it is GPL (version 2
+The build scripts, tools, patches and programs are GPL version 2 or later
+(see `COPYING`), like the FFmpeg build they make; ffegl is LGPL 2.1 or
+later. That build includes x264, so it is GPL (version 2
 or later). The other libraries keep their own licences: see
 `dist/…/docs/Licences`.
 

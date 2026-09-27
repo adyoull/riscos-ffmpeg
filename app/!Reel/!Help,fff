@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                           0.9
+!Reel - a video player for RISC OS                         0.1.9
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -95,7 +95,7 @@ Between pictures Reel sleeps (Wimp_PollIdle) until the next one is due,
 having decoded the next few already, so other programs get the time and
 Task Manager shows Reel using about what decoding and drawing need.
 *Set Reel$NoSleep 1 (ReelEGL$NoSleep) before starting it polls flat out
-instead, as before 0.9, to compare.
+instead, as before 0.1.9, to compare.
 
 Needs
 -----
@@ -104,7 +104,7 @@ SharedSoundBuffer and StreamManager (ssb.zip, from the RDPClient page at
 orac.co.uk), merged into !System: Reel's !Run loads them. Without them
 Reel plays the picture, keeps time itself, and Media info says why there
 is no sound.
-Reel gives the sound straight to SharedSoundBuffer (from 0.5; before,
+Reel gives the sound straight to SharedSoundBuffer (from 0.1.5; before,
 it went through SDL). If the stream opens but doesn't play (for about a
 second nothing it was given is used up), Reel carries on without sound;
 Media info then says "the device isn't playing". To try SDL's sound

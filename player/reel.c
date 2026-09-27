@@ -142,7 +142,7 @@ static struct {
     char info_title[80];
     unsigned st_nulls, draw_n;          /* for its stats: null events, pictures drawn ... */
     unsigned draw_cs;                   /* ... and the time drawing them took */
-    int nosleep;                        /* Reel$NoSleep: poll flat out, as before 0.9 */
+    int nosleep;                        /* Reel$NoSleep: poll flat out, as before 0.1.9 */
     int idle_cs;                        /* after a null: centiseconds we may sleep */
     unsigned slept_cs;                  /* for the stats: sleep asked for */
 #ifdef REEL_EGL

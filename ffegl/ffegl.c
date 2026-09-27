@@ -29,7 +29,7 @@
    from this (the caller's) thread: StreamManager plays it from interrupts,
    so nothing depends on a thread being scheduled. SDL's audio needs its own
    thread to take the queued sound, and in a Wimp task that only runs while
-   the task is paged in, which on the Pi wasn't enough (Reel 0.4: the queue
+   the task is paged in, which on the Pi wasn't enough (Reel 0.1.4: the queue
    never drained). FFEGL_AUDIO=sdl uses SDL anyway. FFEGL_SSB builds the
    same code for the host test, with fake SWIs. */
 #if defined(__riscos__) || defined(FFEGL_SSB)
@@ -63,7 +63,7 @@ struct FFEGLVideo {
     double qpts[QMAX];
     int qn;
     /* video packets read but not decoded yet: the file is read as far as
-       the sound needs, however slowly the pictures decode (Reel 0.6 on the
+       the sound needs, however slowly the pictures decode (Reel 0.1.6 on the
        Pi: 7 pictures waiting blocked reading, the sound ran dry at 0.5 s
        and its clock stopped with it) */
     AVPacket **vpk;

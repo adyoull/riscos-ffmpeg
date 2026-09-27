@@ -1,6 +1,27 @@
 # Changes
 
-## Reel 0.9 (2026-09-27)
+Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
+tags are `reel-0.1.1` … `reel-0.1.9`).
+
+## 5.1.10-riscos6 (2026-09-27): first GitHub release
+
+The same `ffmpeg`, `ffprobe` and `ffplay` as riscos5; what changed is
+around them:
+
+- **!FFmpeg:** `!Run`, `Task` and the EGL examples' `SetUp` load
+  SharedSound, StreamManager and SharedSoundBuffer (they were only merged
+  into `!System`, never loaded, so ffplay had no working sound device).
+  The icon's menu has **Log** (ffplay's messages, now at verbose level,
+  in `<Wimp$ScrapDir>.ffplay/log`).
+- **ffegl** (in the devkit, and in the EGL examples `videowin` and
+  `videocube`), as in Reel 0.1.5–0.1.9: sound straight to SharedSoundBuffer
+  on RISC OS (no SDL audio thread); the file read for the sound
+  separately from video decoding (the trailer freeze); frame skipping
+  when behind; `ffegl_debug`, `ffegl_set_log`, `ffegl_media_info`,
+  `ffegl_stats` and `ffegl_idle_time`.
+- `COPYING` (GPL version 2) added.
+
+## Reel 0.1.9 (2026-09-27)
 
 - **Sleeps between pictures.** On the Pi, Media info showed ReelEGL
   decoding the 1280x544 trailer in 23% of the time (9.6 ms a picture,
@@ -23,7 +44,7 @@
   (flat out: up to 5 ms early), with 607 wake-ups instead of 9633.
   reel_test checks Wimp_PollIdle is used.
 
-## Reel 0.8 (2026-09-27)
+## Reel 0.1.8 (2026-09-27)
 
 - **Media info window** (window menu "Media info", or I), replacing the
   File info error box, which stopped the picture while it was open. It
@@ -50,10 +71,10 @@
 - Test: reel_test opens the window with I, checks its text (codec,
   sample rate, the stats after a second of playing) and closes it.
 
-## Reel 0.7 (2026-09-27)
+## Reel 0.1.7 (2026-09-27)
 
 - **The trailer froze after half a second, now with SharedSoundBuffer.**
-  Reel 0.6's log on the Pi: the sound started (SharedSoundBuffer 0.07,
+  Reel 0.1.6's log on the Pi: the sound started (SharedSoundBuffer 0.07,
   StreamManager 0.03 and SharedSound 1.20 all loaded), played 0.51 s,
   then `queued 0.00 s ... 7 pictures waiting` for good: the clock stayed
   at 0.49 s.
@@ -62,7 +83,7 @@
     with 7 decoded pictures (all ahead of the clock) it stopped reading;
     the sound ran dry; the clock (the sound) stopped; no picture became
     due. Every build since ffegl 1 had this; the SDL stall fallback hid it
-    in 0.3.
+    in 0.1.3.
   - Now ffegl keeps the video packets it reads (compressed) in a queue
     and decodes them separately: the file is read as far as the sound
     needs (0.5 s queued), however far the video is ahead or however slow
@@ -74,11 +95,11 @@
   non-reference frames"), and `ffegl_debug()` shows the packets waiting
   and the skip level.
 - Tests: `chunky_h264_aac_322_184.mp4` (fragments of 1.5 s, video then
-  sound) freezes 0.6 and plays with 0.7 in `reel_ssb_test`;
+  sound) freezes 0.1.6 and plays with 0.1.7 in `reel_ssb_test`;
   `slow_test` makes decoding cost more than real time and checks that
   the pictures keep up with the sound.
 
-## Reel 0.6, !FFmpeg front end log (2026-09-27)
+## Reel 0.1.6, !FFmpeg front end log (2026-09-27)
 
 - **Reel and ReelEGL write a log**: `<Wimp$ScrapDir>.ReelLog`
   (`ReelEGLLog`), started afresh at each start and flushed line by line.
@@ -103,7 +124,7 @@
   `<Wimp$ScrapDir>.ffplay/log`, and the icon's menu has "Log" to open it.
 - Tests: `reel_ssb_test` and `reelegl_test` check the log's contents.
 
-## Reel 0.5 (2026-09-27)
+## Reel 0.1.5 (2026-09-27)
 
 - **Still no sound on the Pi with the modules loaded.** With SharedSound,
   StreamManager and SharedSoundBuffer loaded (`*Help SharedSoundBuffer`
@@ -121,7 +142,7 @@
 - Test: `reel_ssb_test` runs the Reel script with ffegl built
   `-DFFEGL_SSB` against fake SharedSoundBuffer SWIs.
 
-## Reel 0.4, and !FFmpeg 5.1.10-riscos5 repackaged (2026-09-27)
+## Reel 0.1.4, and !FFmpeg 5.1.10-riscos5 repackaged (2026-09-27)
 
 - **No sound on the Pi:** SharedSoundBuffer, StreamManager and SharedSound
   were merged into `!System` but never loaded (`*Help SharedSoundBuffer`
@@ -141,7 +162,7 @@
 - The `!FFmpeg` zip was repackaged with the new `!Run`, `Task` and
   `!Help`. The programs in it are unchanged.
 
-## Reel 0.3 (2026-09-27)
+## Reel 0.1.3 (2026-09-27)
 
 - **A sound device that doesn't play no longer freezes the picture.** On
   the Pi, a trailer with sound showed its first frame and stopped. Reel
@@ -159,7 +180,7 @@
   and so does its H.264 Main 1280x544 picture. The file itself was never
   the problem.
 
-## Reel 0.2 (2026-09-27)
+## Reel 0.1.2 (2026-09-27)
 
 - **!ReelEGL:** the same player (`player/reel.c` built with `-DREEL_EGL`),
   drawing through riscos-mesa's EGL. It's a working example of
@@ -179,13 +200,13 @@
   (not on every move), and the drawing sits behind a small internal layer
   shared by both builds.
 - ffegl: `FFEGL_NO_TEXTURE` (EGL surfaces without the GL texture code).
-- Reel 0.1's File info said "no sound" for Big Buck Bunny 720p 10s 30MB.
+- Reel 0.1.1's File info said "no sound" for Big Buck Bunny 720p 10s 30MB.
   That's correct: the file has no sound track.
 
-## Reel 0.1 (2026-09-27)
+## Reel 0.1.1 (2026-09-27)
 
 - **!Reel, a video player for the desktop** (`player/reel.c`,
-  `dist/Reel-0.1.zip`). It's a native Wimp app built on ffegl: an icon
+  `dist/Reel-0.1.1.zip`). It's a native Wimp app built on ffegl: an icon
   bar icon, and a window with the picture above a row of controls.
   - Controls: Play/Pause, back and forward 10 s, a position bar you can
     click, the time, and Full. Keys: Space, the arrow keys, F, Escape

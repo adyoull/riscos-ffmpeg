@@ -1,5 +1,5 @@
 /*
- * ffegl_idle_time(): sleeping until the next picture is due (Reel 0.9's
+ * ffegl_idle_time(): sleeping until the next picture is due (Reel 0.1.9's
  * Wimp_PollIdle) must show the pictures as smoothly as polling flat out.
  * The same clip is played twice against the fake clock and fake sound:
  * once waking every 0.5 ms (flat out), once sleeping for the whole
