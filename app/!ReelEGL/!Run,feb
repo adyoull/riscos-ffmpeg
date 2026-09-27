@@ -1,0 +1,17 @@
+| !Run for !ReelEGL (Reel drawing through riscos-mesa's EGL)
+| Puts ReelEGL on the icon bar. Drop a video on it, or double-click a video
+| in the Filer while ReelEGL is loaded. %*0 = a file to play at once.
+Set ReelEGL$Dir <Obey$Dir>
+IconSprites <ReelEGL$Dir>.!Sprites
+
+RMEnsure SharedUnixLibrary 1.16 IfThere System:Modules.SharedULib Then RMLoad System:Modules.SharedULib
+RMEnsure SharedUnixLibrary 1.16 Error ReelEGL needs SharedUnixLibrary 1.16 or later. Install it with PackMan.
+RMEnsure ARMEABISupport 0 IfThere System:Modules.ARMEABISupport Then RMLoad System:Modules.ARMEABISupport
+RMEnsure ARMEABISupport 0 Error ReelEGL needs the ARMEABISupport module. Install it with PackMan.
+| Sound: SharedSoundBuffer and StreamManager (John Duffell's ssb.zip) when
+| they are loaded.
+
+| The program is about 37MB (it includes riscos-mesa's EGL and OpenGL);
+| its memory for pictures and sound is in a dynamic area ("ReelEGL Heap").
+WimpSlot -min 49152K -max 49152K
+Run <ReelEGL$Dir>.!RunImage %*0

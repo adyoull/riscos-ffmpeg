@@ -26,7 +26,15 @@
 #include "ffegl.h"
 
 /* Big heap in a dynamic area (the default would share the WimpSlot) */
+#ifdef REEL_EGL
+#define EGL_EGLEXT_PROTOTYPES 1
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <EGL/eglext_riscos.h>
+const char *const __dynamic_da_name = "ReelEGL Heap";
+#else
 const char *const __dynamic_da_name = "Reel Heap";
+#endif
 int __dynamic_da_max_size = 512 << 20;
 
 #define OS_WriteN              0x46
@@ -66,7 +74,13 @@ int __dynamic_da_max_size = 512 << 20;
 #define MSG_PREQUIT     8
 #define MSG_MODECHANGE  0x400C1
 
+#ifdef REEL_EGL
+#define APP     "ReelEGL"
+#define ICON    "!reelegl"
+#else
 #define APP     "Reel"
+#define ICON    "!reel"
+#endif
 #define CH      64          /* height of the controls row, OS units */
 #define GAP     4
 #define MIN_W   880         /* narrowest window: the position bar still has room */
@@ -105,6 +119,13 @@ static struct {
     box_t pic;                          /* picture area in work area coordinates */
     int vis_w, vis_h;                   /* the window's visible size */
     int last_time_cs;
+#ifdef REEL_EGL
+    EGLDisplay dpy;
+    EGLConfig cfg;
+    EGLSurface surf;                    /* work area surface, or the whole screen */
+    int surf_w, surf_h, surf_full;
+    int direct;                         /* full screen straight into screen memory */
+#endif
     int fill_x1;                        /* current right edge of the position fill */
 } S;
 
@@ -144,7 +165,7 @@ static void read_screen(void)
     S.scr_h = (mode_var(12) + 1) << S.yeig;
 }
 
-static void vdu_clip(int x0, int y0, int x1, int y1)    /* inclusive, OS units */
+static __attribute__((unused)) void vdu_clip(int x0, int y0, int x1, int y1)    /* inclusive, OS units */
 {
     unsigned char b[9] = { 24, x0 & 255, (x0 >> 8) & 255, y0 & 255, (y0 >> 8) & 255,
                            x1 & 255, (x1 >> 8) & 255, y1 & 255, (y1 >> 8) & 255 };
@@ -165,6 +186,7 @@ static void format_time(char *buf, size_t n, double s)
 
 /* ---- the picture sprite ------------------------------------------------ */
 
+#ifndef REEL_EGL   /* the Reel build: a sprite plotted with OS_SpriteOp */
 /* On the Pi small sprites weren't always replotted with their new contents
    (riscos-mesa found this); sprites of 1 MB or more always were, so pad
    with extra rows, which the clipping hides. */
@@ -248,6 +270,123 @@ static void sprite_plot(int x, int y1, const box_t *clip)
     r.r[6] = 0;                         /* no scaling (the dpi matches the screen) */
     r.r[7] = 0;                         /* no translation: 16/32bpp screens */
     swi(OS_SpriteOp, &r);
+}
+
+#endif
+
+#ifdef REEL_EGL
+/* ---- the picture through riscos-mesa's EGL (the ReelEGL build) ----------
+
+   In the window the picture is a work area EGL surface
+   (EGL_WORK_AREA_*_RISCOS: fixed size, top left at work area 0,0), so the
+   controls stay ordinary icons. ffegl_draw_surface converts each frame into
+   it through EGL_KHR_lock_surface and eglSwapBuffers shows it; redraws
+   plot it with eglPlotSurfaceRISCOS in our own Wimp_RedrawWindow loop.
+   Full screen uses the whole screen surface (EGL_RISCOS_SCREEN_WINDOW):
+   with "Direct" (the default) EGL_SINGLE_BUFFER, frames go straight into
+   screen memory (no plot; can tear), otherwise a sprite plotted after the
+   vsync wait. Only one surface exists at a time. */
+
+static int egl_init(void)
+{
+    static const EGLint attr[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT | EGL_LOCK_SURFACE_BIT_KHR,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_NONE };
+    EGLint n = 0;
+    if (S.dpy)
+        return 0;
+    S.dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (S.dpy == EGL_NO_DISPLAY || !eglInitialize(S.dpy, NULL, NULL) ||
+        !eglChooseConfig(S.dpy, attr, &S.cfg, 1, &n) || n < 1) {
+        S.dpy = EGL_NO_DISPLAY;
+        report("EGL didn't start (riscos-mesa's EGL with EGL_KHR_lock_surface is needed).");
+        return -1;
+    }
+    return 0;
+}
+
+static void surf_free(void)
+{
+    if (S.surf != EGL_NO_SURFACE)
+        eglDestroySurface(S.dpy, S.surf);
+    S.surf = EGL_NO_SURFACE;
+    S.surf_w = S.surf_h = 0;
+    S.have_frame = 0;
+}
+
+static void surf_make(int w, int h, int full)
+{
+    EGLint attr[12], *a = attr;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (S.surf != EGL_NO_SURFACE && S.surf_w == w && S.surf_h == h && S.surf_full == full)
+        return;
+    surf_free();
+    if (egl_init() < 0)
+        return;
+    if (full) {
+        if (S.direct) {
+            *a++ = EGL_RENDER_BUFFER; *a++ = EGL_SINGLE_BUFFER;
+        }
+    } else {
+        *a++ = EGL_WORK_AREA_X_RISCOS; *a++ = 0;
+        *a++ = EGL_WORK_AREA_Y_RISCOS; *a++ = 0;
+        *a++ = EGL_WORK_AREA_WIDTH_RISCOS; *a++ = w;
+        *a++ = EGL_WORK_AREA_HEIGHT_RISCOS; *a++ = h;
+    }
+    *a = EGL_NONE;
+    S.surf = eglCreateWindowSurface(S.dpy, S.cfg,
+                                    full ? EGL_RISCOS_SCREEN_WINDOW : (EGLNativeWindowType)(intptr_t)S.win, attr);
+    if (S.surf == EGL_NO_SURFACE) {
+        char msg[80];
+        snprintf(msg, sizeof(msg), "eglCreateWindowSurface failed (0x%x).", eglGetError());
+        report(msg);
+        return;
+    }
+    if (full)
+        eglSwapInterval(S.dpy, S.direct ? 0 : 1);
+    S.surf_w = w;
+    S.surf_h = h;
+    S.surf_full = full;
+}
+#endif
+
+/* ---- the picture: whichever way it's drawn ---------------------------- */
+
+static void pic_free(void)
+{
+#ifdef REEL_EGL
+    surf_free();
+#else
+    sprite_free();
+#endif
+}
+
+/* The picture's size in pixels; full = the whole screen. */
+static void pic_make(int w, int h, int full)
+{
+#ifdef REEL_EGL
+    surf_make(w, h, full);
+#else
+    (void)full;
+    sprite_make(w, h);
+#endif
+}
+
+/* Converts the current frame again (after a resize or a mode change); the
+   EGL build also shows it (eglSwapBuffers). */
+static void pic_refresh(void)
+{
+#ifdef REEL_EGL
+    if (!S.v || S.surf == EGL_NO_SURFACE)
+        return;
+    if (ffegl_draw_surface(S.v, S.dpy, S.surf, 0, 0, 0, 0, 0) == 0) {
+        eglSwapBuffers(S.dpy, S.surf);
+        S.have_frame = 1;
+    }
+#else
+    sprite_draw_frame();
+#endif
 }
 
 /* ---- windows ------------------------------------------------------------ */
@@ -395,7 +534,7 @@ static void layout(int vw, int vh)
     resize_icon(I_TIME, vw - GAP - W_FULL - GAP - W_TIME, y0, vw - GAP - W_FULL - GAP, y1);
     resize_icon(I_FULL, vw - GAP - W_FULL, y0, vw - GAP, y1);
     if (!S.fullscreen)
-        sprite_make(vw >> S.xeig, (vh - CH) >> S.yeig);
+        pic_make(vw >> S.xeig, (vh - CH) >> S.yeig, 0);
 }
 
 static void window_state(int w, int *block)
@@ -498,8 +637,16 @@ static void draw_rects(int w, int *b, int more, int update)
         if (c.y0 < b[8]) c.y0 = b[8];
         if (c.x1 > b[9]) c.x1 = b[9];
         if (c.y1 > b[10]) c.y1 = b[10];
-        if (c.x0 < c.x1 && c.y0 < c.y1)
+        if (c.x0 < c.x1 && c.y0 < c.y1) {
+#ifdef REEL_EGL
+            /* the window's work area surface plots its own part of this
+               rectangle; the full screen surface is redrawn after the loop */
+            if (!(S.fullscreen && w == S.full) && S.surf != EGL_NO_SURFACE && S.have_frame)
+                eglPlotSurfaceRISCOS(S.dpy, S.surf, b);
+#else
             sprite_plot(ox + pic.x0, oy + pic.y1, &c);
+#endif
+        }
         r.r[1] = (intptr_t)b;
         more = swi(Wimp_GetRectangle, &r) ? 0 : r.r[0];
     }
@@ -513,10 +660,17 @@ static void redraw(int *block)
     if (swi(Wimp_RedrawWindow, &r))
         return;
     draw_rects(block[0], block, r.r[0], 0);
+#ifdef REEL_EGL
+    if (S.fullscreen && block[0] == S.full)
+        pic_refresh();                  /* the Wimp painted it black: draw the frame again */
+#endif
 }
 
 static void show_frame(void)
 {
+#ifdef REEL_EGL
+    pic_refresh();                      /* ffegl_draw_surface + eglSwapBuffers */
+#else
     int b[11];
     _kernel_swi_regs r;
     int w = S.fullscreen ? S.full : S.win;
@@ -528,6 +682,7 @@ static void show_frame(void)
     if (swi(Wimp_UpdateWindow, &r))
         return;
     draw_rects(w, b, r.r[0], 1);
+#endif
 }
 
 /* ---- full screen ------------------------------------------------------------ */
@@ -545,12 +700,12 @@ static void set_fullscreen(int on)
         S.fullscreen = 1;
         S.vis_w = S.scr_w;
         S.vis_h = S.scr_h;
-        sprite_make(S.scr_w >> S.xeig, S.scr_h >> S.yeig);
-        sprite_draw_frame();
         b[0] = S.full; b[1] = 0; b[2] = 0; b[3] = S.scr_w; b[4] = S.scr_h;
         b[5] = 0; b[6] = 0; b[7] = -1;
         r.r[1] = (intptr_t)b;
         swi(Wimp_OpenWindow, &r);
+        pic_make(S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1);
+        pic_refresh();
         set_caret(S.full);
     } else {
         int st[9];
@@ -559,7 +714,7 @@ static void set_fullscreen(int on)
         S.fullscreen = 0;
         window_state(S.win, st);
         layout(st[3] - st[1], st[4] - st[2]);
-        sprite_draw_frame();
+        pic_refresh();
         force_redraw(S.win, 0, -8192, 8192, 0);
         set_caret(S.win);
     }
@@ -578,7 +733,7 @@ static void close_video(void)
     }
     ffegl_close(S.v);
     S.v = NULL;
-    sprite_free();
+    pic_free();
 }
 
 static const char *leaf(const char *path)
@@ -625,7 +780,7 @@ static void play_file(const char *file)
     vw = w;
     vh = h + CH;
     if (S.fullscreen) {                 /* stay full screen; the window follows later */
-        sprite_make(S.scr_w >> S.xeig, S.scr_h >> S.yeig);
+        pic_make(S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1);
         force_redraw(S.full, 0, -8192, 8192, 0);
         return;
     }
@@ -685,8 +840,14 @@ static void menu_open(int bar, int x, int y)
         menu_item(0, "File info", 0, 0);
         menu_item(1, "Full screen", S.fullscreen, 0);
         menu_item(2, "Loop", S.loop, 0);
+#ifdef REEL_EGL
+        menu_item(3, "Direct", S.direct, 0);     /* full screen straight into screen memory */
+        menu_item(4, "Close", 0, 1);
+        n = 5;
+#else
         menu_item(3, "Close", 0, 1);
         n = 4;
+#endif
         x -= 64;
     }
     menu_is_bar = bar;
@@ -710,8 +871,13 @@ static void show_info(void)
 {
     char info[256], msg[400], dur[16];
     if (!S.v) {
+#ifdef REEL_EGL
+        report("ReelEGL: Reel drawing through riscos-mesa's EGL (a work area surface in the window, "
+               "the screen surface full screen). riscos-ffmpeg (FFmpeg 5.1), GPL v2 or later.");
+#else
         report("Reel plays videos: drop one on its icon bar icon, or double-click it in the Filer "
                "while Reel is loaded. riscos-ffmpeg (FFmpeg 5.1), GPL v2 or later.");
+#endif
         return;
     }
     ffegl_info(S.v, info, sizeof(info));
@@ -736,7 +902,19 @@ static void menu_select(const int *sel)
         case 0: show_info(); break;
         case 1: set_fullscreen(!S.fullscreen); break;
         case 2: S.loop = !S.loop; break;        /* applies from the next file */
+#ifdef REEL_EGL
+        case 3:
+            S.direct = !S.direct;
+            if (S.fullscreen) {                  /* make the screen surface again */
+                surf_free();
+                pic_make(S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1);
+                pic_refresh();
+            }
+            break;
+        case 4: close_video(); return;
+#else
         case 3: close_video(); return;
+#endif
         }
     }
     r.r[1] = (intptr_t)b;
@@ -896,7 +1074,7 @@ static void message(int *b)
             int st[9];
             window_state(S.win, st);
             layout(st[3] - st[1], st[4] - st[2]);
-            sprite_draw_frame();
+            pic_refresh();
             force_redraw(S.win, 0, -8192, 8192, 0);
         }
         break;
@@ -918,7 +1096,8 @@ static int already_running(void)
         for (int *p = buf; (char *)p < (char *)(intptr_t)r.r[1]; p += 4)
             if (p[0] != S.task) {
                 const char *name = (const char *)(intptr_t)p[1];
-                if (!strncmp(name, APP, 4) && (unsigned char)name[4] < 32)
+                size_t n = strlen(APP);
+                if (!strncmp(name, APP, n) && (unsigned char)name[n] < 32)
                     return 1;
             }
     } while (r.r[0] >= 0);
@@ -933,7 +1112,7 @@ static void iconbar_icon(void)
     b.w = -1;
     b.x1 = 68; b.y1 = 68;
     b.flags = 0x301A;
-    strcpy(b.name, "!reel");
+    strcpy(b.name, ICON);
     r.r[0] = 0;
     r.r[1] = (intptr_t)&b;
     swi(Wimp_CreateIcon, &r);
@@ -948,6 +1127,9 @@ int reel_main(int argc, char **argv)
 
     memset(&S, 0, sizeof(S));
     snprintf(S.play_text, sizeof(S.play_text), "Pause");
+#ifdef REEL_EGL
+    S.direct = !getenv("ReelEGL$NoDirect");
+#endif
     r.r[0] = 380;
     r.r[1] = 0x4B534154;
     r.r[2] = (intptr_t)APP;
@@ -974,16 +1156,19 @@ int reel_main(int argc, char **argv)
         switch (r.r[0]) {
         case 0:  tick(); break;                            /* null */
         case 1:  redraw(block); break;
-        case 2:                                            /* Open_Window_Request */
-            if (block[0] == S.win) {
+        case 2: {                                          /* Open_Window_Request */
+            int resized = block[0] == S.win &&
+                          (block[3] - block[1] != S.vis_w || block[4] - block[2] != S.vis_h);
+            if (resized)
                 layout(block[3] - block[1], block[4] - block[2]);
-                sprite_draw_frame();
-            }
             r.r[1] = (intptr_t)block;
             swi(Wimp_OpenWindow, &r);
-            if (block[0] == S.win)
+            if (resized) {
+                pic_refresh();                             /* the picture at its new size */
                 force_redraw(S.win, 0, -8192, 8192, 0);
+            }
             break;
+        }
         case 3:                                            /* Close_Window_Request */
             if (block[0] == S.win)
                 close_video();
@@ -1041,11 +1226,19 @@ int reel_main(int argc, char **argv)
 
 #ifdef REEL_TEST
 FFEGLVideo *reel_test_video(void) { return S.v; }
+#ifdef REEL_EGL
+int reel_test_surface(int *w, int *h, int *full)
+{
+    *w = S.surf_w; *h = S.surf_h; *full = S.surf_full;
+    return S.surf != EGL_NO_SURFACE;
+}
+#else
 const uint8_t *reel_test_sprite(int *w, int *h, int *rows)
 {
     *w = S.spr_w; *h = S.spr_h; *rows = S.spr_rows;
     return S.area ? sprite_pixels() : NULL;
 }
+#endif
 int reel_test_fullscreen(void) { return S.fullscreen; }
 #endif
 

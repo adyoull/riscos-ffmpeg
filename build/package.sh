@@ -3,7 +3,7 @@
 #   dist/FFmpeg-VERSION.zip             !FFmpeg: ffmpeg, ffprobe, ffplay (AIF),
 #                                       Bench, docs (licences, source)
 #   dist/FFmpeg-EGL-examples-VERSION.zip  videowin, videocube (ffegl examples)
-#   dist/Reel-REEL_VERSION.zip          !Reel, the video player
+#   dist/Reel-REEL_VERSION.zip          !Reel and !ReelEGL, the video player
 #   dist/riscos-ffmpeg-devkit-VERSION.tgz  static libraries (and libffegl) + headers + .pc
 # Filetypes go in the zip's Acorn extra fields (tools/mkrozip.py), so SparkFS
 # and RISC OS unzip give the files their real types.
@@ -82,28 +82,35 @@ EOF
 rm -f "$DIST/FFmpeg-EGL-examples-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-EGL-examples-$V.zip" EGLExamples )
 
-# --- !Reel, the video player -----------------------------------------------
-RV=${REEL_VERSION:-0.1}
-R=$TMP/'!Reel'
-cp -r "$TOP/app/!Reel" "$R"
-python3 "$TOP/tools/mksprites.py" --reel "$R/!Sprites,ff9"
-${CROSS}strip -o "$TMP/reel.elf" "$STAGE/bin/reel"
-"$ELF2AIF" -e "$TMP/reel.elf" "$R/!RunImage,ff8" >/dev/null
-mkdir -p "$R/docs/source/c" "$R/docs/source/h"
-cp -r "$D/Licences" "$R/docs/Licences"
-cp "$TOP/player/reel.c"  "$R/docs/source/c/reel,fff"
-cp "$TOP/ffegl/ffegl.c"  "$R/docs/source/c/ffegl,fff"
-cp "$TOP/ffegl/ffegl.h"  "$R/docs/source/h/ffegl,fff"
-cp "$TOP/tools/mksprites.py" "$R/docs/source/mksprites_py,fff"
-cp "$TOP/build/build-ffegl.sh" "$R/docs/source/build-ffegl_sh,fff"
-cat > "$R/docs/source/ReadMe,fff" <<EOF
-Reel $RV's own source is here. It is part of riscos-ffmpeg ($V), whose
-full source (FFmpeg 5.1.10 plus the RISC OS patches and build scripts)
-is in the FFmpeg package (!FFmpeg.docs.source) and the riscos-ffmpeg git
-repository. Reel is built by build/build-ffegl.sh.
+# --- !Reel and !ReelEGL, the video player (sprite / EGL drawing) ---------
+RV=${REEL_VERSION:-0.2}
+RT=$TMP/Reel
+mkdir -p "$RT"
+for app in Reel ReelEGL; do
+  R=$RT/"!$app"
+  lc=$(echo "$app" | tr A-Z a-z)
+  cp -r "$TOP/app/!$app" "$R"
+  python3 "$TOP/tools/mksprites.py" --$lc "$R/!Sprites,ff9"
+  ${CROSS}strip -o "$TMP/$lc.elf" "$STAGE/bin/$lc"
+  "$ELF2AIF" -e "$TMP/$lc.elf" "$R/!RunImage,ff8" >/dev/null
+  mkdir -p "$R/docs/source/c" "$R/docs/source/h"
+  cp -r "$D/Licences" "$R/docs/Licences"
+  cp "$TOP/player/reel.c"  "$R/docs/source/c/reel,fff"
+  cp "$TOP/ffegl/ffegl.c"  "$R/docs/source/c/ffegl,fff"
+  cp "$TOP/ffegl/ffegl.h"  "$R/docs/source/h/ffegl,fff"
+  cp "$TOP/tools/mksprites.py" "$R/docs/source/mksprites_py,fff"
+  cp "$TOP/build/build-ffegl.sh" "$R/docs/source/build-ffegl_sh,fff"
+  cat > "$R/docs/source/ReadMe,fff" <<EOF
+$app $RV's own source is here (one source, player/reel.c; ReelEGL is it
+built with -DREEL_EGL). It is part of riscos-ffmpeg ($V), whose full
+source (FFmpeg 5.1.10 plus the RISC OS patches and build scripts) is in
+the FFmpeg package (!FFmpeg.docs.source) and the riscos-ffmpeg git
+repository. Both are built by build/build-ffegl.sh.
 EOF
+done
+cp "$DEVKIT/LICENCES.txt" "$RT/!ReelEGL/docs/Licences/riscos-mesa,fff"
 rm -f "$DIST/Reel-$RV.zip"
-( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/Reel-$RV.zip" '!Reel' )
+( cd "$RT" && python3 "$TOP/tools/mkrozip.py" "$DIST/Reel-$RV.zip" '!Reel' '!ReelEGL' )
 
 # --- the devkit ----------------------------------------------------------
 K=$TMP/riscos-ffmpeg-devkit-$V

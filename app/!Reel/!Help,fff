@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                           0.1
+!Reel - a video player for RISC OS                           0.2
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -54,6 +54,12 @@ Needs
 SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan). For sound:
 SharedSoundBuffer and StreamManager (ssb.zip, from the RDPClient page at
 orac.co.uk). Without them Reel plays the picture and keeps time itself.
+
+!ReelEGL
+--------
+The zip also has !ReelEGL: the same player, drawing through riscos-mesa's
+EGL (an example program for EGL; full screen can write straight into
+screen memory). See its !Help.
 
 Known limits
 ------------

@@ -1,5 +1,28 @@
 # Changes
 
+## Reel 0.2 (2026-09-27)
+
+- **!ReelEGL:** the same player (`player/reel.c` built with `-DREEL_EGL`),
+  drawing through riscos-mesa's EGL. It's a working example of
+  `ffegl_draw_surface` in a real program.
+  - In the window, the picture is a work-area EGL surface (fixed size, top
+    of the work area) above the ordinary Wimp icons. Frames arrive by
+    `EGL_KHR_lock_surface` and `eglSwapBuffers`; redraws go through
+    `eglPlotSurfaceRISCOS` in the task's own redraw loop.
+  - Full screen uses the whole-screen surface. It's direct into screen
+    memory by default (`EGL_SINGLE_BUFFER`, "Direct" on the window menu,
+    `ReelEGL$NoDirect`), otherwise a sprite plotted after vsync.
+  - It links riscos-mesa's EGL and OSMesa: 28.8 MB text.
+  - It passes the same scripted test as Reel, against a fake EGL: the
+    frames shown, work-area surface sizes, direct full screen, no surfaces
+    left over.
+- Reel: the picture is refreshed only when the window is actually resized
+  (not on every move), and the drawing sits behind a small internal layer
+  shared by both builds.
+- ffegl: `FFEGL_NO_TEXTURE` (EGL surfaces without the GL texture code).
+- Reel 0.1's File info said "no sound" for Big Buck Bunny 720p 10s 30MB.
+  That's correct: the file has no sound track.
+
 ## Reel 0.1 (2026-09-27)
 
 - **!Reel, a video player for the desktop** (`player/reel.c`,

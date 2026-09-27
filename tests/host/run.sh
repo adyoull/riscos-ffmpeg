@@ -56,6 +56,17 @@ echo "== reel_test (the player, scripted desktop)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/reel_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
   grep -v "swscaler\|ffegl: " || bad=1
 
+# ReelEGL: the same player drawing through (fake) EGL surfaces
+$CC -DFFEGL_NO_TEXTURE -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_notex.o"
+$CC -DREEL_EGL -DREEL_TEST -DREEL_NO_MAIN -I$HERE/fake -I$S/include -I$DEVKIT/include -I$TOP/ffegl -c "$TOP/player/reel.c" -o "$O/reelegl.o"
+$CC -DFAKE_EGL_ONLY -I$HERE/fake -c "$HERE/fake_riscos.c" -o "$O/fake_egl_only.o"
+$CC -DREEL_EGL -I$HERE/fake -I$S/include -I$DEVKIT/include -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reelegl_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reelegl_test" "$O/reelegl_test.o" "$O/reelegl.o" \
+  "$O/ffegl_notex.o" "$O/fake_sdl_only.o" "$O/fake_egl_only.o" $LIBS 2>/dev/null
+echo "== reelegl_test (the EGL build of the player, scripted desktop, fake EGL)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/reelegl_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
+  grep -v "swscaler\|ffegl: " || bad=1
+
 echo "== fffront_test (the icon bar front end, on this host)"
 gcc -O1 -DFFFRONT_NO_MAIN -I"$HERE/fake" "$TOP/frontend/fffront.c" "$HERE/fffront_test.c" \
   -o "$O/fffront_test" 2>/dev/null && "$O/fffront_test" || bad=1

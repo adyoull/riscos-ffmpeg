@@ -22,7 +22,11 @@ unsigned char *fake_shown;                /* copy of the surface at the last swa
 int fake_surf_w, fake_surf_h, fake_surf_pitch;
 
 static unsigned char *mem;
+int fake_scr_w = FAKE_SW, fake_scr_h = FAKE_SH;       /* the screen, pixels */
+int fake_wa[4] = { -1, -1, -1, -1 };                  /* work area surface: x, y, w, h */
+int fake_plots, fake_surfaces;
 
+#ifndef FAKE_EGL_ONLY     /* (reel_test has its own scripted Wimp) */
 _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *out)
 {
     static _kernel_oserror err = { 1, "fake error" };
@@ -76,6 +80,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     }
 }
 
+#endif
+
 EGLDisplay eglGetDisplay(EGLNativeDisplayType d) { return (EGLDisplay)1; }
 EGLBoolean eglInitialize(EGLDisplay d, EGLint *ma, EGLint *mi) { return EGL_TRUE; }
 EGLBoolean eglTerminate(EGLDisplay d) { return EGL_TRUE; }
@@ -94,16 +100,23 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay d, EGLConfig c, EGLint attr, EGLint *v)
 EGLSurface eglCreateWindowSurface(EGLDisplay d, EGLConfig c, EGLNativeWindowType w, const EGLint *a)
 {
     fake_render_buffer = 0;
-    for (; a && *a != EGL_NONE; a += 2)
+    fake_wa[0] = fake_wa[1] = fake_wa[2] = fake_wa[3] = -1;
+    for (; a && *a != EGL_NONE; a += 2) {
         if (a[0] == EGL_RENDER_BUFFER) fake_render_buffer = a[1];
-    if ((long)w == -1) { fake_surf_w = FAKE_SW; fake_surf_h = FAKE_SH; }
-    else               { fake_surf_w = fake_win_w; fake_surf_h = fake_win_h; }
+        if (a[0] >= EGL_WORK_AREA_X_RISCOS && a[0] <= EGL_WORK_AREA_HEIGHT_RISCOS)
+            fake_wa[a[0] - EGL_WORK_AREA_X_RISCOS] = a[1];
+    }
+    if (mem) return EGL_NO_SURFACE;                   /* the fake keeps one surface */
+    fake_surfaces++;
+    if ((long)w == -1)          { fake_surf_w = fake_scr_w; fake_surf_h = fake_scr_h; }
+    else if (fake_wa[2] > 0)    { fake_surf_w = fake_wa[2]; fake_surf_h = fake_wa[3]; }
+    else                        { fake_surf_w = fake_win_w; fake_surf_h = fake_win_h; }
     fake_surf_pitch = fake_surf_w * 4;
     mem = calloc(fake_surf_pitch, fake_surf_h);
     memset(mem, 0x55, fake_surf_pitch * fake_surf_h);   /* not black: borders must be drawn */
     return (EGLSurface)2;
 }
-EGLBoolean eglDestroySurface(EGLDisplay d, EGLSurface s) { free(mem); mem = NULL; return EGL_TRUE; }
+EGLBoolean eglDestroySurface(EGLDisplay d, EGLSurface s) { free(mem); mem = NULL; fake_surfaces--; return EGL_TRUE; }
 EGLBoolean eglSwapInterval(EGLDisplay d, EGLint i) { fake_swap_interval = i; return EGL_TRUE; }
 EGLBoolean eglLockSurfaceKHR(EGLDisplay d, EGLSurface s, const EGLint *a)
 {
@@ -138,3 +151,9 @@ EGLBoolean eglSwapBuffers(EGLDisplay d, EGLSurface s)
     return EGL_TRUE;
 }
 EGLBoolean eglRedrawWindowRISCOS(EGLDisplay d, int *block) { return EGL_TRUE; }
+EGLBoolean eglPlotSurfaceRISCOS(EGLDisplay d, EGLSurface s, const int *block)
+{
+    if (!mem) return EGL_FALSE;
+    fake_plots++;
+    return EGL_TRUE;
+}

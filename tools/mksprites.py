@@ -6,7 +6,7 @@ with a 1 bpp mask. The picture is our own: a film frame with a play
 triangle, drawn from shapes here.
 
 Usage: mksprites.py [--reel] OUT_FILE   (write it as !Sprites,ff9;
-       --reel: !Reel's film reel icon instead)
+       --reel: !Reel's film reel icon instead; --reelegl: !ReelEGL's)
 """
 import struct
 import sys
@@ -40,6 +40,12 @@ def draw(size):
             row.append(px)
         rows.append(row)
     return rows
+
+
+def draw_reel_egl(size):
+    """!ReelEGL: the reel with a green hub."""
+    rows = draw_reel(size)
+    return [[(40, 170, 60) if px == (200, 40, 40) else px for px in row] for row in rows]
 
 
 def draw_reel(size):
@@ -113,6 +119,9 @@ def main():
     if len(sys.argv) > 2 and sys.argv[1] == "--reel":
         sys.argv.pop(1)
         sprites = [sprite("!reel", 34, draw_reel), sprite("sm!reel", 17, draw_reel)]
+    elif len(sys.argv) > 2 and sys.argv[1] == "--reelegl":
+        sys.argv.pop(1)
+        sprites = [sprite("!reelegl", 34, draw_reel_egl), sprite("sm!reelegl", 17, draw_reel_egl)]
     else:
         sprites = [sprite("!ffmpeg", 34), sprite("sm!ffmpeg", 17)]
     body = b"".join(sprites)

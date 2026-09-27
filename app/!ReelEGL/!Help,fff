@@ -1,0 +1,33 @@
+!ReelEGL - Reel, drawing through EGL (an example)          0.2
+===================================================================
+
+ReelEGL is the Reel video player built a second way: the picture goes
+through riscos-mesa's EGL instead of Reel's own sprite plotting. It is
+here as a working example of an EGL program (FFmpeg's ffegl library,
+ffegl_draw_surface), and to compare the two. Everything else - the
+controls, keys, menus, sound - is the same as Reel: see !Reel's !Help.
+Both can run at once (they have different icon bar icons: ReelEGL's
+reel has a green hub).
+
+How it draws
+------------
+- In the window, the picture is an EGL "work area surface": a surface
+  of fixed size at the top of the window's work area, under which the
+  controls are ordinary Wimp icons. Each frame is converted by swscale
+  straight into the surface (EGL_KHR_lock_surface) and eglSwapBuffers
+  shows it; redraws plot it with eglPlotSurfaceRISCOS.
+- Full screen uses EGL's whole-screen surface. With Direct ticked (the
+  window menu; the default) frames go straight into screen memory: no
+  plot at all, the fastest way, but you may see tearing. Without Direct,
+  EGL plots a sprite after waiting for the vertical sync.
+  *Set ReelEGL$NoDirect 1 starts with Direct off.
+
+Needs
+-----
+As Reel. The EGL and OpenGL libraries are built in (from riscos-mesa
+20.3.5-7pre12); no modules are needed for them.
+
+Licence
+-------
+GNU GPL, version 2 or later. riscos-mesa's licences are in
+docs.Licences (Mesa: MIT).

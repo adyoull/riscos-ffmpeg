@@ -3,7 +3,7 @@
 # videowin and videocube. Needs build-deps.sh (with egl) and build-ffmpeg.sh.
 #   -> $STAGE/lib/libffegl.a, $STAGE/include/ffegl.h, $STAGE/bin/{videowin,videocube},
 #      $STAGE/bin/fffront (!FFmpeg's icon bar front end, !RunImage)
-#      and $STAGE/bin/reel (!Reel, the video player)
+#      $STAGE/bin/reel (!Reel, the video player) and $STAGE/bin/reelegl (!ReelEGL)
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 O=$SRC/ffegl
@@ -27,6 +27,15 @@ ${CROSS}gcc $CFLAGS_RO -Wall -I$TOP/ffegl -I$STAGE/include -I$STAGE/include/SDL2
   -o "$STAGE/bin/reel" "$TOP/player/reel.c" "$O/ffegl_nogl.o" -static \
   -L$STAGE/lib -lavformat -lavcodec -lswresample -lswscale -lavutil \
   -ldav1d -lx264 -lmp3lame -lopus -lvorbisenc -lvorbis -logg -lz -lSDL2 -lm
+
+# !ReelEGL: the same player drawing through riscos-mesa's EGL (an example
+# of ffegl_draw_surface in a real program); ffegl without GL textures
+${CROSS}gcc $CFLAGS_RO -Wall -DFFEGL_NO_TEXTURE -I$TOP/ffegl -I$STAGE/include -I$STAGE/include/SDL2 \
+  -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_notex.o"
+${CROSS}gcc $CFLAGS_RO -Wall -DREEL_EGL -I$TOP/ffegl -I$STAGE/include -I$STAGE/include/SDL2 \
+  -o "$STAGE/bin/reelegl" "$TOP/player/reel.c" "$O/ffegl_notex.o" -static \
+  -L$STAGE/lib -lavformat -lavcodec -lswresample -lswscale -lavutil \
+  -ldav1d -lx264 -lmp3lame -lopus -lvorbisenc -lvorbis -logg -lz -lSDL2 -lEGL -lOSMesa -lstdc++ -lm
 
 # !FFmpeg's icon bar front end (frontend/fffront.c)
 $CC -o "$STAGE/bin/fffront" "$TOP/frontend/fffront.c" -static

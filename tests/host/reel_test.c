@@ -24,7 +24,24 @@
 
 int reel_main(int argc, char **argv);
 FFEGLVideo *reel_test_video(void);
+#ifdef REEL_EGL
+/* ReelEGL: the picture is a (fake) EGL surface; what was last shown is
+   fake_shown, from eglSwapBuffers */
+#include "fake_riscos.h"
+#include <EGL/egl.h>
+int reel_test_surface(int *w, int *h, int *full);
+static const uint8_t *reel_test_sprite(int *w, int *h, int *rows)
+{
+    int full;
+    if (!reel_test_surface(w, h, &full)) return NULL;
+    *rows = *h;
+    return fake_shown;
+}
+#define PLOTS (plots + fake_swaps + fake_plots)
+#else
 const uint8_t *reel_test_sprite(int *w, int *h, int *rows);
+#define PLOTS plots
+#endif
 int reel_test_fullscreen(void);
 
 static const char *clip1, *clip2;
@@ -152,18 +169,26 @@ static int next_event(int *b)
                 reel_test_sprite(&w, &h, &rows);
                 CHECK(reel_test_fullscreen() && full_open, "F didn't go full screen");
                 CHECK(w == SCR_W && h == SCR_H, "full screen sprite %dx%d", w, h);
+#ifdef REEL_EGL
+                CHECK(fake_render_buffer == EGL_SINGLE_BUFFER && fake_surfaces == 1,
+                      "full screen: render buffer 0x%x (want single: Direct), %d surfaces", fake_render_buffer, fake_surfaces);
+#endif
                 CHECK(state[1][3] - state[1][1] == SCR_W * 2 && state[1][4] - state[1][2] == SCR_H * 2,
                       "full screen window %dx%d", state[1][3] - state[1][1], state[1][4] - state[1][2]);
                 CHECK(caret_win == FULL, "no caret in the full screen window");
-                plots_full = plots;
+                plots_full = PLOTS;
             }
             break;
         case P_UNFULL:
             if (phase_step++ == 0) {
-                CHECK(plots > plots_full, "nothing plotted full screen");
+                CHECK(PLOTS > plots_full, "nothing plotted full screen");
                 memset(b, 0, 28); b[0] = FULL; b[6] = 27; return 8;       /* Escape */
             }
             CHECK(!reel_test_fullscreen() && !full_open, "Escape didn't leave full screen");
+#ifdef REEL_EGL
+            CHECK(fake_surfaces == 1 && fake_wa[0] == 0 && fake_wa[1] == 0 && fake_wa[2] > 0,
+                  "back in the window: %d surfaces, work area %d,%d %dx%d", fake_surfaces, fake_wa[0], fake_wa[1], fake_wa[2], fake_wa[3]);
+#endif
             break;
         case P_RESIZE:
             if (phase_step++ == 0) {
@@ -176,7 +201,11 @@ static int next_event(int *b)
                 int w, h, rows;
                 reel_test_sprite(&w, &h, &rows);
                 CHECK(w == 500 && h == (700 - 64) / 2, "sprite after resize %dx%d (want 500x%d)", w, h, (700 - 64) / 2);
+#ifndef REEL_EGL
                 CHECK(rows * w * 4 >= 1024 * 1024, "sprite not padded to 1 MB (%d rows)", rows);
+#else
+                CHECK(fake_wa[2] == 500 && fake_wa[3] == 318 && fake_surfaces == 1, "work area surface %dx%d", fake_wa[2], fake_wa[3]);
+#endif
             }
             break;
         case P_DROP2:
@@ -202,6 +231,9 @@ static int next_event(int *b)
         case P_CLOSE:
             if (phase_step++ == 0) { memset(b, 0, 4); b[0] = WIN; return 3; }
             CHECK(!reel_test_video() && !win_open, "close didn't close");
+#ifdef REEL_EGL
+            CHECK(fake_surfaces == 0, "close left %d EGL surfaces", fake_surfaces);
+#endif
             break;
         case P_QUIT:
             memset(b, 0, 24); b[4] = 0;
@@ -217,9 +249,14 @@ static void final_checks(void)
     int w, h, rows;
     (void)w; (void)h; (void)rows;
     CHECK(created == 1 && nicons == 7, "window: created %d, %d icons", created, nicons);
+#ifdef REEL_EGL
+    CHECK(fake_swaps > 20 && fake_plots > 0, "frames: %d swaps, %d redraw plots", fake_swaps, fake_plots);
+    printf("  %d swaps, %d redraw plots, window %dx%d, %d acks\n", fake_swaps, fake_plots, opened_w, opened_h, acks);
+#else
     CHECK(updates > 20 && plots > 20, "frames: %d updates, %d plots", updates, plots);
     CHECK(clip_ok, "a plot wasn't clipped to the picture");
     printf("  %d updates, %d plots, window %dx%d, %d acks\n", updates, plots, opened_w, opened_h, acks);
+#endif
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     fflush(stdout);
     _exit(fails ? 1 : 0);
@@ -307,6 +344,9 @@ int main(int argc, char **argv)
     char *args[2] = { "reel", NULL };
     setvbuf(stdout, NULL, _IONBF, 0);
     clip1 = argv[1];
+#ifdef REEL_EGL
+    fake_scr_w = SCR_W; fake_scr_h = SCR_H;
+#endif
     clip2 = argv[2];
     (void)title;
     reel_main(1, args);

@@ -108,7 +108,8 @@ int ffegl_draw_pixels(FFEGLVideo *v, void *pixels, int pitch, int w, int h,
                       int bgr, int flags);
 
 /* (ffegl_draw_surface and ffegl_texture are left out of a build with
-   FFEGL_NO_GL defined, for programs that don't link EGL and OpenGL.) */
+   FFEGL_NO_GL defined, for programs that don't link EGL and OpenGL;
+   FFEGL_NO_TEXTURE leaves out only ffegl_texture.) */
 
 /* Puts the current frame into an OpenGL texture (GL_TEXTURE_2D, the
    video's size). Needs a current GL context. tex = 0 creates a texture and

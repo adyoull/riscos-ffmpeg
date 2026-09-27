@@ -5,7 +5,7 @@
 #define EGL_EGLEXT_PROTOTYPES 1
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#ifndef FFEGL_NO_GL
+#if !defined(FFEGL_NO_GL) && !defined(FFEGL_NO_TEXTURE)
 #include <GL/gl.h>
 #endif
 #include <SDL.h>
@@ -628,6 +628,7 @@ int ffegl_draw_surface(FFEGLVideo *v, EGLDisplay dpy, EGLSurface surf,
     return ret;
 }
 
+#if !defined(FFEGL_NO_TEXTURE)   /* built without it: no GL textures (EGL surfaces only) */
 /* ---- textures ---------------------------------------------------------- */
 
 typedef EGLImageKHR (*create_image_fn)(EGLDisplay, EGLContext, EGLenum, EGLClientBuffer, const EGLint *);
@@ -827,4 +828,7 @@ int ffegl_texture(FFEGLVideo *v, unsigned int tex, unsigned int *tex_out)
 }
 #else
 static void texture_image_free(FFEGLVideo *v, int unlink) { (void)v; (void)unlink; }
-#endif
+#endif /* FFEGL_NO_TEXTURE */
+#else
+static void texture_image_free(FFEGLVideo *v, int unlink) { (void)v; (void)unlink; }
+#endif /* FFEGL_NO_GL */

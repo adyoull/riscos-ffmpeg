@@ -1,0 +1,3 @@
+| !Boot for !ReelEGL (Reel drawing through EGL, from riscos-ffmpeg)
+If "<ReelEGL$Dir>"="" Then Set ReelEGL$Dir <Obey$Dir>
+IconSprites <Obey$Dir>.!Sprites
