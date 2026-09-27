@@ -1,5 +1,8 @@
 | Task: runs one of the programs in this directory (the first argument)
 | with the application space it needs. ffplay uses it to start itself as
 | a desktop task of its own when it is run in a TaskWindow.
+RMEnsure SharedSound 1.07 IfThere System:Modules.SSound Then RMLoad System:Modules.SSound
+RMEnsure StreamManager 0.03 IfThere System:Modules.StreamMan Then RMLoad System:Modules.StreamMan
+RMEnsure SharedSoundBuffer 0.07 IfThere System:Modules.SSBuffer Then RMLoad System:Modules.SSBuffer
 WimpSlot -min 44032K -max 44032K
 Run <Obey$Dir>.%*0

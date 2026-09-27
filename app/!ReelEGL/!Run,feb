@@ -8,8 +8,12 @@ RMEnsure SharedUnixLibrary 1.16 IfThere System:Modules.SharedULib Then RMLoad Sy
 RMEnsure SharedUnixLibrary 1.16 Error ReelEGL needs SharedUnixLibrary 1.16 or later. Install it with PackMan.
 RMEnsure ARMEABISupport 0 IfThere System:Modules.ARMEABISupport Then RMLoad System:Modules.ARMEABISupport
 RMEnsure ARMEABISupport 0 Error ReelEGL needs the ARMEABISupport module. Install it with PackMan.
-| Sound: SharedSoundBuffer and StreamManager (John Duffell's ssb.zip) when
-| they are loaded.
+| Sound: SharedSoundBuffer, StreamManager and SharedSound (John Duffell's
+| ssb.zip, from the RDPClient page at orac.co.uk). Merged into !System they
+| still have to be loaded: these do it (and are quiet if they're missing).
+RMEnsure SharedSound 1.07 IfThere System:Modules.SSound Then RMLoad System:Modules.SSound
+RMEnsure StreamManager 0.03 IfThere System:Modules.StreamMan Then RMLoad System:Modules.StreamMan
+RMEnsure SharedSoundBuffer 0.07 IfThere System:Modules.SSBuffer Then RMLoad System:Modules.SSBuffer
 
 | The program is about 37MB (it includes riscos-mesa's EGL and OpenGL);
 | its memory for pictures and sound is in a dynamic area ("ReelEGL Heap").

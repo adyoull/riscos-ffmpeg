@@ -306,6 +306,12 @@ int main(int argc, char **argv)
     fake_audio_fail = 1;
     v = ffegl_open(clip, 0);
     CHECK(v && !ffegl_has_audio(v), "no sound device");
+    {
+        char info[256];
+        ffegl_info(v, info, sizeof(info));
+        CHECK(strstr(info, "no sound device: RISC OS audio: SharedSoundBuffer"), "no device info: %s", info);
+        printf("  no sound device: %s\n", info);
+    }
     n = play(v, 5, &first, &last, &late);
     CHECK(n == 25 && late == 0, "no device: %d frames, %d off time", n, late);
     ffegl_close(v);

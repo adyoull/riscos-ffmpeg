@@ -1,5 +1,25 @@
 # Changes
 
+## Reel 0.4, and !FFmpeg 5.1.10-riscos5 repackaged (2026-09-27)
+
+- **No sound on the Pi:** SharedSoundBuffer, StreamManager and SharedSound
+  were merged into `!System` but never loaded (`*Help SharedSoundBuffer`
+  gave "No help found"). Nothing had asked for them.
+  - SDL then fell back to UnixLib's `/dev/dsp`, which accepted the sound
+    and didn't play it. Reel showed "the sound device isn't playing", and
+    ffplay played silently.
+  - The `!Run` files of `!FFmpeg`, `!Reel` and `!ReelEGL`, `!FFmpeg.Task`
+    and the EGL examples' `SetUp` now RMEnsure/RMLoad `SSound`,
+    `StreamMan` and `SSBuffer` from `System:Modules`, the same lines as
+    Warzone 2100's `!Run`.
+- ffegl (so Reel, ReelEGL, videowin and videocube) now asks SDL for its
+  RISC OS sound driver only (`SDL_AUDIODRIVER=riscos` unless it's already
+  set). If the modules are missing there's no sound device, and
+  `ffegl_info()` gives SDL's reason, e.g. "no sound device: RISC OS audio:
+  SharedSoundBuffer/StreamManager not loaded".
+- The `!FFmpeg` zip was repackaged with the new `!Run`, `Task` and
+  `!Help`. The programs in it are unchanged.
+
 ## Reel 0.3 (2026-09-27)
 
 - **A sound device that doesn't play no longer freezes the picture.** On

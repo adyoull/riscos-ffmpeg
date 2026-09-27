@@ -71,6 +71,9 @@ cat > "$E/SetUp,feb" <<'EOF'
 | ffegl examples (riscos-ffmpeg): double-click to set up the videowin and
 | videocube commands. Each needs about 44MB of application space.
 Set FFmpegEGL$Dir <Obey$Dir>
+RMEnsure SharedSound 1.07 IfThere System:Modules.SSound Then RMLoad System:Modules.SSound
+RMEnsure StreamManager 0.03 IfThere System:Modules.StreamMan Then RMLoad System:Modules.StreamMan
+RMEnsure SharedSoundBuffer 0.07 IfThere System:Modules.SSBuffer Then RMLoad System:Modules.SSBuffer
 Set Alias$videowin  WimpTask Obey <FFmpegEGL$Dir>.Task videowin %%*0 > <Wimp$ScrapDir>.videowin/log 2>&1
 Set Alias$videocube WimpTask Obey <FFmpegEGL$Dir>.Task videocube %%*0 > <Wimp$ScrapDir>.videocube/log 2>&1
 EOF
@@ -83,7 +86,7 @@ rm -f "$DIST/FFmpeg-EGL-examples-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-EGL-examples-$V.zip" EGLExamples )
 
 # --- !Reel and !ReelEGL, the video player (sprite / EGL drawing) ---------
-RV=${REEL_VERSION:-0.3}
+RV=${REEL_VERSION:-0.4}
 RT=$TMP/Reel
 mkdir -p "$RT"
 for app in Reel ReelEGL; do

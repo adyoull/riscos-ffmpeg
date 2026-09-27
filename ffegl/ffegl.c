@@ -57,6 +57,7 @@ struct FFEGLVideo {
     double audio_end;                  /* pts at the end of the queued sound; <0 = unknown */
     int audio_clock;                   /* the sound is the clock */
     int stalled;                       /* the sound device stopped playing: no sound now */
+    char audio_note[96];               /* why there's no sound, for ffegl_info */
     double stall_clock;                /* the sound clock when it last moved ... */
     int64_t stall_since;               /* ... and when that was */
     double latency;                    /* the device's own buffer, seconds */
@@ -179,8 +180,17 @@ static int open_audio(FFEGLVideo *v)
     SDL_AudioSpec want, have;
     AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO;
 
+#ifdef __riscos__
+    /* Only SDL's RISC OS driver (SharedSoundBuffer + StreamManager) plays
+       reliably. Without it SDL would fall back to UnixLib's /dev/dsp, which
+       takes the sound and may never play it; better to say what's missing.
+       SDL_AUDIODRIVER set by the user still wins. */
+    if (!SDL_getenv("SDL_AUDIODRIVER"))
+        SDL_setenv("SDL_AUDIODRIVER", "riscos", 1);
+#endif
     if (!SDL_WasInit(SDL_INIT_AUDIO) && SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
         av_log(NULL, AV_LOG_WARNING, "ffegl: no sound (%s)\n", SDL_GetError());
+        snprintf(v->audio_note, sizeof(v->audio_note), "%s", SDL_GetError());
         return -1;
     }
     memset(&want, 0, sizeof(want));
@@ -193,6 +203,7 @@ static int open_audio(FFEGLVideo *v)
     v->dev = SDL_OpenAudioDevice(NULL, 0, &want, &have, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE);
     if (!v->dev) {
         av_log(NULL, AV_LOG_WARNING, "ffegl: no sound (%s)\n", SDL_GetError());
+        snprintf(v->audio_note, sizeof(v->audio_note), "%s", SDL_GetError());
         return -1;
     }
     v->rate = have.freq;
@@ -329,8 +340,12 @@ int ffegl_info(const FFEGLVideo *v, char *buf, int size)
         const AVCodecParameters *ap = v->fmt->streams[v->as]->codecpar;
         n += snprintf(buf + n, size - n, "; %s %d Hz, %d channel%s%s", avcodec_get_name(ap->codec_id),
                       ap->sample_rate, ap->ch_layout.nb_channels, ap->ch_layout.nb_channels == 1 ? "" : "s",
-                      !v->dev ? " (no sound device)" : v->stalled ? " (the sound device isn't playing: no sound)" : "");
-    } else if (n < size)
+                      !v->dev ? " (no sound device" : v->stalled ? " (the sound device isn't playing: no sound)" : "");
+        if (!v->dev && n < size)
+            n += snprintf(buf + n, size - n, "%s%s)", v->audio_note[0] ? ": " : "", v->audio_note);
+    } else if (n < size && v->audio_note[0])      /* sound in the file, but no device */
+        n += snprintf(buf + n, size - n, "; no sound device: %s", v->audio_note);
+    else if (n < size)
         n += snprintf(buf + n, size - n, "; no sound");
     if (v->fmt->iformat && n < size)
         n += snprintf(buf + n, size - n, "; %s", v->fmt->iformat->name);
