@@ -1,5 +1,23 @@
 # Changes
 
+## Reel 0.3 (2026-09-27)
+
+- **A sound device that doesn't play no longer freezes the picture.** On
+  the Pi, a trailer with sound showed its first frame and stopped. Reel
+  follows the sound clock, and that clock doesn't move while the device
+  takes none of the queued sound.
+  - ffegl now watches for this: if nothing queued is played for 1 s while
+    playing, it stops sending sound, pauses the device and carries on
+    with its timer.
+  - The stall timer restarts after a seek and after a pause.
+  - `ffegl_has_audio()` returns 0 then, and `ffegl_info()` says "the
+    sound device isn't playing".
+  - Tested with a fake device that opens but never plays: all 25 frames
+    are shown, finishing after about 2 s for a 1 s clip.
+- HE-AAC (the trailer's sound) decodes under the alignment-trapping QEMU,
+  and so does its H.264 Main 1280x544 picture. The file itself was never
+  the problem.
+
 ## Reel 0.2 (2026-09-27)
 
 - **!ReelEGL:** the same player (`player/reel.c` built with `-DREEL_EGL`),

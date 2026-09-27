@@ -14,6 +14,7 @@
 
 double fake_time;
 int fake_audio_fail, fake_audio_open, fake_audio_paused = 1;
+int fake_audio_stall;                   /* the device opens but never plays */
 double fake_queued_total;               /* bytes ever queued */
 static double played, last_t;           /* bytes played, at fake time last_t */
 static int bps = 48000 * 4;
@@ -22,7 +23,7 @@ int64_t __wrap_av_gettime_relative(void) { return (int64_t)(fake_time * 1e6); }
 
 static void advance(void)
 {
-    if (!fake_audio_paused && fake_time > last_t) {
+    if (!fake_audio_paused && !fake_audio_stall && fake_time > last_t) {
         played += (fake_time - last_t) * bps;
         if (played > fake_queued_total) played = fake_queued_total;
     }

@@ -56,6 +56,9 @@ struct FFEGLVideo {
     int rate, bytes_per_sec;
     double audio_end;                  /* pts at the end of the queued sound; <0 = unknown */
     int audio_clock;                   /* the sound is the clock */
+    int stalled;                       /* the sound device stopped playing: no sound now */
+    double stall_clock;                /* the sound clock when it last moved ... */
+    int64_t stall_since;               /* ... and when that was */
     double latency;                    /* the device's own buffer, seconds */
     uint8_t *abuf, *mixbuf;
     int abuf_size;
@@ -98,7 +101,23 @@ const char *ffegl_last_error(void) { return last_error; }
 
 static double queued_audio(const FFEGLVideo *v)
 {
-    return v->dev ? SDL_GetQueuedAudioSize(v->dev) / (double)v->bytes_per_sec : 0;
+    return v->dev && !v->stalled ? SDL_GetQueuedAudioSize(v->dev) / (double)v->bytes_per_sec : 0;
+}
+
+/* If the sound device takes none of the queued sound for this long while
+   playing, it isn't playing (e.g. no SharedSoundBuffer on RISC OS): stop
+   sending it sound and let the timer drive the pictures, which would
+   otherwise stay on the first frame. */
+#define STALL_SECONDS 1.0
+
+static void audio_stalled(FFEGLVideo *v, double c)
+{
+    av_log(NULL, AV_LOG_WARNING, "ffegl: the sound device isn't playing; carrying on without sound\n");
+    v->stalled = 1;
+    SDL_ClearQueuedAudio(v->dev);
+    SDL_PauseAudioDevice(v->dev, 1);
+    v->audio_clock = 0;
+    v->t0 = av_gettime_relative() - (int64_t)(c * 1e6);
 }
 
 static double clock_now(FFEGLVideo *v)
@@ -114,7 +133,18 @@ static double clock_now(FFEGLVideo *v)
             v->t0 = av_gettime_relative() - (int64_t)(c * 1e6);
             return c;
         }
-        return v->audio_end - q - v->latency;
+        {
+            double c = v->audio_end - q - v->latency;
+            int64_t now = av_gettime_relative();
+            if (c > v->stall_clock + 0.001 || q <= 0 || !v->stall_since) {
+                v->stall_clock = c;
+                v->stall_since = now;
+            } else if (now - v->stall_since > (int64_t)(STALL_SECONDS * 1e6)) {
+                audio_stalled(v, c);
+                return c;
+            }
+            return c;
+        }
     }
     return (av_gettime_relative() - v->t0) / 1e6;
 }
@@ -286,7 +316,7 @@ int ffegl_width(const FFEGLVideo *v)        { return v->w; }
 int ffegl_height(const FFEGLVideo *v)       { return v->h; }
 double ffegl_frame_rate(const FFEGLVideo *v) { return v->fps; }
 double ffegl_duration(const FFEGLVideo *v)  { return v->duration; }
-int ffegl_has_audio(const FFEGLVideo *v)    { return v->dev != 0; }
+int ffegl_has_audio(const FFEGLVideo *v)    { return v->dev != 0 && !v->stalled; }
 unsigned ffegl_dropped_frames(const FFEGLVideo *v) { return v->dropped; }
 
 int ffegl_info(const FFEGLVideo *v, char *buf, int size)
@@ -299,7 +329,7 @@ int ffegl_info(const FFEGLVideo *v, char *buf, int size)
         const AVCodecParameters *ap = v->fmt->streams[v->as]->codecpar;
         n += snprintf(buf + n, size - n, "; %s %d Hz, %d channel%s%s", avcodec_get_name(ap->codec_id),
                       ap->sample_rate, ap->ch_layout.nb_channels, ap->ch_layout.nb_channels == 1 ? "" : "s",
-                      v->dev ? "" : " (no sound device)");
+                      !v->dev ? " (no sound device)" : v->stalled ? " (the sound device isn't playing: no sound)" : "");
     } else if (n < size)
         n += snprintf(buf + n, size - n, "; no sound");
     if (v->fmt->iformat && n < size)
@@ -360,7 +390,7 @@ static void got_audio(FFEGLVideo *v, AVFrame *f)
             return;                       /* before the seek point */
         v->aseek_target = -1;
     }
-    if (out_max <= 0)
+    if (out_max <= 0 || v->stalled)
         return;
     av_fast_malloc(&v->abuf, (unsigned *)&v->abuf_size, out_max * 4);
     if (!v->abuf)
@@ -407,7 +437,7 @@ static void fill(FFEGLVideo *v)
 {
     for (int budget = READ_BUDGET; budget > 0 && !v->eof_demux; budget--) {
         int need_v = v->qn < 3;
-        int need_a = v->dev && queued_audio(v) < AUDIO_AHEAD;
+        int need_a = v->dev && !v->stalled && queued_audio(v) < AUDIO_AHEAD;
         int ret;
         if (!need_v && !need_a)
             break;
@@ -497,6 +527,7 @@ void ffegl_pause(FFEGLVideo *v, int paused)
             SDL_PauseAudioDevice(v->dev, 1);
     } else {
         v->paused = 0;
+        v->stall_since = 0;                 /* the device needs a moment to start again */
         if (!v->audio_clock || v->audio_end < 0)
             timer_set(v, v->pause_pos);
         if (v->dev)
@@ -523,7 +554,8 @@ int ffegl_seek(FFEGLVideo *v, double seconds)
     clear_queue(v);
     v->eof_demux = v->eof_video = v->eof_audio = 0;
     v->audio_end = -1;
-    v->audio_clock = v->dev != 0;
+    v->audio_clock = v->dev != 0 && !v->stalled;
+    v->stall_since = 0;
     v->seek_target = v->aseek_target = seconds > 0 ? ts / (double)AV_TIME_BASE : -1;
     v->need_first = 1;
     return 0;

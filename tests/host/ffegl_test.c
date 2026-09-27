@@ -311,6 +311,22 @@ int main(int argc, char **argv)
     ffegl_close(v);
     fake_audio_fail = 0;
 
+    /* 6b. the sound device opens but never plays (no SharedSoundBuffer):
+       after a second the pictures carry on with the timer */
+    fake_audio_stall = 1;
+    v = ffegl_open(clip, 0);
+    {
+        double t0 = fake_time;
+        char info[256];
+        n = play(v, 8, &first, &last, &late);
+        ffegl_info(v, info, sizeof(info));
+        printf("  stalled sound device: %d frames, ended after %.2f s; %s\n", n, fake_time - t0, info);
+        CHECK(n >= 20 && fake_time - t0 < 2.6 && !ffegl_has_audio(v) && strstr(info, "isn't playing"),
+              "stalled sound: %d frames in %.2f s, has_audio %d", n, fake_time - t0, ffegl_has_audio(v));
+    }
+    ffegl_close(v);
+    fake_audio_stall = 0;
+
     /* 7. loop: goes round again */
     v = ffegl_open(clip, FFEGL_LOOP);
     {
