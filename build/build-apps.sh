@@ -42,5 +42,5 @@ $CC -DREEL_EGL -o "$STAGE/bin/reelegl" "$TOP/player/reel.c" "$O/ffegl_notex.o" "
   -L$STAGE/lib $FF -lEGL -lOSMesa -lstdc++ -lm
 
 # !FFmpeg's icon bar front end (frontend/fffront.c)
-$CC -o "$STAGE/bin/fffront" "$TOP/frontend/fffront.c" -static
+$CC -o "$STAGE/bin/fffront" "$TOP/frontend/fffront.c" "$TOP/frontend/convert.c" -static
 ls -la "$STAGE/lib/libreelcore.a" "$STAGE/lib/libffegl.a" "$STAGE/bin/"

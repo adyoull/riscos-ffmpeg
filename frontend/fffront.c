@@ -6,9 +6,10 @@
  * task, through the Obey file !FFmpeg.Task (which sets the WimpSlot), with
  * ffplay's messages in <Wimp$ScrapDir>.ffplay/log.
  *
- *   Menu on the icon: Info, Full screen (ffplay -fs), Log (opens the last
- *   ffplay's messages, <Wimp$ScrapDir>.ffplay/log, verbose), Quit.
- *   Select on the icon: a reminder of what to do.
+ *   Menu on the icon: Info, Convert... (the Convert window, convert.c), Full
+ *   screen (ffplay -fs), Log (opens the last ffplay's messages,
+ *   <Wimp$ScrapDir>.ffplay/log, verbose), Quit.
+ *   Select on the icon: the Convert window.
  *
  * A small UnixLib program with no heap to speak of; the SWIs are called
  * directly. Part of riscos-ffmpeg. GPL v2 or later (as the rest of !FFmpeg).
@@ -18,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <kernel.h>
+#include "convert.h"
 
 #define OS_WriteC                0x00
 #define Wimp_Initialise          0x400C0
@@ -64,7 +66,7 @@ static void report(const char *text, int flags)
    it on our stack; the new task's UnixLib makes its own and VFPSupport
    would otherwise save ours lazily into the wrong place). One asm block so
    the compiler can't put a VFP instruction between the SWIs. */
-static _kernel_oserror *start_task(const char *cmd)
+_kernel_oserror *fffront_start_task(const char *cmd)
 {
 #if defined(__arm__) && defined(__riscos__)
     _kernel_oserror *err;
@@ -105,7 +107,7 @@ int fffront_command(char *out, size_t size, const char *dir, const char *file, i
     return n > 0 && (size_t)n < size ? 0 : -1;
 }
 
-static void play(const char *file)
+void fffront_play(const char *file)
 {
     char cmd[1024];
     _kernel_oserror *err;
@@ -113,7 +115,7 @@ static void play(const char *file)
         report("The file's name is too long.", 1);
         return;
     }
-    if ((err = start_task(cmd)) != NULL)
+    if ((err = fffront_start_task(cmd)) != NULL)
         report(err->errmess, 1);
 }
 
@@ -124,21 +126,21 @@ static struct {
     char title[12];
     unsigned char tfg, tbg, wfg, wbg;
     int width, height, gap;
-    item_t item[4];
+    item_t item[5];
 } menu;
 static int menu_x;
 
 static void menu_build(void)
 {
-    static const char *names[4] = { "Info", "Full screen", "Log", "Quit" };
+    static const char *names[5] = { "Info", "Convert...", "Full screen", "Log", "Quit" };
     memset(&menu, 0, sizeof(menu));
     strcpy(menu.title, APP_NAME);
     menu.tfg = 7; menu.tbg = 2; menu.wfg = 7; menu.wbg = 0;
     menu.width = 12 * 16 + 16;
     menu.height = 44;
     menu.gap = 0;
-    for (int i = 0; i < 4; i++) {
-        menu.item[i].flags = (i == 1 && fullscreen ? 1 : 0) | (i == 1 ? 2 : 0) | (i == 3 ? 0x80 : 0);
+    for (int i = 0; i < 5; i++) {
+        menu.item[i].flags = (i == 2 && fullscreen ? 1 : 0) | (i == 2 ? 2 : 0) | (i == 4 ? 0x80 : 0);
         menu.item[i].sub = -1;
         menu.item[i].iflags = 0x07000021;     /* text, filled, black on white */
         strncpy(menu.item[i].text, names[i], 12);
@@ -149,11 +151,28 @@ static void menu_open(int x)
 {
     _kernel_swi_regs r;
     menu_x = x;
+    conv_menu_forget();                       /* (a Convert popup that was left open) */
     menu_build();
     r.r[1] = (intptr_t)&menu;
     r.r[2] = x - 64;
-    r.r[3] = 96 + 4 * 44;
+    r.r[3] = 96 + 5 * 44;
     swi(Wimp_CreateMenu, &r);
+}
+
+/* Quit while converting: ask */
+static int quit_ok(void)
+{
+    _kernel_oserror e;
+    _kernel_swi_regs r;
+    e.errnum = 0;
+    snprintf(e.errmess, sizeof(e.errmess), "A file is being converted. Stop converting it and quit?");
+    r.r[0] = (intptr_t)&e;
+    r.r[1] = 2 | (1 << 8) | (4 << 9);
+    r.r[2] = (intptr_t)APP_NAME;
+    r.r[3] = (intptr_t)"!ffmpeg";
+    r.r[4] = 1;
+    r.r[5] = (intptr_t)"Quit";
+    return !swi(Wimp_ReportError, &r) && r.r[1] == 3;
 }
 
 static void menu_select(const int *sel)
@@ -163,12 +182,15 @@ static void menu_select(const int *sel)
     switch (sel[0]) {
     case 0:
         report("FFmpeg " FFFRONT_VERSION " for RISC OS: drop a video or sound file on this icon "
-               "to play it with ffplay. riscos-ffmpeg, GPL v2 or later.", 1 | 16);
+               "to play it with ffplay; click the icon to convert files. riscos-ffmpeg, GPL v2 or later.", 1 | 16);
         break;
     case 1:
+        conv_open();
+        break;
+    case 2:
         fullscreen = !fullscreen;
         break;
-    case 2: {
+    case 3: {
         const char *scrap = getenv("Wimp$ScrapDir");
         char cmd[300];
         if (!scrap || !*scrap) {
@@ -176,11 +198,13 @@ static void menu_select(const int *sel)
             break;
         }
         snprintf(cmd, sizeof(cmd), "Filer_Run %s.ffplay/log", scrap);
-        if (start_task(cmd))
+        if (fffront_start_task(cmd))
             report("No log yet: play a file first. It's <Wimp$ScrapDir>.ffplay/log.", 1 | 16);
         break;
     }
-    case 3:
+    case 4:
+        if (conv_busy() && !quit_ok())
+            break;
         r.r[0] = 0;
         swi(Wimp_CloseDown, &r);
         exit(0);
@@ -267,7 +291,8 @@ static void iconbar_icon(void)
 
 int fffront_main(void)
 {
-    static const int messages[] = { MSG_DATALOAD, MSG_PREQUIT, 0 };
+    static const int messages[] = { MSG_DATALOAD, 2 /* DataSaveAck */, MSG_PREQUIT, 0x502 /* HelpRequest */,
+                                    0x808C1, 0x808C2, 0x808C3 /* TaskWindow Output, Ego, Morio */, 0 };
     int block[64];
     _kernel_swi_regs r;
 
@@ -289,25 +314,49 @@ int fffront_main(void)
         return 0;
     }
     iconbar_icon();
+    conv_init(task, ffdir);
 
     for (;;) {
-        r.r[0] = 1 | (1 << 4) | (1 << 5);     /* no null or pointer events */
+        r.r[0] = 1 | (1 << 4) | (1 << 5);     /* no null or pointer events (the task windows' output comes as messages) */
         r.r[1] = (intptr_t)block;
         if (swi(Wimp_Poll, &r))
             continue;
         switch (r.r[0]) {
+        case 2:                               /* Open_Window_Request */
+            r.r[1] = (intptr_t)block;
+            swi(0x400C5, &r);
+            break;
+        case 3:                               /* Close_Window_Request */
+            conv_close_request(block);
+            break;
         case 6:                               /* Mouse_Click */
+            if (conv_click(block))
+                break;
             if (block[3] != -2 || block[4] != icon)
                 break;
             if (block[2] & 2)
                 menu_open(block[0]);
             else
-                report("Drop a video or sound file on the FFmpeg icon to play it.", 1 | 16);
+                conv_open();
+            break;
+        case 7:                               /* User_Drag_Box: the file icon was dropped */
+            conv_drag_end();
+            break;
+        case 8:                               /* Key_Pressed */
+            if (!conv_key(block)) {
+                r.r[0] = block[6];
+                swi(0x400DC, &r);
+            }
             break;
         case 9:                               /* Menu_Selection */
-            menu_select(block);
+            if (conv_menu_open())
+                conv_menu_select(block);
+            else
+                menu_select(block);
             break;
-        case 17: case 18:                     /* User_Message(_Recorded) */
+        case 17: case 18: case 19:            /* User_Message(_Recorded, _Acknowledge) */
+            if (conv_message(block))
+                break;
             if (block[4] == MSG_QUIT) {
                 r.r[0] = task;
                 swi(Wimp_CloseDown, &r);
@@ -327,7 +376,7 @@ int fffront_main(void)
                 if (type == 0x1000 || type == 0x2000)
                     report("That's a directory: drop a video file.", 1 | 16);
                 else
-                    play(file);
+                    fffront_play(file);
             }
             break;
         }

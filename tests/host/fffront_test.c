@@ -1,7 +1,8 @@
 /* Host test of the icon bar front end (frontend/fffront.c) with a scripted
  * fake Wimp: a file dropped on the icon starts ffplay through !FFmpeg.Task
  * (acknowledged first), the menu toggles full screen, directories are
- * refused, and Message_Quit ends it. Build: see tests/host/run.sh. */
+ * refused, Select on the icon opens the Convert window (convert_test.c
+ * tests that), and Message_Quit ends it. Build: see tests/host/run.sh. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,7 +13,7 @@ int fffront_main(void);
 int fffront_command(char *, size_t, const char *, const char *, int, const char *);
 
 static const char *canon = "SDFS::Pi.$.Apps.!FFmpeg";   /* what OS_FSControl 37 gives; NULL = fail */
-static int fails, step, icon_made, acks, reports, closed;
+static int fails, step, icon_made, acks, reports, closed, windows, opened;
 static char started[4][1024]; static int nstarted;
 static char icon_name[13]; static int icon_flags;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
@@ -53,13 +54,16 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x400DF: reports++; return NULL;                          /* Wimp_ReportError */
     case 0x400CF: { int *b = (int *)(intptr_t)in->r[1]; b[2] = 4; return NULL; }  /* pointer: Select */
     case 0x400D4: return NULL;                                     /* Wimp_CreateMenu */
+    case 0x400C1: windows++; out->r[0] = 0x6000; return NULL;      /* Wimp_CreateWindow (Convert) */
+    case 0x400C5: opened++; return NULL;                           /* Wimp_OpenWindow */
+    case 0x400CB: case 0x400CD: case 0x35: return NULL;
     case 0x400DD: closed++; return NULL;                           /* Wimp_CloseDown */
     case 0x400C7: {                                                /* Wimp_Poll: the script */
         int *b = (int *)(intptr_t)in->r[1];
         switch (step++) {
         case 0: dataload(b, "SDFS::Pi.$.Films.clip/mp4", 0xFFD); out->r[0] = 18; break;
         case 1: memset(b, 0, 20); b[3] = -2; b[4] = 1; b[2] = 2; out->r[0] = 6; break;  /* Menu click */
-        case 2: b[0] = 1; b[1] = -1; out->r[0] = 9; break;         /* Full screen */
+        case 2: b[0] = 2; b[1] = -1; out->r[0] = 9; break;         /* Full screen */
         case 3: dataload(b, "ADFS::HD4.$.My Films.b/mkv", 0xFFD); out->r[0] = 18; break;
         case 4: dataload(b, "ADFS::HD4.$.Films", 0x1000); out->r[0] = 18; break;
         case 5: memset(b, 0, 20); b[3] = -2; b[4] = 1; b[2] = 4; out->r[0] = 6; break;  /* Select click */
@@ -86,12 +90,13 @@ int main(void)
     CHECK(!strcmp(started[1], "Obey SDFS::Pi.$.Apps.!FFmpeg.Task ffplay -nostats -hide_banner -loglevel verbose -fs "
                   "\"ADFS::HD4.$.My Films.b/mkv\" > SDFS::Pi.$.Scrap.ffplay/log 2>&1"), "command 2: %s", started[1]);
     CHECK(acks == 3, "%d DataLoadAcks (want 3)", acks);
-    CHECK(reports == 2, "%d reports (want 2: the directory, the Select click)", reports);
+    CHECK(reports == 1, "%d reports (want 1: the directory)", reports);
+    CHECK(windows == 1 && opened == 1, "Select on the icon: %d windows made, %d opened", windows, opened);
     CHECK(closed == 1, "Wimp_CloseDown %d times", closed);
     CHECK(fffront_command(cmd, sizeof(cmd), "D", "f", 0, NULL) == 0 &&
           !strcmp(cmd, "Obey D.Task ffplay -nostats -hide_banner -loglevel quiet f"), "no scrap: %s", cmd);
     /* OS_FSControl fails: the program's own directory from OS_GetEnv */
-    canon = NULL; step = 0; nstarted = 0; closed = 0; acks = 0; reports = 0; icon_made = 0;
+    canon = NULL; step = 0; nstarted = 0; closed = 0; acks = 0; reports = 0; icon_made = 0; windows = opened = 0;
     CHECK(fffront_main() == 0 && nstarted == 2 &&
           !strncmp(started[0], "Obey SDFS::Pi.$.Other.!FFmpeg.Task ffplay ", 42), "OS_GetEnv fallback: %s", started[0]);
     printf("  started: %s\n", started[0]);

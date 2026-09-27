@@ -164,8 +164,54 @@ for want in "ReelEGL log" "EGL surface .*work area" "EGL surface .*screen" "SDL 
   grep -q "$want" "$O/reelegl.log" || { echo "  the log has no \"$want\""; bad=1; }
 done
 
+# The Convert window's ffmpeg command lines, built from real ffprobe output (its own
+# query) and run by the ARM ffmpeg 5.1; the results checked with ffprobe
+echo "== convert commands (the Convert window's presets through ffmpeg 5.1)"
+gcc -O1 -I"$HERE/fake" -I"$TOP/frontend" "$HERE/convert_cmds.c" "$TOP/frontend/convert.c" -o "$O/convert_cmds" 2>/dev/null
+CV=$O/convert; mkdir -p "$CV"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=1280x720:rate=25:duration=4 -f lavfi -i sine=frequency=440:duration=4 \
+  -c:v libx264 -crf 30 -preset ultrafast -c:a aac "$CV/hd.mp4"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=2 -vf scale=321:181 -pix_fmt yuv444p -c:v ffv1 "$CV/odd.mkv"
+convert_case() {    # name src out want-video want-height want-audio want-duration settings...
+  local name=$1 src=$2 out=$3 wv=$4 wh=$5 wa=$6 wd=$7; shift 7
+  ffprobe -v error -of compact=p=0 -show_entries \
+    format=duration:stream=codec_type,codec_name,width,height,r_frame_rate,field_order,channels,sample_rate "$src" > "$CV/probe.txt"
+  local args; args=$("$O/convert_cmds" "$CV/probe.txt" "$src" "$CV/$out" "$@" 2>"$CV/desc.txt") ||
+    { echo "FAIL: $name: $(cat "$CV/desc.txt")"; bad=1; return; }
+  rm -f "$CV/$out"
+  if ! "$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" $args > "$CV/progress.txt" 2> "$CV/err.txt"; then
+    echo "FAIL: $name: ffmpeg: $(head -3 "$CV/err.txt")"; bad=1; return
+  fi
+  grep -q "^out_time_us=" "$CV/progress.txt" && grep -q "^progress=end" "$CV/progress.txt" ||
+    { echo "FAIL: $name: no -progress lines"; bad=1; }
+  local v h a d
+  v=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$CV/$out")
+  h=$(ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$CV/$out")
+  a=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$CV/$out")
+  d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$CV/$out")
+  if [ "$v" = "$wv" ] && [ "$h" = "$wh" ] && [ "$a" = "$wa" ] && awk -v d="$d" -v w="$wd" 'BEGIN { exit !(d > w - 0.3 && d < w + 0.3) }'; then
+    echo "  $name: $out: ${v:-no video}${h:+ ${h} lines}, ${a:-no sound}, ${d%????} s  ($(sed 's/^  //' "$CV/desc.txt"))"
+  else
+    echo "FAIL: $name: $out: video '$v' $h lines, sound '$a', $d s (want '$wv' $wh, '$wa', $wd s)"; bad=1
+  fi
+}
+convert_case "for playing here"   "$CV/hd.mp4" a.mp4 h264 720 aac 4 preset=0
+convert_case "480 lines"          "$CV/hd.mp4" b.mp4 h264 480 aac 4 preset=0 size=4
+convert_case "sound only: MP3"    "$CV/hd.mp4" c.mp3 "" "" mp3 4 preset=3
+convert_case "sound only: AAC"    "$CV/hd.mp4" d.m4a "" "" aac 4 preset=4
+convert_case "MKV, 0:01 to 0:03"  "$CV/hd.mp4" e.mkv h264 720 aac 2 preset=1 format=1 from=0:01 to=3
+convert_case "silent, balanced"   "$CV/hd.mp4" f.mp4 h264 360 "" 4 preset=1 size=5 sound=0 speed=2 quality=0
+convert_case "interlaced MPEG-2"  "$SAMPLES/mv_mpeg2_il.mpg" g.mp4 h264 184 "" 2 preset=2
+convert_case "HEVC"               "$SAMPLES/hevc_322_182.mkv" h.mp4 h264 182 "" 1 preset=0
+convert_case "odd size"           "$CV/odd.mkv" i.mp4 h264 180 "" 2 preset=1
+
 echo "== fffront_test (the icon bar front end, on this host)"
-gcc -O1 -DFFFRONT_NO_MAIN -I"$HERE/fake" "$TOP/frontend/fffront.c" "$HERE/fffront_test.c" \
-  -o "$O/fffront_test" 2>/dev/null && "$O/fffront_test" || bad=1
+gcc -O1 -DFFFRONT_NO_MAIN -I"$HERE/fake" -I"$TOP/frontend" "$TOP/frontend/fffront.c" "$TOP/frontend/convert.c" \
+  "$HERE/fffront_test.c" -o "$O/fffront_test" 2>/dev/null && "$O/fffront_test" || bad=1
+# the Convert window: 32-bit ARM like RISC OS (the Wimp's blocks hold pointers), under the trapping qemu
+echo "== convert_test (!FFmpeg's Convert window, scripted desktop)"
+arm-linux-gnueabihf-gcc -O1 -g -marm -mno-unaligned-access -DFFFRONT_NO_MAIN -DCONV_HOST_PATHS -DCONV_TEST \
+  -I"$HERE/fake" -I"$TOP/frontend" "$TOP/frontend/fffront.c" "$TOP/frontend/convert.c" "$HERE/convert_test.c" \
+  -o "$O/convert_test" 2>/dev/null && "$TOP/tests/qemu/aligntrap.sh" "$O/convert_test" || bad=1
 "$HERE/mesa/run.sh" || bad=1
 exit $bad

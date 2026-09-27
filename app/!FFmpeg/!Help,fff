@@ -1,4 +1,4 @@
-!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos6
+!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos7
 ===================================================================
 
 FFmpeg converts, plays and inspects audio and video. This is FFmpeg
@@ -17,9 +17,53 @@ Getting started
 ---------------
 Double-click !FFmpeg: its icon appears on the icon bar. Drop a video (or
 sound) file on the icon to play it with ffplay, in a window of its own.
-The icon's menu has Info, Full screen (tick it to play full screen), Log
-and Quit. ffplay's messages (verbose: including the sound driver it
-used) go to the file ffplay/log in the scrap directory; Log opens it.
+The icon's menu has Info, Convert..., Full screen (tick it to play full
+screen), Log and Quit. ffplay's messages (verbose: including the sound
+driver it used) go to the file ffplay/log in the scrap directory; Log
+opens it.
+
+Converting files
+----------------
+Click the FFmpeg icon (or choose Convert... from its menu) for the
+Convert window. It works from the top down:
+
+  1. Drop a video or sound file on the window. The line under its name
+     says what's in it: the picture's codec, size and frame rate
+     (and whether it's interlaced), the sound, and how long it is.
+  2. Choose what to make from "Convert to":
+       For playing here  MP4 up to 720 lines, easy to decode: plays
+                         smoothly in Reel on this machine
+       MP4, same size    at the picture's own size, good quality
+       Smaller file      MP4 up to 480 lines, lower quality
+       Sound only: MP3   the sound as a high quality MP3
+       Sound only: AAC   the sound as an M4A (AAC) file
+     The options under it show what the preset chose; change any of them
+     to make your own (the preset then says Custom):
+       Format      MP4 or MKV video (H.264 with AAC sound), MP3 or M4A
+       Size        the picture's height at most (never made bigger)
+       Quality     Best, Good, Normal or Small (a bigger file is better)
+       Speed       Fastest, Fast or Balanced (slower makes a smaller
+                   file for the same quality)
+       Sound       untick for a silent video
+       Deinterlace if needed   removes the stripes from interlaced video
+       Quick to decode         simpler video that plays smoothly here
+       From ... to             only part of the file (e.g. 1:30 to 2:45)
+     Options that don't apply are greyed out.
+  3. Drag the file icon to a directory display to save the new file
+     there, as with any RISC OS save box. Or type a full path in the name
+     field and press Return (or click Convert). The name is filled in
+     from the source's (e.g. holiday_720/mp4).
+  4. A bar shows how far it has got, with how fast it's going (times real
+     time) and about how long is left. Stop ends it and deletes the
+     unfinished file. When it's done, Play plays the new file and Show
+     opens its directory. If ffmpeg couldn't convert it, the window says
+     why and Log shows ffmpeg's messages.
+
+Converting takes a while on one core: expect HD video to take longer
+than it lasts (the window shows the real speed, e.g. "0.4x real time",
+and the time left). Fastest is quickest; Sound only is quick. The desktop
+carries on meanwhile: ffmpeg runs in a task window of its own. An existing file is only replaced after
+asking. Interactive help (!Help) explains every part of the window.
 
 For everything else, use the commands.
 Let the Filer see !FFmpeg (open the directory it is in), or double-click

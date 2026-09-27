@@ -3,6 +3,40 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## 5.1.10-riscos7 (2026-09-28): the Convert window
+
+- **!FFmpeg converts files from the desktop.** Click the FFmpeg icon (or
+  Convert... on its menu); dropping a file on the icon still plays it.
+  One window, used from the top down (`frontend/convert.c`):
+  - drop a file on it: ffprobe reads it and a line says what's in it
+    (codecs, size, frame rate, interlaced or not, sound, length);
+  - "Convert to": For playing here (MP4 up to 720 lines, easy to decode),
+    MP4 same size, Smaller file (480 lines), Sound only MP3 / AAC, each
+    with a one-line description; the options under it (format, size,
+    quality, speed, sound, deinterlace, quick to decode, from/to) show
+    what it chose, and changing one makes it Custom; what doesn't apply
+    is greyed out;
+  - save the RISC OS way: drag the file icon to a directory display, or
+    type a full path and press Return / click Convert; the name is filled
+    in from the source's (holiday_720/mp4) and its directory is kept;
+  - a progress bar, "x real time" and the time left; Stop (the unfinished
+    file is deleted); then Play, Show and, on failure, the reason and
+    Log. An existing file is only replaced after asking; closing the
+    window or quitting while converting asks first. Interactive help for
+    every part.
+  - ffprobe and ffmpeg run in task windows of their own (`*TaskWindow
+    -task -txt`), their output coming back as messages: the desktop
+    carries on. ffmpeg's `-progress pipe:1` drives the bar.
+- **ffmpeg and ffplay get patches 0015–0017**: yadif (`-vf yadif`), HEVC
+  chroma and swscale's scaling to RGB32 (ffplay's drawing) in NEON.
+- The devkit has Reel 0.1.13's reelcore (speed, deinterlacing, sound
+  tracks, picture modes) and the patched libraries.
+- Tests: `convert_test` (34-step scripted desktop: probing, presets,
+  menus, saving by drag, progress, Stop, replace, done, failure, help,
+  quit), and the window's ffmpeg command lines run for real by ffmpeg
+  5.1 on nine cases (presets, sizes, MKV with a part, silent, interlaced
+  MPEG-2, HEVC, an odd size), the results checked with ffprobe.
+
 ## Reel 0.1.13: NEON for resizing and HEVC colour (2026-09-27)
 
 - **FFmpeg patch 0017: swscale scaling to RGB32 in NEON.** With
