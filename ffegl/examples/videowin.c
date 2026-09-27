@@ -69,13 +69,13 @@ static int open_window(int width, int height)
     return 1;
 }
 
-static void set_title(const char *name, FFEGLVideo *v)
+static void set_title(const char *name, ReelCore *v)
 {
     char t[sizeof(title)];
-    int p = (int)ffegl_position(v), d = (int)ffegl_duration(v);
+    int p = (int)reelcore_position(v), d = (int)reelcore_duration(v);
     _kernel_swi_regs r;
     snprintf(t, sizeof(t), "%.100s  %d:%02d / %d:%02d%s", name, p / 60, p % 60, d / 60, d % 60,
-             ffegl_paused(v) ? "  (paused)" : "");
+             reelcore_paused(v) ? "  (paused)" : "");
     if (!strcmp(t, title) || !task)
         return;
     strcpy(title, t);
@@ -84,15 +84,15 @@ static void set_title(const char *name, FFEGLVideo *v)
 }
 
 /* 1 = go on, 0 = quit */
-static int key(FFEGLVideo *v, int k)
+static int key(ReelCore *v, int k)
 {
     switch (k) {
     case 0x1B: case 'q': case 'Q': return 0;
-    case ' ':   ffegl_pause(v, !ffegl_paused(v)); break;
-    case 0x18C: ffegl_seek(v, ffegl_position(v) - 10); break;   /* Left */
-    case 0x18D: ffegl_seek(v, ffegl_position(v) + 10); break;   /* Right */
-    case 0x18E: ffegl_seek(v, ffegl_position(v) - 60); break;   /* Down */
-    case 0x18F: ffegl_seek(v, ffegl_position(v) + 60); break;   /* Up */
+    case ' ':   reelcore_pause(v, !reelcore_paused(v)); break;
+    case 0x18C: reelcore_seek(v, reelcore_position(v) - 10); break;   /* Left */
+    case 0x18D: reelcore_seek(v, reelcore_position(v) + 10); break;   /* Right */
+    case 0x18E: reelcore_seek(v, reelcore_position(v) - 60); break;   /* Down */
+    case 0x18F: reelcore_seek(v, reelcore_position(v) + 60); break;   /* Up */
     default:
         if (task) {
             _kernel_swi_regs r;
@@ -138,12 +138,12 @@ int main(int argc, char **argv)
     EGLint n;
     EGLint cfg_attr[] = { EGL_SURFACE_TYPE, EGL_WINDOW_BIT | EGL_LOCK_SURFACE_BIT_KHR,
                           EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE };
-    FFEGLVideo *v;
+    ReelCore *v;
     _kernel_swi_regs r;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-f")) full = 1;
-        else if (!strcmp(argv[i], "-loop")) flags |= FFEGL_LOOP;
+        else if (!strcmp(argv[i], "-loop")) flags |= REELCORE_LOOP;
         else file = argv[i];
     }
     if (!file) {
@@ -152,9 +152,9 @@ int main(int argc, char **argv)
     }
     name = leaf(file);
 
-    v = ffegl_open(file, flags);
+    v = reelcore_open(file, flags);
     if (!v) {
-        fprintf(stderr, "videowin: %s\n", ffegl_last_error());
+        fprintf(stderr, "videowin: %s\n", reelcore_last_error());
         return 1;
     }
     snprintf(title, sizeof(title), "%.100s", name);
@@ -162,7 +162,7 @@ int main(int argc, char **argv)
         r.r[0] = 380; r.r[1] = TASK_WORD; r.r[2] = (int)"Video"; r.r[3] = (int)messages;
         if (!_kernel_swi(Wimp_Initialise, &r, &r))
             task = r.r[1];
-        if (!task || !open_window(ffegl_width(v), ffegl_height(v)))
+        if (!task || !open_window(reelcore_width(v), reelcore_height(v)))
             full = 1;
     }
     dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -179,10 +179,10 @@ int main(int argc, char **argv)
     }
 
     while (running) {
-        int res = ffegl_update(v);
-        if (res < 0 || res == FFEGL_END)
+        int res = reelcore_update(v);
+        if (res < 0 || res == REELCORE_END)
             break;
-        if (res == FFEGL_NEW_FRAME) {
+        if (res == REELCORE_NEW_FRAME) {
             ffegl_draw_surface(v, dpy, surf, 0, 0, 0, 0, 0);
             eglSwapBuffers(dpy, surf);
         }
@@ -194,7 +194,7 @@ int main(int argc, char **argv)
         }
         set_title(name, v);
         /* Paused: sleep until an event. Playing: back at once (null events). */
-        r.r[0] = ffegl_paused(v) ? 1 : 0;
+        r.r[0] = reelcore_paused(v) ? 1 : 0;
         r.r[1] = (int)block;
         if (_kernel_swi(Wimp_Poll, &r, &r))
             break;
@@ -210,7 +210,7 @@ int main(int argc, char **argv)
             r.r[1] = (int)block;
             _kernel_swi(Wimp_OpenWindow, &r, &r);
             /* the surface follows the window at the next swap: redraw now */
-            if (ffegl_paused(v)) {
+            if (reelcore_paused(v)) {
                 ffegl_draw_surface(v, dpy, surf, 0, 0, 0, 0, 0);
                 eglSwapBuffers(dpy, surf);
             }
@@ -234,7 +234,7 @@ int main(int argc, char **argv)
 
     eglDestroySurface(dpy, surf);
     eglTerminate(dpy);
-    ffegl_close(v);
+    reelcore_close(v);
     if (task) {
         r.r[0] = task; r.r[1] = TASK_WORD;
         _kernel_swi(Wimp_CloseDown, &r, &r);

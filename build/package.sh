@@ -2,9 +2,9 @@
 # Release files, from a finished build (build-deps.sh + build-ffmpeg.sh):
 #   dist/FFmpeg-VERSION.zip             !FFmpeg: ffmpeg, ffprobe, ffplay (AIF),
 #                                       Bench, docs (licences, source)
-#   dist/FFmpeg-EGL-examples-VERSION.zip  videowin, videocube (ffegl examples)
+#   dist/FFmpeg-EGL-examples-VERSION.zip  videowin, videocube (reelcore + ffegl examples)
 #   dist/Reel-REEL_VERSION.zip          !Reel and !ReelEGL, the video player
-#   dist/riscos-ffmpeg-devkit-VERSION.tgz  static libraries (and libffegl) + headers + .pc
+#   dist/riscos-ffmpeg-devkit-VERSION.tgz  static libraries (and libreelcore, libffegl) + headers + .pc
 # Filetypes go in the zip's Acorn extra fields (tools/mkrozip.py), so SparkFS
 # and RISC OS unzip give the files their real types.
 # Usage: build/package.sh [VERSION]      (default 5.1.10-riscos6)
@@ -48,7 +48,7 @@ cp "$SRC/libvorbis-1.3.7/COPYING" "$D/Licences/Vorbis,fff"
 cp "$SRC/SDL-release-2.26.0/LICENSE.txt" "$D/Licences/SDL2,fff"
 # Corresponding source for the GPL: this port's changes and how it is built
 # (the upstream tarballs are named, with checksums, in SOURCES).
-( cd "$TOP" && tar cf - build patches tools app ffegl frontend player tests/qemu/*.sh tests/qemu/*.md tests/qemu/*.patch \
+( cd "$TOP" && tar cf - build patches tools app reelcore ffegl frontend player tests/qemu/*.sh tests/qemu/*.md tests/qemu/*.patch \
     README.md CHANGELOG.md docs Makefile 2>/dev/null ) | tar xf - -C "$D/source"
 rm -f "$DIST/FFmpeg-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-$V.zip" '!FFmpeg' )
@@ -86,7 +86,7 @@ rm -f "$DIST/FFmpeg-EGL-examples-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-EGL-examples-$V.zip" EGLExamples )
 
 # --- !Reel and !ReelEGL, the video player (sprite / EGL drawing) ---------
-RV=${REEL_VERSION:-0.1.9}
+RV=${REEL_VERSION:-0.1.10}
 RT=$TMP/Reel
 mkdir -p "$RT"
 for app in Reel ReelEGL; do
@@ -99,16 +99,21 @@ for app in Reel ReelEGL; do
   mkdir -p "$R/docs/source/c" "$R/docs/source/h"
   cp -r "$D/Licences" "$R/docs/Licences"
   cp "$TOP/player/reel.c"  "$R/docs/source/c/reel,fff"
-  cp "$TOP/ffegl/ffegl.c"  "$R/docs/source/c/ffegl,fff"
-  cp "$TOP/ffegl/ffegl.h"  "$R/docs/source/h/ffegl,fff"
+  cp "$TOP/reelcore/reelcore.c"  "$R/docs/source/c/reelcore,fff"
+  cp "$TOP/reelcore/reelcore.h"  "$R/docs/source/h/reelcore,fff"
+  if [ "$app" = ReelEGL ]; then
+    cp "$TOP/ffegl/ffegl.c"  "$R/docs/source/c/ffegl,fff"
+    cp "$TOP/ffegl/ffegl.h"  "$R/docs/source/h/ffegl,fff"
+  fi
   cp "$TOP/tools/mksprites.py" "$R/docs/source/mksprites_py,fff"
-  cp "$TOP/build/build-ffegl.sh" "$R/docs/source/build-ffegl_sh,fff"
+  cp "$TOP/build/build-apps.sh" "$R/docs/source/build-apps_sh,fff"
   cat > "$R/docs/source/ReadMe,fff" <<EOF
 $app $RV's own source is here (one source, player/reel.c; ReelEGL is it
-built with -DREEL_EGL). It is part of riscos-ffmpeg ($V), whose full
+built with -DREEL_EGL), and the player core it runs on (reelcore; ReelEGL
+also has ffegl, which puts reelcore's pictures into EGL). It is part of riscos-ffmpeg ($V), whose full
 source (FFmpeg 5.1.10 plus the RISC OS patches and build scripts) is in
 the FFmpeg package (!FFmpeg.docs.source) and the riscos-ffmpeg git
-repository. Both are built by build/build-ffegl.sh.
+repository. Both are built by build/build-apps.sh.
 EOF
 done
 cp "$DEVKIT/LICENCES.txt" "$RT/!ReelEGL/docs/Licences/riscos-mesa,fff"
@@ -120,7 +125,7 @@ K=$TMP/riscos-ffmpeg-devkit-$V
 mkdir -p "$K/lib/pkgconfig"
 cp -r "$STAGE/include" "$K/"
 for l in avcodec avdevice avfilter avformat avutil postproc swresample swscale \
-         x264 dav1d mp3lame opus ogg vorbis vorbisenc vorbisfile ffegl; do
+         x264 dav1d mp3lame opus ogg vorbis vorbisenc vorbisfile reelcore ffegl; do
   ${CROSS}strip --strip-debug -o "$K/lib/lib$l.a" "$STAGE/lib/lib$l.a"
 done
 for pc in "$STAGE"/lib/pkgconfig/*.pc; do
@@ -134,9 +139,10 @@ cp -r "$D/Licences" "$K/Licences"
 cat > "$K/README.txt" <<EOF
 riscos-ffmpeg devkit $V: FFmpeg 5.1.10 static libraries for GCCSDK GCC 10
 (arm-riscos-gnueabihf), ARMv7 + NEON, alignment-safe (see the riscos-ffmpeg
-README). Also x264, dav1d, LAME, Opus, Ogg, Vorbis, and ffegl (include/ffegl.h,
-lib/libffegl.a: video into EGL surfaces and GL textures; see the EGL
-document in !FFmpeg.docs).
+README). Also x264, dav1d, LAME, Opus, Ogg, Vorbis; reelcore
+(include/reelcore.h, lib/libreelcore.a: the player core, no EGL); and
+ffegl (include/ffegl.h, lib/libffegl.a: reelcore's pictures into EGL
+surfaces and GL textures; see the EGL document in !FFmpeg.docs).
 SDL2, zlib, EGL and OpenGL are not here: take them from the riscos-mesa
 devkit, 20.3.5-7pre12 or later (EGLImage textures for ffegl; libavdevice's
 egl output device needs libEGL and libOSMesa).

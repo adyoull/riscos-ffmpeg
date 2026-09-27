@@ -67,8 +67,9 @@ From a TaskWindow a window isn't possible (see ffplay above): use
 -fullscreen 1, or start ffmpeg as its own task:
   WimpTask ffmpeg -nostats -re -i clip/mp4 -map 0:v -f egl "Holiday"
 
-Programmers can play videos (with sound) into EGL surfaces and OpenGL
-textures with the ffegl library in the riscos-ffmpeg devkit. docs.EGL
+Programmers can play videos (with sound) with the reelcore library in
+the riscos-ffmpeg devkit, and put them into EGL surfaces and OpenGL
+textures with ffegl. docs.EGL
 explains both. The FFmpeg-EGL-examples zip has two small programs that
 use it: videowin (a player window) and videocube (a video on a spinning
 cube).

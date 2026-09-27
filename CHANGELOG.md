@@ -3,6 +3,30 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel 0.1.10: reelcore and ffegl split (2026-09-27)
+
+- **ffegl was a player core with EGL attached; now they are two
+  libraries.** The name said "FFmpeg into EGL", but most of it (reading,
+  decoding, the sound and clock, frame skipping, stats) had nothing to do
+  with EGL, and !Reel used it with no EGL at all.
+  - **reelcore** (`reelcore/`): the player core, no EGL. Everything that
+    was `ffegl_*` except the two EGL calls is now `reelcore_*`
+    (`reelcore_open`, `reelcore_update`, `reelcore_draw_pixels`,
+    `reelcore_idle_time`, `reelcore_stats`, ...), `FFEGLVideo` is
+    `ReelCore`, the flags and results are `REELCORE_*`, and
+    `FFEGL_AUDIO` is `REELCORE_AUDIO`. New: `reelcore_frame_size()`, and
+    `reelcore_attach()`/`reelcore_attachment()` for a layer's own state.
+  - **ffegl** (`ffegl/`): only the EGL side, on top of reelcore:
+    `ffegl_draw_surface()` and `ffegl_texture()` (its EGLImage state is
+    kept with the video through `reelcore_attach` and freed by
+    `reelcore_close`). Built `-DFFEGL_NO_TEXTURE` it has no OpenGL.
+  - !Reel links reelcore only; !ReelEGL, videowin and videocube link
+    reelcore and ffegl. The devkit has `libreelcore.a` + `reelcore.h` as
+    well as `libffegl.a` + `ffegl.h`. `build/build-ffegl.sh` is now
+    `build/build-apps.sh` (`make apps`; `make ffegl` still works).
+- No change in what the players do. All host tests pass, including
+  ffegl_texture against riscos-mesa's real EGL and OSMesa.
+
 ## 5.1.10-riscos6 (2026-09-27): first GitHub release
 
 The same `ffmpeg`, `ffprobe` and `ffplay` as riscos5; what changed is
@@ -13,8 +37,8 @@ around them:
   into `!System`, never loaded, so ffplay had no working sound device).
   The icon's menu has **Log** (ffplay's messages, now at verbose level,
   in `<Wimp$ScrapDir>.ffplay/log`).
-- **ffegl** (in the devkit, and in the EGL examples `videowin` and
-  `videocube`), as in Reel 0.1.5–0.1.9: sound straight to SharedSoundBuffer
+- **The player library** (ffegl then; reelcore and ffegl from Reel
+  0.1.10), in the devkit and the EGL examples, as in Reel 0.1.5–0.1.10: sound straight to SharedSoundBuffer
   on RISC OS (no SDL audio thread); the file read for the sound
   separately from video decoding (the trailer freeze); frame skipping
   when behind; `ffegl_debug`, `ffegl_set_log`, `ffegl_media_info`,

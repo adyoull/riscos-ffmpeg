@@ -50,7 +50,7 @@ dep_sdl2() {
 }
 
 # riscos-mesa's EGL, OpenGL (OSMesa), GLU and freeglut, for the egl output
-# device and ffegl: headers and static libraries from the devkit.
+# device, ffegl and !ReelEGL: headers and static libraries from the devkit.
 dep_egl() {
   for d in EGL KHR GL GLES GLES2; do
     [ -d "$DEVKIT/include/$d" ] && cp -r "$DEVKIT/include/$d" "$STAGE/include/"

@@ -1,33 +1,27 @@
 /*
- * ffegl.h - play videos into riscos-mesa's EGL and OpenGL, with FFmpeg.
+ * ffegl.h - puts reelcore's pictures into riscos-mesa's EGL.
  *
- * A small layer over libavformat/libavcodec/libswscale/libswresample for
- * programs that already use EGL or OpenGL on RISC OS: open a file (or a
- * network stream), call ffegl_update() from your event loop, and put the
- * current frame where you want it:
+ * reelcore (reelcore.h) plays the video and sound and says when a picture
+ * is due; ffegl is the EGL side, for programs that draw with EGL or OpenGL:
  *
- *   - ffegl_draw_surface(): into an EGL window surface (a Wimp window or
- *     the whole screen) through EGL_KHR_lock_surface, scaled to fit. No GL
- *     drawing, no context needed; eglSwapBuffers shows it.
+ *   - ffegl_draw_surface(): into an EGL window surface (a Wimp window, a
+ *     work area or the whole screen) through EGL_KHR_lock_surface, scaled
+ *     to fit. No GL drawing, no context needed; eglSwapBuffers shows it.
  *   - ffegl_texture(): into an OpenGL texture, to draw the video on
  *     anything: a quad, a cube, a 3D scene. With riscos-mesa 7pre12 or
- *     later the texture shares ffegl's pixels through an EGLImage (no copy).
- *   - ffegl_draw_pixels(): into any 32bpp memory, e.g. a sprite.
+ *     later the texture shares the pixels through an EGLImage (no copy).
  *
- * Sound plays through SharedSoundBuffer/StreamManager on RISC OS, given
- * the sound from ffegl_update() itself (SDL2's audio elsewhere, or with
- * FFEGL_AUDIO=sdl), and is the clock the pictures follow. There are no threads: decoding happens inside
- * ffegl_update(), so call it often (every Wimp null event, or every frame).
- *
- *   FFEGLVideo *v = ffegl_open("SDFS::Pi.$.clip/mp4", 0);
+ *   ReelCore *v = reelcore_open("SDFS::Pi.$.clip/mp4", 0);
  *   ...
- *   int r = ffegl_update(v);             // in the event loop
- *   if (r == FFEGL_NEW_FRAME) {
- *       ffegl_draw_surface(v, dpy, surf, 0, 0, 0, 0);
+ *   int r = reelcore_update(v);          // in the event loop
+ *   if (r == REELCORE_NEW_FRAME) {
+ *       ffegl_draw_surface(v, dpy, surf, 0, 0, 0, 0, 0);
  *       eglSwapBuffers(dpy, surf);
- *   } else if (r == FFEGL_END) ...
- *   ...
- *   ffegl_close(v);
+ *   }
+ *
+ * Link libffegl, libreelcore, FFmpeg's libraries, then -lEGL -lOSMesa (and
+ * -lGL... for textures). Built with FFEGL_NO_TEXTURE, only
+ * ffegl_draw_surface is there, and no OpenGL is needed.
  *
  * Part of riscos-ffmpeg. LGPL 2.1 or later (as FFmpeg's libraries).
  */
@@ -35,134 +29,20 @@
 #define FFEGL_H
 
 #include <EGL/egl.h>
+#include "reelcore.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct FFEGLVideo FFEGLVideo;
-
-/* ffegl_open flags */
-#define FFEGL_NO_AUDIO   1   /* don't play the sound (pictures follow a timer) */
-#define FFEGL_LOOP       2   /* start again at the end */
-#define FFEGL_PAUSED     4   /* open paused (ffegl_pause(v, 0) starts it) */
-
-/* ffegl_update results */
-#define FFEGL_SAME_FRAME 0   /* nothing new to show */
-#define FFEGL_NEW_FRAME  1   /* a new frame is current: draw it */
-#define FFEGL_END        2   /* played to the end (not with FFEGL_LOOP) */
-
-/* ffegl_draw_* and ffegl_texture flags */
-#define FFEGL_STRETCH    1   /* fill the rectangle (default: keep the shape, black bars) */
-#define FFEGL_NO_BORDERS 2   /* keep the shape but leave the bars alone */
-
-/* Opens a file or URL. NULL on failure (the reason is logged through
-   av_log; ffegl_last_error() gives it too). */
-FFEGLVideo *ffegl_open(const char *url, int flags);
-const char *ffegl_last_error(void);
-void ffegl_close(FFEGLVideo *v);
-
-/* The video's size in pixels (display aspect applied to the width), its
-   frame rate and length in seconds (0 when unknown, e.g. a live stream),
-   and whether it has sound that is being played. */
-int ffegl_width(const FFEGLVideo *v);
-int ffegl_height(const FFEGLVideo *v);
-double ffegl_frame_rate(const FFEGLVideo *v);
-double ffegl_duration(const FFEGLVideo *v);
-int ffegl_has_audio(const FFEGLVideo *v);
-
-/* A one-line description of the streams, e.g. "h264 1280x720, 30 fps;
-   aac 48000 Hz, 2 channels; mov,mp4,m4a,3gp,3g2,mj2". Returns its length
-   (as snprintf). */
-int ffegl_info(const FFEGLVideo *v, char *buf, int size);
-
-/* Frames skipped because they were already late (the CPU fell behind). */
-unsigned ffegl_dropped_frames(const FFEGLVideo *v);
-
-/* For logs: one line on the state of playback now: position and clock,
-   pictures waiting, late frames, and the sound (which output, how much is
-   queued; with SharedSoundBuffer, StreamManager's added and played counts).
-   Returns its length (as snprintf). */
-int ffegl_debug(const FFEGLVideo *v, char *buf, int size);
-
-/* What's in the file, for an information window: lines of "Label\tValue\n",
-   with "#Section\n" lines between (File, Video, Audio, Sound output).
-   Returns the length (as snprintf). */
-int ffegl_media_info(const FFEGLVideo *v, char *buf, int size);
-
-/* Running totals, for "stats for nerds": take two, some time apart, and
-   divide the differences by the time. Times are the processor time spent,
-   in seconds (measured with the centisecond clock on RISC OS, so only
-   right on average over many frames). */
-typedef struct FFEGLStats {
-    double position, clock;
-    int clock_source;                 /* 0 timer, 1 sound, 2 paused */
-    double fps;                       /* the video's own frame rate */
-    unsigned decoded;                 /* pictures decoded */
-    unsigned shown;                   /* pictures handed out (FFEGL_NEW_FRAME) */
-    unsigned late;                    /* pictures skipped as late */
-    double decode_time;               /* decoding pictures */
-    double audio_time;                /* decoding and resampling sound */
-    double convert_time;              /* converting and scaling pictures (swscale) */
-    int convert_w, convert_h;         /* the last conversion's size */
-    int pictures_waiting, packets_waiting;
-    unsigned packet_bytes;
-    int skip_level;                   /* 0 every frame, 1 not non-reference ones, 2 keyframes only */
-    unsigned skip_spells;
-    int sound;                        /* 0 none, 1 SharedSoundBuffer, 2 SDL */
-    int sound_stalled;
-    double sound_queued;              /* seconds */
-    unsigned sound_added, sound_played;   /* StreamManager's counts (SharedSoundBuffer) */
-    long long bytes_read;             /* from the file */
-} FFEGLStats;
-void ffegl_stats(const FFEGLVideo *v, FFEGLStats *st);
-
-/* Sends FFmpeg's (and ffegl's) messages, one line at a time without the
-   newline, to FN instead of stderr; VERBOSE adds ffegl's sound details
-   (stream opened, started, refused blocks) and FFmpeg's verbose messages.
-   FN NULL puts things back. */
-void ffegl_set_log(void (*fn)(int level, const char *line), int verbose);
-
-/* Decodes what is needed and chooses the frame for "now".
-   Returns FFEGL_NEW_FRAME, FFEGL_SAME_FRAME, FFEGL_END, or a negative
-   AVERROR code. The first call after opening (or seeking) always gives
-   FFEGL_NEW_FRAME once a picture is decoded. */
-int ffegl_update(FFEGLVideo *v);
-
-/* After ffegl_update(): how long the caller can sleep (e.g. Wimp_PollIdle)
-   before calling it again, in seconds. 0 while there's work to do now
-   (pictures to decode, sound to top up, a picture due); otherwise the time
-   until the next picture is due, at most 0.1 s (the sound is kept 0.5 s
-   ahead, so that's plenty). Pictures are decoded ahead before sleeping, so
-   waking when one is due is enough to show it on time. */
-double ffegl_idle_time(FFEGLVideo *v);
-
-/* Position of the current frame in seconds. */
-double ffegl_position(const FFEGLVideo *v);
-
-void ffegl_pause(FFEGLVideo *v, int paused);
-int ffegl_paused(const FFEGLVideo *v);
-/* Seeks to a time in seconds (to the key frame at or before it). */
-int ffegl_seek(FFEGLVideo *v, double seconds);
-/* Sound volume, 0.0 to 1.0. */
-void ffegl_set_volume(FFEGLVideo *v, double volume);
-
 /* Draws the current frame into an EGL surface through EGL_KHR_lock_surface:
    the surface must not be current to a context. x, y, w, h: the rectangle
    in pixels from the top left; w = 0 or h = 0 means the whole surface.
-   Then call eglSwapBuffers (or eglSwapBuffersWithDamageKHR). */
-int ffegl_draw_surface(FFEGLVideo *v, EGLDisplay dpy, EGLSurface surf,
+   flags: as reelcore_draw_pixels (REELCORE_STRETCH, REELCORE_NO_BORDERS).
+   Then call eglSwapBuffers (or eglSwapBuffersWithDamageKHR).
+   0, or an AVERROR code (AVERROR(EAGAIN) before the first frame). */
+int ffegl_draw_surface(ReelCore *v, EGLDisplay dpy, EGLSurface surf,
                        int x, int y, int w, int h, int flags);
-
-/* Draws the current frame into 32bpp memory: w x h pixels, pitch bytes a
-   row, top row first. bgr = 0: bytes R,G,B,x (sprite type 6 / TBGR, 0x00BBGGRR);
-   bgr = 1: bytes B,G,R,x (0x00RRGGBB). */
-int ffegl_draw_pixels(FFEGLVideo *v, void *pixels, int pitch, int w, int h,
-                      int bgr, int flags);
-
-/* (ffegl_draw_surface and ffegl_texture are left out of a build with
-   FFEGL_NO_GL defined, for programs that don't link EGL and OpenGL;
-   FFEGL_NO_TEXTURE leaves out only ffegl_texture.) */
 
 /* Puts the current frame into an OpenGL texture (GL_TEXTURE_2D, the
    video's size). Needs a current GL context. tex = 0 creates a texture and
@@ -178,10 +58,11 @@ int ffegl_draw_pixels(FFEGLVideo *v, void *pixels, int pitch, int w, int h,
    mipmap filters. Otherwise (or with FFEGL_NO_EGLIMAGE=1 in the
    environment) each frame is copied in with glTexSubImage2D (GL_RGBA).
    Either way, don't glTexImage2D the texture yourself while ffegl uses it.
-   Passing a different texture, or ffegl_close() with the context current,
-   gives the old one a single black texel; delete it or call ffegl_close()
-   before destroying the context, or after (both are fine). */
-int ffegl_texture(FFEGLVideo *v, unsigned int tex, unsigned int *tex_out);
+   Passing a different texture, or reelcore_close() with the context
+   current, gives the old one a single black texel; delete it or call
+   reelcore_close() before destroying the context, or after (both are
+   fine). (Not in a build with FFEGL_NO_TEXTURE.) */
+int ffegl_texture(ReelCore *v, unsigned int tex, unsigned int *tex_out);
 
 #ifdef __cplusplus
 }

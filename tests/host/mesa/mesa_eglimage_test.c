@@ -19,20 +19,20 @@
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
 
-static int next_frame(FFEGLVideo *v)
+static int next_frame(ReelCore *v)
 {
     for (int i = 0; i < 1000; i++) {
-        int r = ffegl_update(v);
+        int r = reelcore_update(v);
         fake_time += 0.01;
-        if (r == FFEGL_NEW_FRAME) return 1;
-        if (r != FFEGL_SAME_FRAME) return 0;
+        if (r == REELCORE_NEW_FRAME) return 1;
+        if (r != REELCORE_SAME_FRAME) return 0;
     }
     return 0;
 }
 
 /* Draws the texture over the whole w x h surface and compares what GL
-   drew with ffegl_draw_pixels at the same size. Returns pixels off by > 2. */
-static int draw_and_compare(FFEGLVideo *v, unsigned tex, int w, int h, unsigned *sum)
+   drew with reelcore_draw_pixels at the same size. Returns pixels off by > 2. */
+static int draw_and_compare(ReelCore *v, unsigned tex, int w, int h, unsigned *sum)
 {
     unsigned char *got = malloc((size_t)w * h * 4), *want = malloc((size_t)w * h * 4);
     int bad = 0;
@@ -50,7 +50,7 @@ static int draw_and_compare(FFEGLVideo *v, unsigned tex, int w, int h, unsigned 
     glEnd();
     glDisable(GL_TEXTURE_2D);
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, got);   /* bottom row first */
-    ffegl_draw_pixels(v, want, w * 4, w, h, 0, FFEGL_STRETCH);
+    reelcore_draw_pixels(v, want, w * 4, w, h, 0, REELCORE_STRETCH);
     *sum = 0;
     for (int y = 0; y < h; y++)
         for (int x = 0; x < w; x++) {
@@ -67,7 +67,7 @@ static int draw_and_compare(FFEGLVideo *v, unsigned tex, int w, int h, unsigned 
 
 static void run(const char *clip, EGLDisplay dpy, EGLConfig cfg, const char *what, int use_image)
 {
-    FFEGLVideo *v;
+    ReelCore *v;
     EGLSurface s;
     EGLContext ctx;
     unsigned tex = 0, sum0, sum1;
@@ -75,10 +75,10 @@ static void run(const char *clip, EGLDisplay dpy, EGLConfig cfg, const char *wha
     GLint ifmt = 0, tw = 0;
 
     if (!use_image) setenv("FFEGL_NO_EGLIMAGE", "1", 1);
-    v = ffegl_open(clip, FFEGL_NO_AUDIO);
+    v = reelcore_open(clip, REELCORE_NO_AUDIO);
     CHECK(v && next_frame(v), "%s: no frame", what);
     if (!v) return;
-    w = ffegl_width(v); h = ffegl_height(v);
+    w = reelcore_width(v); h = reelcore_height(v);
     {
         EGLint pb[] = { EGL_WIDTH, w, EGL_HEIGHT, h, EGL_NONE };
         s = eglCreatePbufferSurface(dpy, cfg, pb);
@@ -102,7 +102,7 @@ static void run(const char *clip, EGLDisplay dpy, EGLConfig cfg, const char *wha
     CHECK(glGetError() == GL_NO_ERROR, "%s: GL error", what);
     printf("  %s: %dx%d, internal format %s, %s\n", what, w, h,
            ifmt == GL_RGB ? "GL_RGB (EGLImage)" : "GL_RGBA (copies)", fails == fails0 ? "pictures match" : "FAILED");
-    ffegl_close(v);
+    reelcore_close(v);
     if (use_image) {
         /* closing with the context current unlinks the texture (one texel) */
         glBindTexture(GL_TEXTURE_2D, tex);

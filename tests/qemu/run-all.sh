@@ -3,7 +3,7 @@
 #   the three projects' own assembly test suites (checkasm), each covering
 #   every asm function they have, then tests/qemu/run.sh (decoders, encoders,
 #   swscale, swresample through the ffmpeg command), then tests/host (the
-#   egl output device and ffegl with fake RISC OS, EGL, SDL and GL).
+#   egl output device, reelcore and ffegl with fake RISC OS, EGL, SDL and GL).
 # Usage: QEMU=path/to/patched/qemu-arm tests/qemu/run-all.sh
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -18,6 +18,6 @@ step "x264 checkasm (8 bit)" "$HERE/aligntrap.sh" "$S/x264-master/checkasm8"
 step "x264 checkasm (10 bit)" "$HERE/aligntrap.sh" "$S/x264-master/checkasm10"
 [ -d "$HERE/samples" ] || "$HERE/make-samples.sh"
 step "ffmpeg jobs" "$HERE/run.sh"
-step "host tests (egl output device, ffegl)" "$HERE/../host/run.sh"
+step "host tests (egl output device, reelcore, ffegl)" "$HERE/../host/run.sh"
 [ $bad -eq 0 ] && echo "ALL PASSED" || echo "SOME FAILED"
 exit $bad

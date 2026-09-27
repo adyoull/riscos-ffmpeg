@@ -1,9 +1,9 @@
 /*
- * ffegl_idle_time(): sleeping until the next picture is due (Reel 0.1.9's
+ * reelcore_idle_time(): sleeping until the next picture is due (Reel 0.1.9's
  * Wimp_PollIdle) must show the pictures as smoothly as polling flat out.
  * The same clip is played twice against the fake clock and fake sound:
  * once waking every 0.5 ms (flat out), once sleeping for the whole
- * centiseconds ffegl_idle_time() allows (as Reel does), with each wake-up
+ * centiseconds reelcore_idle_time() allows (as Reel does), with each wake-up
  * up to 1 cs late at random (a busy desktop), and decoding a picture
  * costing 8 ms. Compared: pictures shown, late ones, how late each picture
  * was shown against its time, and how many wake-ups each needed.
@@ -14,7 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include "ffegl.h"
+#include "reelcore.h"
 #include "fake_sdl_gl.h"
 #include "libavcodec/avcodec.h"
 
@@ -34,23 +34,23 @@ typedef struct { int shown, late, wakes; double worst, sum; } result_t;
 static result_t run(const char *clip, int sleep)
 {
     result_t res = { 0 };
-    FFEGLVideo *v = ffegl_open(clip, 0);
+    ReelCore *v = reelcore_open(clip, 0);
     double t0 = fake_time;
     int r = 0;
     srand(1);
-    while (v && r != FFEGL_END && fake_time - t0 < 20) {
-        r = ffegl_update(v);
+    while (v && r != REELCORE_END && fake_time - t0 < 20) {
+        r = reelcore_update(v);
         res.wakes++;
-        if (r == FFEGL_NEW_FRAME && res.shown++ > 3) {
-            FFEGLStats st;
+        if (r == REELCORE_NEW_FRAME && res.shown++ > 3) {
+            ReelCoreStats st;
             double lateness;
-            ffegl_stats(v, &st);
+            reelcore_stats(v, &st);
             lateness = st.clock - st.position;      /* shown this long after its time */
             if (lateness > res.worst) res.worst = lateness;
             res.sum += fabs(lateness);
         }
         if (sleep) {
-            int cs = (int)(ffegl_idle_time(v) * 100);
+            int cs = (int)(reelcore_idle_time(v) * 100);
             if (cs > 0)
                 fake_time = floor(fake_time * 100 + cs) / 100 + (rand() % 100) / 10000.0;  /* + 0..1 cs late */
             else
@@ -59,8 +59,8 @@ static result_t run(const char *clip, int sleep)
             fake_time += 0.0005;
     }
     if (v) {
-        res.late = ffegl_dropped_frames(v);
-        ffegl_close(v);
+        res.late = reelcore_dropped_frames(v);
+        reelcore_close(v);
     }
     return res;
 }

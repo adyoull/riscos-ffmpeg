@@ -2,7 +2,7 @@
  * Host test of ffegl (ffegl/ffegl.c) with fake EGL (fake_riscos.c), fake
  * SDL audio and GL and a fake clock (fake_sdl_gl.c).
  *
- *   ffegl_test CLIP_WITH_SOUND   (1 s, 25 fps, e.g. tests/qemu/samples/h264_aac_640_360.mp4)
+ *   reelcore_test CLIP_WITH_SOUND   (1 s, 25 fps, e.g. tests/qemu/samples/h264_aac_640_360.mp4)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,15 +23,15 @@ static int fails;
 
 /* Plays to the end in 10 ms steps. Checks each new frame is shown on time:
  * not before its time, and at most one step + one frame late. */
-static int play(FFEGLVideo *v, double max_s, double *first_pts, double *last_pts, int *late)
+static int play(ReelCore *v, double max_s, double *first_pts, double *last_pts, int *late)
 {
     int frames = 0, r;
     double start = fake_time, prev = -1, t_first = 0, ref_pts = 0;
     *late = 0;
-    while ((r = ffegl_update(v)) != FFEGL_END && fake_time - start < max_s) {
+    while ((r = reelcore_update(v)) != REELCORE_END && fake_time - start < max_s) {
         CHECK(r >= 0, "update error %d", r);
-        if (r == FFEGL_NEW_FRAME) {
-            double p = ffegl_position(v), t = fake_time - start;
+        if (r == REELCORE_NEW_FRAME) {
+            double p = reelcore_position(v), t = fake_time - start;
             /* The very first picture is shown at once; the timing is
                measured from the second (with sound, the clock also allows
                for the device's buffer, so the second can come a little
@@ -52,10 +52,10 @@ static int play(FFEGLVideo *v, double max_s, double *first_pts, double *last_pts
         fake_time += 0.01;
     }
     *last_pts = prev;
-    return r == FFEGL_END ? frames : -frames;
+    return r == REELCORE_END ? frames : -frames;
 }
 
-static void check_pixels(FFEGLVideo *v, const char *clip, int bgr)
+static void check_pixels(ReelCore *v, const char *clip, int bgr)
 {
     /* the same picture converted separately: decode the clip's last frame */
     int w = 800, h = 600, pitch = w * 4, bad = 0, border = 0, rw, rh, x, y;
@@ -69,7 +69,7 @@ static void check_pixels(FFEGLVideo *v, const char *clip, int bgr)
     int vs;
 
     memset(buf, 0x55, pitch * h);
-    CHECK(ffegl_draw_pixels(v, buf, pitch, w, h, bgr, 0) == 0, "draw_pixels failed");
+    CHECK(reelcore_draw_pixels(v, buf, pitch, w, h, bgr, 0) == 0, "draw_pixels failed");
     avformat_open_input(&ic, clip, NULL, NULL);
     avformat_find_stream_info(ic, NULL);
     vs = av_find_best_stream(ic, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
@@ -131,25 +131,25 @@ static void check_pixels(FFEGLVideo *v, const char *clip, int bgr)
 }
 
 /* Waits (fake time) for the next new frame. */
-static int next_frame(FFEGLVideo *v)
+static int next_frame(ReelCore *v)
 {
     for (int i = 0; i < 100; i++) {
-        int r = ffegl_update(v);
+        int r = reelcore_update(v);
         fake_time += 0.01;
-        if (r == FFEGL_NEW_FRAME) return 1;
-        if (r != FFEGL_SAME_FRAME) return 0;
+        if (r == REELCORE_NEW_FRAME) return 1;
+        if (r != REELCORE_SAME_FRAME) return 0;
     }
     return 0;
 }
 
 /* The sprite's pixels (R,G,B or B,G,R, top byte unused) equal the frame
-   drawn by ffegl_draw_pixels at its own size (checked against an
+   drawn by reelcore_draw_pixels at its own size (checked against an
    independent conversion in check_pixels). Returns the wrong pixels. */
-static int image_differs(FFEGLVideo *v)
+static int image_differs(ReelCore *v)
 {
     int w = fake_img_w, h = fake_img_h, bad = 0;
     uint8_t *want = malloc((size_t)w * h * 4);
-    ffegl_draw_pixels(v, want, w * 4, w, h, fake_img_bgr, FFEGL_STRETCH);
+    reelcore_draw_pixels(v, want, w * 4, w, h, fake_img_bgr, REELCORE_STRETCH);
     for (int i = 0; i < w * h; i++)
         bad += memcmp(fake_img_pixels + i * 4, want + i * 4, 3) != 0;
     free(want);
@@ -164,15 +164,15 @@ static void check_texture_image(const char *clip)
         unsigned int tex = 0;
         int im, sub, binds, bad;
         uint32_t sum0 = 0, sum1 = 0;
-        FFEGLVideo *v;
+        ReelCore *v;
         fake_gl_eglimage = 1; fake_visual = visual;
-        v = ffegl_open(clip, FFEGL_NO_AUDIO);
+        v = reelcore_open(clip, REELCORE_NO_AUDIO);
         CHECK(v && next_frame(v), "image: no frame");
         im = fake_tex_images; sub = fake_tex_subimages;
         CHECK(ffegl_texture(v, 0, &tex) == 0 && tex == 42, "image: texture failed");
         CHECK(fake_images == 1 && fake_img_binds > 0 && fake_tex_linked == 42, "image: not bound (%d images)", fake_images);
         CHECK(fake_img_bgr == (visual != 0), "image: colour order %d for visual 0x%x", fake_img_bgr, visual);
-        CHECK(fake_img_w == ffegl_width(v) && fake_img_h == ffegl_height(v), "image: %dx%d", fake_img_w, fake_img_h);
+        CHECK(fake_img_w == reelcore_width(v) && fake_img_h == reelcore_height(v), "image: %dx%d", fake_img_w, fake_img_h);
         CHECK(((uintptr_t)fake_img_pixels & 15) == 0, "image: pixels not 16-byte aligned");
         CHECK((bad = image_differs(v)) == 0, "image: %d wrong pixels", bad);
         for (int i = 0; i < fake_img_w * fake_img_h * 4; i += 97) sum0 += fake_img_pixels[i];
@@ -189,7 +189,7 @@ static void check_texture_image(const char *clip)
         CHECK(sum1 != sum0 && (bad = image_differs(v)) == 0, "image update: %d wrong pixels", bad);
         printf("  EGLImage visual 0x%04x: %dx%d sprite, updated in place with no copies\n",
                visual, fake_img_w, fake_img_h);
-        ffegl_close(v);
+        reelcore_close(v);
         CHECK(fake_images == 0 && fake_tex_linked == 0 && !fake_destroyed_linked,
               "image close: %d images, linked %u, destroyed while linked %d",
               fake_images, fake_tex_linked, fake_destroyed_linked);
@@ -199,26 +199,26 @@ static void check_texture_image(const char *clip)
     {
         unsigned int tex = 0;
         int im = fake_tex_images, sub = fake_tex_subimages;
-        FFEGLVideo *v = ffegl_open(clip, FFEGL_NO_AUDIO);
+        ReelCore *v = reelcore_open(clip, REELCORE_NO_AUDIO);
         fake_img_fail = 1;
         next_frame(v);
         CHECK(ffegl_texture(v, 0, &tex) == 0 && fake_tex_images == im + 1 && !fake_images,
               "image failed: no fallback");
         next_frame(v);
         CHECK(ffegl_texture(v, tex, NULL) == 0 && fake_tex_subimages == sub + 1, "image failed: no update");
-        ffegl_close(v);
+        reelcore_close(v);
         fake_img_fail = 0;
     }
     /* FFEGL_NO_EGLIMAGE=1 */
     {
         unsigned int tex = 0;
         int im = fake_tex_images;
-        FFEGLVideo *v = ffegl_open(clip, FFEGL_NO_AUDIO);
+        ReelCore *v = reelcore_open(clip, REELCORE_NO_AUDIO);
         setenv("FFEGL_NO_EGLIMAGE", "1", 1);
         next_frame(v);
         CHECK(ffegl_texture(v, 0, &tex) == 0 && fake_tex_images == im + 1 && !fake_images,
               "FFEGL_NO_EGLIMAGE ignored");
-        ffegl_close(v);
+        reelcore_close(v);
         unsetenv("FFEGL_NO_EGLIMAGE");
     }
     fake_gl_eglimage = 0; fake_visual = 0;
@@ -229,14 +229,14 @@ int main(int argc, char **argv)
 {
     const char *clip = argv[1];
     setvbuf(stdout, NULL, _IONBF, 0);
-    FFEGLVideo *v;
+    ReelCore *v;
     double first, last;
     int n, late, r;
 
     /* 1. with sound: the pictures follow the sound device */
-    v = ffegl_open(clip, 0);
-    CHECK(v && ffegl_has_audio(v) && fake_audio_open && !fake_audio_paused, "open with sound");
-    printf("%dx%d, %.2f fps, %.2f s\n", ffegl_width(v), ffegl_height(v), ffegl_frame_rate(v), ffegl_duration(v));
+    v = reelcore_open(clip, 0);
+    CHECK(v && reelcore_has_audio(v) && fake_audio_open && !fake_audio_paused, "open with sound");
+    printf("%dx%d, %.2f fps, %.2f s\n", reelcore_width(v), reelcore_height(v), reelcore_frame_rate(v), reelcore_duration(v));
     n = play(v, 5, &first, &last, &late);
     printf("  sound clock: %d frames, %.3f..%.3f, %d off time, ended at %.2f s\n", n, first, last, late, fake_time);
     CHECK(n == 25 && late == 0, "sound clock: %d frames, %d off time", n, late);
@@ -268,82 +268,82 @@ int main(int argc, char **argv)
     }
 
     /* 3. pause: the position stays */
-    ffegl_seek(v, 0);
-    r = ffegl_update(v);
-    CHECK(r == FFEGL_NEW_FRAME && ffegl_position(v) < 0.001, "seek to 0: %d %.3f", r, ffegl_position(v));
-    for (int i = 0; i < 20; i++) { ffegl_update(v); fake_time += 0.01; }
-    ffegl_pause(v, 1);
+    reelcore_seek(v, 0);
+    r = reelcore_update(v);
+    CHECK(r == REELCORE_NEW_FRAME && reelcore_position(v) < 0.001, "seek to 0: %d %.3f", r, reelcore_position(v));
+    for (int i = 0; i < 20; i++) { reelcore_update(v); fake_time += 0.01; }
+    reelcore_pause(v, 1);
     {
-        double p0 = ffegl_position(v);
+        double p0 = reelcore_position(v);
         CHECK(fake_audio_paused, "pause: sound not paused");
-        for (int i = 0; i < 50; i++) { CHECK(ffegl_update(v) != FFEGL_NEW_FRAME, "pause: new frame"); fake_time += 0.01; }
-        CHECK(ffegl_position(v) == p0, "pause: moved");
-        ffegl_pause(v, 0);
+        for (int i = 0; i < 50; i++) { CHECK(reelcore_update(v) != REELCORE_NEW_FRAME, "pause: new frame"); fake_time += 0.01; }
+        CHECK(reelcore_position(v) == p0, "pause: moved");
+        reelcore_pause(v, 0);
         CHECK(!fake_audio_paused, "resume: sound still paused");
         n = play(v, 5, &first, &last, &late);
         CHECK(n > 0 && late == 0 && fabs(first - p0) < 0.05, "after pause: %d frames from %.3f, %d off time", n, first, late);
     }
 
     /* 4. seek to the middle */
-    ffegl_seek(v, 0.5);
-    r = ffegl_update(v);
-    CHECK(r == FFEGL_NEW_FRAME && ffegl_position(v) >= 0.5 - 0.001 && ffegl_position(v) < 0.55,
-          "seek 0.5: %d at %.3f", r, ffegl_position(v));
+    reelcore_seek(v, 0.5);
+    r = reelcore_update(v);
+    CHECK(r == REELCORE_NEW_FRAME && reelcore_position(v) >= 0.5 - 0.001 && reelcore_position(v) < 0.55,
+          "seek 0.5: %d at %.3f", r, reelcore_position(v));
     n = play(v, 5, &first, &last, &late);
     CHECK(n > 5 && late == 0, "after seek: %d frames, %d off time", n, late);
-    ffegl_close(v);
+    reelcore_close(v);
     CHECK(!fake_audio_open, "close: sound device left open");
 
     /* 5. no sound: the timer */
-    v = ffegl_open(clip, FFEGL_NO_AUDIO);
-    CHECK(v && !ffegl_has_audio(v) && !fake_audio_open, "open without sound");
+    v = reelcore_open(clip, REELCORE_NO_AUDIO);
+    CHECK(v && !reelcore_has_audio(v) && !fake_audio_open, "open without sound");
     n = play(v, 5, &first, &last, &late);
     printf("  timer clock: %d frames, %d off time\n", n, late);
     CHECK(n == 25 && late == 0, "timer: %d frames, %d off time", n, late);
-    ffegl_close(v);
+    reelcore_close(v);
 
     /* 6. sound device refuses: falls back to the timer */
     fake_audio_fail = 1;
-    v = ffegl_open(clip, 0);
-    CHECK(v && !ffegl_has_audio(v), "no sound device");
+    v = reelcore_open(clip, 0);
+    CHECK(v && !reelcore_has_audio(v), "no sound device");
     {
         char info[256];
-        ffegl_info(v, info, sizeof(info));
+        reelcore_info(v, info, sizeof(info));
         CHECK(strstr(info, "no sound device: RISC OS audio: SharedSoundBuffer"), "no device info: %s", info);
         printf("  no sound device: %s\n", info);
     }
     n = play(v, 5, &first, &last, &late);
     CHECK(n == 25 && late == 0, "no device: %d frames, %d off time", n, late);
-    ffegl_close(v);
+    reelcore_close(v);
     fake_audio_fail = 0;
 
     /* 6b. the sound device opens but never plays (no SharedSoundBuffer):
        after a second the pictures carry on with the timer */
     fake_audio_stall = 1;
-    v = ffegl_open(clip, 0);
+    v = reelcore_open(clip, 0);
     {
         double t0 = fake_time;
         char info[256];
         n = play(v, 8, &first, &last, &late);
-        ffegl_info(v, info, sizeof(info));
+        reelcore_info(v, info, sizeof(info));
         printf("  stalled sound device: %d frames, ended after %.2f s; %s\n", n, fake_time - t0, info);
-        CHECK(n >= 20 && fake_time - t0 < 2.6 && !ffegl_has_audio(v) && strstr(info, "isn't playing"),
-              "stalled sound: %d frames in %.2f s, has_audio %d", n, fake_time - t0, ffegl_has_audio(v));
+        CHECK(n >= 20 && fake_time - t0 < 2.6 && !reelcore_has_audio(v) && strstr(info, "isn't playing"),
+              "stalled sound: %d frames in %.2f s, has_audio %d", n, fake_time - t0, reelcore_has_audio(v));
     }
-    ffegl_close(v);
+    reelcore_close(v);
     fake_audio_stall = 0;
 
     /* 7. loop: goes round again */
-    v = ffegl_open(clip, FFEGL_LOOP);
+    v = reelcore_open(clip, REELCORE_LOOP);
     {
         int frames = 0, wraps = 0;
         double prev = -1;
         for (int i = 0; i < 260; i++) {        /* 2.6 s */
-            r = ffegl_update(v);
-            CHECK(r != FFEGL_END, "loop: ended");
-            if (r == FFEGL_NEW_FRAME) {
-                if (ffegl_position(v) < prev) wraps++;
-                prev = ffegl_position(v);
+            r = reelcore_update(v);
+            CHECK(r != REELCORE_END, "loop: ended");
+            if (r == REELCORE_NEW_FRAME) {
+                if (reelcore_position(v) < prev) wraps++;
+                prev = reelcore_position(v);
                 frames++;
             }
             fake_time += 0.01;
@@ -351,13 +351,13 @@ int main(int argc, char **argv)
         printf("  loop: %d frames in 2.6 s, %d restarts\n", frames, wraps);
         CHECK(wraps == 2 && frames >= 60, "loop: %d frames, %d restarts", frames, wraps);
     }
-    ffegl_close(v);
+    reelcore_close(v);
 
     /* 8. textures through EGLImage */
     check_texture_image(clip);
 
     /* 9. a file that isn't there */
-    CHECK(!ffegl_open("/nonexistent/x.mp4", 0) && *ffegl_last_error(), "missing file");
+    CHECK(!reelcore_open("/nonexistent/x.mp4", 0) && *reelcore_last_error(), "missing file");
 
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;

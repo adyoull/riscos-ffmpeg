@@ -20,7 +20,7 @@
 #include <GL/freeglut.h>
 #include "ffegl.h"
 
-static FFEGLVideo *video;
+static ReelCore *video;
 static GLuint tex;
 static int flat, have_frame, frames_drawn;
 static float angle;
@@ -61,7 +61,7 @@ static void display(void)
         glLoadIdentity();
         if (flat) {
             /* fit the picture in the window, keeping its shape */
-            double va = (double)ffegl_width(video) / ffegl_height(video);
+            double va = (double)reelcore_width(video) / reelcore_height(video);
             double wa = (double)win_w / (win_h ? win_h : 1);
             glMatrixMode(GL_PROJECTION);
             glPushMatrix();
@@ -98,12 +98,12 @@ static void reshape(int w, int h)
 
 static void idle(void)
 {
-    int r = ffegl_update(video), now = glutGet(GLUT_ELAPSED_TIME);
-    if (r == FFEGL_END || r < 0) {
+    int r = reelcore_update(video), now = glutGet(GLUT_ELAPSED_TIME);
+    if (r == REELCORE_END || r < 0) {
         glutLeaveMainLoop();
         return;
     }
-    if (r == FFEGL_NEW_FRAME && ffegl_texture(video, tex, &tex) == 0 && !have_frame) {
+    if (r == REELCORE_NEW_FRAME && ffegl_texture(video, tex, &tex) == 0 && !have_frame) {
         GLint ifmt = 0;
         have_frame = 1;
         glBindTexture(GL_TEXTURE_2D, tex);
@@ -112,10 +112,10 @@ static void idle(void)
         glutSetWindowTitle(ifmt == GL_RGB ? (flat ? "Video (OpenGL, EGLImage)" : "Video cube (EGLImage)")
                                           : (flat ? "Video (OpenGL, copies)" : "Video cube (copies)"));
     }
-    if (!ffegl_paused(video))
+    if (!reelcore_paused(video))
         angle += (now - last_ms) * 0.03f;   /* 30 degrees a second */
     last_ms = now;
-    if (!flat || r == FFEGL_NEW_FRAME)
+    if (!flat || r == REELCORE_NEW_FRAME)
         glutPostRedisplay();
 }
 
@@ -124,7 +124,7 @@ static void keyboard(unsigned char k, int x, int y)
     if (k == 27 || k == 'q' || k == 'Q')
         glutLeaveMainLoop();
     else if (k == ' ')
-        ffegl_pause(video, !ffegl_paused(video));
+        reelcore_pause(video, !reelcore_paused(video));
 }
 
 int main(int argc, char **argv)
@@ -139,9 +139,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "usage: videocube [-flat] FILE\n");
         return 1;
     }
-    video = ffegl_open(file, FFEGL_LOOP);
+    video = reelcore_open(file, REELCORE_LOOP);
     if (!video) {
-        fprintf(stderr, "videocube: %s\n", ffegl_last_error());
+        fprintf(stderr, "videocube: %s\n", reelcore_last_error());
         return 1;
     }
     glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH);
@@ -157,6 +157,6 @@ int main(int argc, char **argv)
     glutKeyboardFunc(keyboard);
     last_ms = glutGet(GLUT_ELAPSED_TIME);
     glutMainLoop();
-    ffegl_close(video);
+    reelcore_close(video);
     return 0;
 }

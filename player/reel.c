@@ -1,5 +1,5 @@
 /*
- * Reel - a video player for the RISC OS desktop, on FFmpeg (via ffegl).
+ * Reel - a video player for the RISC OS desktop, on FFmpeg (via reelcore).
  *
  * A normal Wimp application: an icon on the icon bar, and one window with
  * the picture above a row of controls (play/pause, back and forward 10 s,
@@ -7,11 +7,14 @@
  * on the icon or the window, or double-click one in the Filer while Reel is
  * loaded. Full screen is a window with no furniture that covers the screen.
  *
- * Drawing: each new frame is converted and scaled by swscale (NEON) into a
- * 32bpp sprite of the picture area's size, letterboxed, in the screen's own
- * colour order, and plotted 1:1 with OS_SpriteOp (clipped to the picture
- * area). Sound: SDL2's audio (SharedSoundBuffer), which ffegl uses as the
- * clock. No threads of our own: decoding happens on null events.
+ * reelcore (reelcore/) is the player core: it reads, decodes, plays the
+ * sound (SharedSoundBuffer, the clock) and says when a picture is due.
+ * Drawing, Reel: each new frame is converted and scaled by swscale (NEON)
+ * with reelcore_draw_pixels() into a 32bpp sprite of the picture area's
+ * size, letterboxed, in the screen's own colour order, and plotted 1:1 with
+ * OS_SpriteOp (clipped to the picture area). ReelEGL (-DREEL_EGL): into an
+ * EGL surface instead, with ffegl (ffegl/, the EGL layer on reelcore).
+ * No threads of our own: decoding happens on null events.
  *
  * Keys (window or full screen): Space pause, Left/Right 10 s, Up/Down 1 min,
  * F full screen on/off, Escape leaves full screen, Q closes the video.
@@ -24,7 +27,7 @@
  * Log: <Wimp$ScrapDir>.ReelLog (ReelEGLLog), written as it goes and
  * started afresh each time Reel starts: the modules and screen found, each
  * file opened, what was done, errors, FFmpeg's messages, and once a second
- * while playing, the state of the picture and the sound (ffegl_debug).
+ * while playing, the state of the picture and the sound (reelcore_debug).
  * Reel$Log (ReelEGL$Log) names another file, or "off". "Log" on the icon
  * bar menu opens it.
  *
@@ -36,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <kernel.h>
-#include "ffegl.h"
+#include "reelcore.h"
 
 /* Big heap in a dynamic area (the default would share the WimpSlot) */
 #ifdef REEL_EGL
@@ -44,6 +47,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <EGL/eglext_riscos.h>
+#include "ffegl.h"                      /* ffegl_draw_surface: reelcore's pictures into EGL */
 const char *const __dynamic_da_name = "ReelEGL Heap";
 #else
 const char *const __dynamic_da_name = "Reel Heap";
@@ -124,7 +128,7 @@ static struct {
     int win, full;                      /* the window; the full screen window (0 = none) */
     int fullscreen;                     /* showing full screen */
     int loop;
-    FFEGLVideo *v;
+    ReelCore *v;
     char file[256], title[64], time_text[40], play_text[8];
     int ended;
     /* screen */
@@ -190,7 +194,7 @@ static void lg(const char *fmt, ...)
     fflush(logf);                       /* all there even if we crash */
 }
 
-/* FFmpeg's and ffegl's messages (AV_LOG_ERROR 16, WARNING 24, INFO 32, VERBOSE 40) */
+/* FFmpeg's and reelcore's messages (AV_LOG_ERROR 16, WARNING 24, INFO 32, VERBOSE 40) */
 static void ff_log(int level, const char *line)
 {
     if (!strcmp(line, log_last)) {      /* e.g. the same decoder warning every frame */
@@ -269,12 +273,12 @@ static void log_open(void)
     log_module("SharedSoundBuffer");
     log_module("SharedUnixLibrary");
     log_module("VFPSupport");
-    log_env("FFEGL_AUDIO");
+    log_env("REELCORE_AUDIO");
     log_env("SDL_AUDIODRIVER");
 #ifdef REEL_EGL
     log_env("ReelEGL$NoDirect");
 #endif
-    ffegl_set_log(ff_log, 1);
+    reelcore_set_log(ff_log, 1);
 }
 
 /* Opens the log in the editor (Filer_Run) */
@@ -419,7 +423,7 @@ static void sprite_draw_frame(void)
 {
     if (!S.v || !S.area)
         return;
-    if (ffegl_draw_pixels(S.v, sprite_pixels(), S.spr_w * 4, S.spr_w, S.spr_h, S.trgb, 0) == 0)
+    if (reelcore_draw_pixels(S.v, sprite_pixels(), S.spr_w * 4, S.spr_w, S.spr_h, S.trgb, 0) == 0)
         S.have_frame = 1;
 }
 
@@ -768,9 +772,9 @@ static void update_controls(int force)
 
     if (!S.v || !S.win)
         return;
-    snprintf(S.play_text, sizeof(S.play_text), "%s", (ffegl_paused(S.v) || S.ended) ? "Play" : "Pause");
-    p = ffegl_position(S.v);
-    d = ffegl_duration(S.v);
+    snprintf(S.play_text, sizeof(S.play_text), "%s", (reelcore_paused(S.v) || S.ended) ? "Play" : "Pause");
+    p = reelcore_position(S.v);
+    d = reelcore_duration(S.v);
     format_time(pos, sizeof(pos), p);
     format_time(dur, sizeof(dur), d);
     if (d > 0)
@@ -918,7 +922,7 @@ static void close_video(void)
     _kernel_swi_regs r;
     if (S.v) {
         char d[300];
-        ffegl_debug(S.v, d, sizeof(d));
+        reelcore_debug(S.v, d, sizeof(d));
         lg("close: %s", d);
     }
     if (S.fullscreen)
@@ -928,7 +932,7 @@ static void close_video(void)
         swi(Wimp_CloseWindow, &r);
     }
     info_close();
-    ffegl_close(S.v);
+    reelcore_close(S.v);
     S.v = NULL;
     pic_free();
 }
@@ -942,28 +946,28 @@ static const char *leaf(const char *path)
 
 static void play_file(const char *file)
 {
-    FFEGLVideo *v;
+    ReelCore *v;
     int vw, vh, w, h, maxw, maxh, st[9];
     int was_open = S.v != NULL;
 
     lg("open %s", file);
-    v = ffegl_open(file, S.loop ? FFEGL_LOOP : 0);
+    v = reelcore_open(file, S.loop ? REELCORE_LOOP : 0);
     if (!v) {
         char msg[300];
-        snprintf(msg, sizeof(msg), "%s: %s", leaf(file), ffegl_last_error());
+        snprintf(msg, sizeof(msg), "%s: %s", leaf(file), reelcore_last_error());
         report(msg);
         return;
     }
     if (S.v) {                          /* replace what was playing, keep the window */
-        ffegl_close(S.v);
+        reelcore_close(S.v);
         S.v = NULL;
     }
     S.v = v;
     S.ended = 0;
     {
         char info[256];
-        ffegl_info(v, info, sizeof(info));
-        lg("playing: %s; %.1f s", info, ffegl_duration(v));
+        reelcore_info(v, info, sizeof(info));
+        lg("playing: %s; %.1f s", info, reelcore_duration(v));
         S.log_cs = now_cs();
         S.log_nulls = S.log_frames = 0;
     }
@@ -976,8 +980,8 @@ static void play_file(const char *file)
         return;
     }
     /* size: the video's own (pixels -> OS units), at most 3/4 of the screen */
-    w = ffegl_width(v) << S.xeig;
-    h = ffegl_height(v) << S.yeig;
+    w = reelcore_width(v) << S.xeig;
+    h = reelcore_height(v) << S.yeig;
     maxw = S.scr_w * 3 / 4;
     maxh = S.scr_h * 3 / 4 - CH;
     if (w > maxw) { h = (int)((long long)h * maxw / w); w = maxw; }
@@ -1018,7 +1022,7 @@ static void play_file(const char *file)
 typedef struct { char heading; char label[64]; char value[168]; } info_row_t;
 static info_row_t info_rows[INFO_MAX];
 static int info_n, info_stats_at;       /* rows, and the first of the stats */
-static FFEGLStats info_prev;
+static ReelCoreStats info_prev;
 static int info_prev_cs;
 static unsigned info_prev_nulls, info_prev_draw_n, info_prev_draw_cs, info_prev_slept;
 
@@ -1041,7 +1045,7 @@ static const char *const stat_labels[] = {
 #define N_STATS ((int)(sizeof(stat_labels) / sizeof(stat_labels[0])))
 
 /* The rows: the stats (live, at the top), then the file's details from
-   ffegl_media_info. */
+   reelcore_media_info. */
 static void info_build(void)
 {
     static char text[4096];
@@ -1051,7 +1055,7 @@ static void info_build(void)
     info_stats_at = info_n;
     for (int i = 0; i < N_STATS; i++)
         info_add(0, stat_labels[i], "...");
-    ffegl_media_info(S.v, text, sizeof(text));
+    reelcore_media_info(S.v, text, sizeof(text));
     for (line = text; *line; line = next) {
         char *tab, *nl = strchr(line, '\n');
         next = nl ? nl + 1 : line + strlen(line);
@@ -1069,7 +1073,7 @@ static void info_build(void)
 /* The stats rows from what changed since the last time (about a second). */
 static void info_stats(void)
 {
-    FFEGLStats st;
+    ReelCoreStats st;
     info_row_t *r = &info_rows[info_stats_at];
     char pos[16], dur[16];
     int t = now_cs();
@@ -1079,7 +1083,7 @@ static void info_stats(void)
 
     if (!S.v || info_stats_at + N_STATS > info_n)
         return;
-    ffegl_stats(S.v, &st);
+    reelcore_stats(S.v, &st);
     if (dt <= 0)
         dt = 0.01;
     dec = st.decoded - info_prev.decoded;
@@ -1089,7 +1093,7 @@ static void info_stats(void)
     draws = S.draw_n - info_prev_draw_n;
 
     format_time(pos, sizeof(pos), st.position);
-    format_time(dur, sizeof(dur), ffegl_duration(S.v));
+    format_time(dur, sizeof(dur), reelcore_duration(S.v));
     snprintf(r[0].value, sizeof(r[0].value), "%s of %s (%.2f s)%s", pos, dur, st.position,
              st.clock_source == 2 ? ", paused" : S.ended ? ", ended" : "");
     snprintf(r[1].value, sizeof(r[1].value), "%.2f s, from the %s; picture %+d ms", st.clock,
@@ -1319,7 +1323,7 @@ static void info_close(void)
 static void info_new_file(void)
 {
     int was_open = S.info_open;
-    ffegl_stats(S.v, &info_prev);
+    reelcore_stats(S.v, &info_prev);
     info_prev_cs = now_cs();
     info_prev_nulls = S.st_nulls;
     info_prev_draw_n = S.draw_n;
@@ -1425,10 +1429,10 @@ static void show_info(void)
         info_open();
         return;
     }
-    ffegl_info(S.v, info, sizeof(info));
-    format_time(dur, sizeof(dur), ffegl_duration(S.v));
+    reelcore_info(S.v, info, sizeof(info));
+    format_time(dur, sizeof(dur), reelcore_duration(S.v));
     snprintf(msg, sizeof(msg), "%s: %s; %s long; %u late frames skipped so far.",
-             leaf(S.file), info, dur, ffegl_dropped_frames(S.v));
+             leaf(S.file), info, dur, reelcore_dropped_frames(S.v));
     report(msg);
 }
 
@@ -1476,11 +1480,11 @@ static void toggle_pause(void)
         return;
     if (S.ended) {
         S.ended = 0;
-        ffegl_seek(S.v, 0);
-        ffegl_pause(S.v, 0);
+        reelcore_seek(S.v, 0);
+        reelcore_pause(S.v, 0);
     } else
-        ffegl_pause(S.v, !ffegl_paused(S.v));
-    lg("%s at %.2f", ffegl_paused(S.v) ? "pause" : "play", ffegl_position(S.v));
+        reelcore_pause(S.v, !reelcore_paused(S.v));
+    lg("%s at %.2f", reelcore_paused(S.v) ? "pause" : "play", reelcore_position(S.v));
     if (S.info_open) {                  /* no null events while paused: show where it stopped */
         info_stats();
         info_update();
@@ -1493,13 +1497,13 @@ static void seek_by(double d)
     double p, dur;
     if (!S.v)
         return;
-    p = ffegl_position(S.v) + d;
-    dur = ffegl_duration(S.v);
+    p = reelcore_position(S.v) + d;
+    dur = reelcore_duration(S.v);
     if (p < 0) p = 0;
     if (dur > 0 && p > dur - 1) p = dur - 1;
     S.ended = 0;
     lg("seek %+.0f s to %.2f", d, p);
-    ffegl_seek(S.v, p);
+    reelcore_seek(S.v, p);
     update_controls(1);
 }
 
@@ -1507,7 +1511,7 @@ static void click_track(int mouse_x)
 {
     int b[11], x0, x1, wx;
     double d;
-    if (!S.v || (d = ffegl_duration(S.v)) <= 0)
+    if (!S.v || (d = reelcore_duration(S.v)) <= 0)
         return;
     window_state(S.win, b);
     wx = mouse_x - (b[1] - b[5]);
@@ -1520,7 +1524,7 @@ static void click_track(int mouse_x)
     if (wx > x1) wx = x1;
     S.ended = 0;
     lg("seek (position bar) to %.2f", d * (wx - x0) / (x1 - x0));
-    ffegl_seek(S.v, d * (wx - x0) / (x1 - x0));
+    reelcore_seek(S.v, d * (wx - x0) / (x1 - x0));
     update_controls(1);
 }
 
@@ -1550,14 +1554,14 @@ static void tick(void)
     _kernel_swi_regs r;
     if (!S.v || S.ended)
         return;
-    r2 = ffegl_update(S.v);
+    r2 = reelcore_update(S.v);
     S.log_nulls++;
     S.st_nulls++;
-    S.idle_cs = S.nosleep ? 0 : (int)(ffegl_idle_time(S.v) * 100);  /* whole centiseconds: wake no later than due */
-    if (r2 == FFEGL_NEW_FRAME) {
+    S.idle_cs = S.nosleep ? 0 : (int)(reelcore_idle_time(S.v) * 100);  /* whole centiseconds: wake no later than due */
+    if (r2 == REELCORE_NEW_FRAME) {
         show_frame();
         S.log_frames++;
-    } else if (r2 == FFEGL_END) {
+    } else if (r2 == REELCORE_END) {
         lg("end of the file");
         S.ended = 1;
         update_controls(1);
@@ -1567,7 +1571,7 @@ static void tick(void)
     t = r.r[0];
     if (logf && t - S.log_cs >= 100) {    /* once a second */
         char d[300];
-        ffegl_debug(S.v, d, sizeof(d));
+        reelcore_debug(S.v, d, sizeof(d));
         lg("%s; %d nulls, %d pictures in %.2f s, asleep %u%%", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0,
            (unsigned)((S.slept_cs - S.log_slept) * 100 / (t - S.log_cs)));
         S.log_slept = S.slept_cs;
@@ -1723,7 +1727,7 @@ int reel_main(int argc, char **argv)
         play_file(argv[1]);
 
     for (;;) {
-        int playing = S.v && !S.ended && !ffegl_paused(S.v);
+        int playing = S.v && !S.ended && !reelcore_paused(S.v);
         int sleep_cs = playing ? S.idle_cs : 0;
         r.r[0] = (playing ? 0 : 1) | (1 << 4) | (1 << 5);
         r.r[1] = (intptr_t)block;
@@ -1817,7 +1821,7 @@ int reel_main(int argc, char **argv)
 }
 
 #ifdef REEL_TEST
-FFEGLVideo *reel_test_video(void) { return S.v; }
+ReelCore *reel_test_video(void) { return S.v; }
 #ifdef REEL_EGL
 int reel_test_surface(int *w, int *h, int *full)
 {

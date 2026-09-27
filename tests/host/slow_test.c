@@ -14,7 +14,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <math.h>
-#include "ffegl.h"
+#include "reelcore.h"
 #include "fake_sdl_gl.h"
 #include "libavcodec/avcodec.h"
 
@@ -46,33 +46,33 @@ static void log_line(int level, const char *line)
 
 int main(int argc, char **argv)
 {
-    FFEGLVideo *v;
+    ReelCore *v;
     int r = 0, frames = 0, worst_at = 0;
     double worst = 0, end_at = 0;
     char d[400];
-    ffegl_set_log(log_line, 1);
-    v = ffegl_open(argv[1], 0);
-    CHECK(v && ffegl_has_audio(v), "open with sound");
+    reelcore_set_log(log_line, 1);
+    v = reelcore_open(argv[1], 0);
+    CHECK(v && reelcore_has_audio(v), "open with sound");
     if (!v)
         return 1;
-    for (int i = 0; i < 20000 && r != FFEGL_END; i++) {
-        r = ffegl_update(v);
-        if (r == FFEGL_NEW_FRAME) {
-            double lag = fake_time - ffegl_position(v);
+    for (int i = 0; i < 20000 && r != REELCORE_END; i++) {
+        r = reelcore_update(v);
+        if (r == REELCORE_NEW_FRAME) {
+            double lag = fake_time - reelcore_position(v);
             frames++;
             if (fake_time > 1.5 && lag > worst) { worst = lag; worst_at = i; }
         }
         fake_time += 0.002;                  /* the rest of the loop */
         end_at = fake_time;
     }
-    ffegl_debug(v, d, sizeof(d));
+    reelcore_debug(v, d, sizeof(d));
     printf("  %d pictures shown, ended at %.1f s, worst lag %.2f s (update %d)\n  %s\n",
            frames, end_at, worst, worst_at, d);
-    CHECK(r == FFEGL_END && end_at < 7.5, "didn't end on time: %.1f s", end_at);
+    CHECK(r == REELCORE_END && end_at < 7.5, "didn't end on time: %.1f s", end_at);
     CHECK(strstr(d, " 0 skip spells") == NULL, "never skipped frames");
     CHECK(worst < 2.0, "pictures fell %.2f s behind", worst);
     CHECK(frames > 12, "only %d pictures", frames);
-    ffegl_close(v);
+    reelcore_close(v);
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;
 }

@@ -5,8 +5,10 @@ riscos-ffmpeg has two ways to show video through riscos-mesa's EGL:
 - **`-f egl`**, an ffmpeg output device, for the command line and for
   programs that already use libavformat;
 - **ffegl**, a small C library for programs that use EGL or OpenGL. It
-  plays a file (with sound) into an EGL surface, an OpenGL texture or any
-  32bpp memory.
+  puts the pictures of **reelcore**, the player core (which plays a file
+  with its sound and says when each picture is due), into an EGL surface
+  or an OpenGL texture. reelcore itself has no EGL in it: !Reel uses it
+  alone, drawing into a sprite.
 
 Neither draws with OpenGL. Each frame is converted and scaled by swscale
 (its NEON code where it has some) straight into the EGL surface's memory
@@ -53,32 +55,40 @@ ffmpeg -i clip/mp4 -map 0:v -f egl -                                as fast as i
 - Any pixel format ffmpeg decodes to can go in: `yuv420p` goes straight
   to the screen format in one swscale pass.
 
-## ffegl (library)
+## reelcore and ffegl (libraries)
 
-It's in the devkit: `include/ffegl.h`, `lib/libffegl.a`. The header
-documents each call.
+Both are in the devkit, and each header documents its calls:
+
+- **reelcore** (`include/reelcore.h`, `lib/libreelcore.a`): the player
+  core. It opens a file or stream, decodes inside `reelcore_update()`,
+  plays the sound (the clock the pictures follow) and says when a new
+  picture is due; `reelcore_draw_pixels()` puts it into any 32bpp memory.
+  No EGL, no threads.
+- **ffegl** (`include/ffegl.h`, `lib/libffegl.a`): the EGL side, on top
+  of reelcore. `ffegl_draw_surface()` puts the current picture into an EGL
+  surface and `ffegl_texture()` into an OpenGL texture.
 
 ```c
-#include "ffegl.h"
+#include "ffegl.h"                              /* includes reelcore.h */
 
-FFEGLVideo *v = ffegl_open("SDFS::Pi.$.Films.clip/mp4", 0);   /* or FFEGL_LOOP, FFEGL_NO_AUDIO */
-for (;;) {                                  /* your event loop */
-    int r = ffegl_update(v);                /* decodes what's needed; sound keeps time */
-    if (r == FFEGL_NEW_FRAME) {
+ReelCore *v = reelcore_open("SDFS::Pi.$.Films.clip/mp4", 0);   /* or REELCORE_LOOP, REELCORE_NO_AUDIO */
+for (;;) {                                      /* your event loop */
+    int r = reelcore_update(v);                 /* decodes what's needed; sound keeps time */
+    if (r == REELCORE_NEW_FRAME) {
         ffegl_draw_surface(v, dpy, surf, 0, 0, 0, 0, 0);   /* whole surface, letterboxed */
         eglSwapBuffers(dpy, surf);
-    } else if (r == FFEGL_END)
+    } else if (r == REELCORE_END)
         break;
-    /* ... Wimp_Poll etc. ... */
+    /* ... Wimp_PollIdle until reelcore_idle_time() says a picture is due ... */
 }
-ffegl_close(v);
+reelcore_close(v);
 ```
 
 - **Into an OpenGL texture:** `ffegl_texture(v, tex, &tex)` with a
-  context current, after each `FFEGL_NEW_FRAME`. Pass 0 the first time to
-  have it make the texture. The texture is the frame's size, with linear
-  filtering and clamping. Row 0 is the top, so draw with t = 1 at the
-  bottom. It works with GL 1.x, ES 1.1 and ES 2.0 contexts.
+  context current, after each `REELCORE_NEW_FRAME`. Pass 0 the first time
+  to have it make the texture. The texture is the frame's size, with
+  linear filtering and clamping. Row 0 is the top, so draw with t = 1 at
+  the bottom. It works with GL 1.x, ES 1.1 and ES 2.0 contexts.
   - **With riscos-mesa 7pre12 or later** (`GL_OES_EGL_image` in the
     extension string), ffegl makes a 32bpp sprite of the frame's size, in
     the context's colour order, and binds it to the texture once with
@@ -90,30 +100,35 @@ ffegl_close(v);
     frame is converted into a buffer and copied in with
     `glTexSubImage2D` (`GL_RGBA`).
   - Don't `glTexImage2D` the texture yourself while ffegl uses it. Call
-    `ffegl_close` with the context still current (it gives the texture
+    `reelcore_close` with the context still current (it gives the texture
     one black texel, then frees the sprite) or after destroying the
     context.
-- **Into your own memory** (a sprite, a work area): `ffegl_draw_pixels(v,
-  pixels, pitch, w, h, bgr, flags)`.
-- **Controls:** `ffegl_pause`, `ffegl_seek`, `ffegl_set_volume`,
-  `ffegl_position`, `ffegl_duration`, `ffegl_width`/`height` (display
-  size, aspect applied).
-- **Sound:** plays through SDL2's audio (SharedSoundBuffer), and the
-  pictures follow it. Without sound, or if no sound device opens, they
-  follow a timer.
-- **Programs using ffegl in a window** are desktop tasks, so they can't
+- **Into your own memory** (a sprite, a work area): `reelcore_draw_pixels(v,
+  pixels, pitch, w, h, bgr, flags)`: no EGL needed.
+- **Controls:** `reelcore_pause`, `reelcore_seek`, `reelcore_set_volume`,
+  `reelcore_position`, `reelcore_duration`, `reelcore_width`/`height`
+  (display size, aspect applied); `reelcore_idle_time` for sleeping
+  between pictures; `reelcore_media_info` and `reelcore_stats` for an
+  information window.
+- **Sound:** on RISC OS straight to SharedSoundBuffer and StreamManager
+  (`REELCORE_AUDIO=sdl` for SDL2's audio), and the pictures follow it.
+  Without sound, or if no sound device opens, they follow a timer.
+- **Programs using them in a window** are desktop tasks, so they can't
   run inside a TaskWindow either: start them with `*WimpTask`, from an
   Obey file, or from the Filer.
-- **No threads:** decoding happens inside `ffegl_update`, so call it often
-  (every Wimp null event, or every GL frame). A 1080p H.264 frame takes
-  roughly 25–40 ms to decode on a Pi 4.
+- **No threads:** decoding happens inside `reelcore_update`, so call it
+  often (every Wimp null event, or every GL frame). A 1080p H.264 frame
+  takes roughly 25–40 ms to decode on a Pi 4.
 
-Link (static):
+Link (static), EGL programs:
 
 ```
--lffegl -lavformat -lavcodec -lswresample -lswscale -lavutil -ldav1d -lx264 -lmp3lame
--lopus -lvorbisenc -lvorbis -logg -lz -lSDL2 -lEGL -lOSMesa -lstdc++ -lm
+-lffegl -lreelcore -lavformat -lavcodec -lswresample -lswscale -lavutil -ldav1d -lx264
+-lmp3lame -lopus -lvorbisenc -lvorbis -logg -lz -lSDL2 -lEGL -lOSMesa -lstdc++ -lm
 ```
+
+A program without EGL (like !Reel) links `-lreelcore` and the FFmpeg
+libraries only, with no Mesa.
 
 SDL2, EGL, OSMesa and zlib come from the riscos-mesa devkit. Add
 `-lglut -lGLU` for freeglut programs.

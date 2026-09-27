@@ -32,8 +32,8 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
 - **Icon bar:** double-click `!FFmpeg` and drop video files on its icon to
   play them (`frontend/fffront.c`).
 - **!Reel:** a video player for the desktop (`player/reel.c`, its own zip),
-  built on ffegl, with **!ReelEGL**, the same player drawing through
-  riscos-mesa's EGL.
+  built on reelcore, the player core (no EGL), with **!ReelEGL**, the same
+  player drawing through riscos-mesa's EGL with ffegl.
   - A Wimp window with Play/Pause, skip, a position bar, time and full
     screen; drop a file on the icon or double-click it in the Filer.
   - Sound straight to SharedSoundBuffer, which is also the clock the
@@ -58,11 +58,13 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
   `FFPLAY_RENDERER=sdl` goes back to SDL's texture drawing. Started in a
   TaskWindow (which can't open windows), it starts itself as a desktop
   task of its own.
-- **EGL:** `ffmpeg -f egl` shows video through riscos-mesa's EGL (a
-  window or the whole screen), and the **ffegl** library plays videos,
-  with sound, into EGL surfaces and OpenGL textures. With riscos-mesa
-  20.3.5-7pre12 or later a texture shares ffegl's pixels through an
-  EGLImage, with no copy. See [docs/EGL.md](docs/EGL.md); the
+- **Libraries for your own programs:** **reelcore** plays a video with
+  its sound and says when each picture is due (no EGL; `reelcore.h`), and
+  **ffegl** puts its pictures into riscos-mesa's EGL: EGL surfaces and
+  OpenGL textures (`ffegl.h`). With riscos-mesa 20.3.5-7pre12 or later a
+  texture shares the pixels through an EGLImage, with no copy.
+- **EGL output device:** `ffmpeg -f egl` shows video through
+  riscos-mesa's EGL (a window or the whole screen). See [docs/EGL.md](docs/EGL.md); the
   FFmpeg-EGL-examples zip has `videowin` and `videocube`.
 
 ## Downloads
@@ -72,7 +74,7 @@ From [Releases](../../releases):
 - `FFmpeg-5.1.10-riscosN.zip`: `!FFmpeg` with the programs.
 - `FFmpeg-EGL-examples-5.1.10-riscosN.zip`: `videowin` and `videocube`.
 - `riscos-ffmpeg-devkit-5.1.10-riscosN.tgz`: headers and static libraries
-  (FFmpeg, ffegl, codecs) for GCCSDK.
+  (FFmpeg, reelcore, ffegl, codecs) for GCCSDK.
 - `Reel-X.Y.Z.zip`: `!Reel` and `!ReelEGL`.
 
 They need SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan).
@@ -117,7 +119,7 @@ riscos-mesa devkit (20.3.5-7pre12 or later) unpacked in `devkit/`:
 make sources      # checks dl/ against build/SHA256SUMS (fetch them first)
 make deps         # SDL2 (riscos-mesa overlay, no GL), x264, dav1d, LAME, ...
 make ffmpeg       # FFmpeg 5.1.10 + patches/ffmpeg + the NEON rewrite
-make ffegl        # libffegl, the videowin/videocube examples, !Reel, the icon bar front end
+make apps         # libreelcore, libffegl, !Reel, !ReelEGL, videowin, videocube, the icon bar front end
 make package      # dist/: the FFmpeg, EGL examples and Reel zips, the devkit
 make test         # the same code for arm-linux, run under the trapping qemu
 ```
@@ -135,22 +137,23 @@ make test         # the same code for arm-linux, run under the trapping qemu
 ## Layout
 
 ```
-build/      env.sh, build-deps.sh, build-ffmpeg.sh, build-ffegl.sh, package.sh, SHA256SUMS
+build/      env.sh, build-deps.sh, build-ffmpeg.sh, build-apps.sh, package.sh, SHA256SUMS
 patches/    ffmpeg/ (git format-patch series), dav1d/, x264/, lame/, sdl2/ (riscos-mesa overlay copy)
-ffegl/      the ffegl library (ffegl.h, ffegl.c) and the videowin/videocube examples
+reelcore/   the player core (reelcore.h, reelcore.c): no EGL
+ffegl/      the EGL layer on reelcore (ffegl.h, ffegl.c) and the videowin/videocube examples
 player/     reel.c: !Reel and !ReelEGL
 frontend/   fffront.c: !FFmpeg's icon bar front end
 tools/      neon-align.py (+ *.allow lists), mkrozip.py, mksprites.py, elf2aif/, check-stack-probes.py
 app/        !FFmpeg, !Reel, !ReelEGL (the parts that aren't built)
 tests/qemu/ the alignment rig: qemu patch, sample maker, runners
-tests/host/ ffegl, Reel and front end tests with fake Wimp/SDL/EGL, under the trapping qemu
+tests/host/ reelcore, ffegl, Reel and front end tests with fake Wimp/SDL/EGL, under the trapping qemu
 docs/       ALIGNMENT.md, EGL.md, SOURCES.md
 ```
 
 ## Licence
 
 The build scripts, tools, patches and programs are GPL version 2 or later
-(see `COPYING`), like the FFmpeg build they make; ffegl is LGPL 2.1 or
+(see `COPYING`), like the FFmpeg build they make; reelcore and ffegl are LGPL 2.1 or
 later. That build includes x264, so it is GPL (version 2
 or later). The other libraries keep their own licences: see
 `dist/…/docs/Licences`.

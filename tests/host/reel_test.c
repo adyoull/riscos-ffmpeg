@@ -19,11 +19,11 @@
 #include <string.h>
 #include <unistd.h>
 #include "kernel.h"
-#include "ffegl.h"
+#include "reelcore.h"
 #include "fake_sdl_gl.h"
 
 int reel_main(int argc, char **argv);
-FFEGLVideo *reel_test_video(void);
+ReelCore *reel_test_video(void);
 #ifdef REEL_EGL
 /* ReelEGL: the picture is a (fake) EGL surface; what was last shown is
    fake_shown, from eglSwapBuffers */
@@ -122,7 +122,7 @@ static int next_event(int *b)
         phase_step = 0;
     }
     for (;;) {
-        FFEGLVideo *v = reel_test_video();
+        ReelCore *v = reel_test_video();
         switch (phase) {
         case P_PLAY1: case P_PLAY2: case P_PLAY3: case P_PLAYFULL: case P_PLAY4: case P_PLAY5: case P_PLAY6:
             if (phase_step++ < 40) {
@@ -133,7 +133,7 @@ static int next_event(int *b)
                 int w, h, rows, bad = 0;
                 const uint8_t *px = reel_test_sprite(&w, &h, &rows);
                 uint8_t *want = malloc((size_t)w * h * 4);
-                ffegl_draw_pixels(v, want, w * 4, w, h, 0, 0);
+                reelcore_draw_pixels(v, want, w * 4, w, h, 0, 0);
                 for (int i = 0; px && i < w * h; i++)
                     bad += memcmp(px + i * 4, want + i * 4, 3) != 0;
                 CHECK(px && !bad, "phase %d: sprite %dx%d, %d pixels differ", phase, w, h, bad);
@@ -170,16 +170,16 @@ static int next_event(int *b)
             break;
         case P_PAUSED:
             if (phase_step == 0) {
-                CHECK(v && ffegl_paused(v), "pause button didn't pause");
+                CHECK(v && reelcore_paused(v), "pause button didn't pause");
                 CHECK(last_mask & 1, "null events still enabled while paused");
-                pos_before = v ? ffegl_position(v) : 0;
+                pos_before = v ? reelcore_position(v) : 0;
             }
             if (phase_step++ < 3) { fake_time += 0.5; memset(b, 0, 44); b[0] = WIN; return 1; }   /* redraws */
-            CHECK(v && ffegl_position(v) == pos_before, "moved while paused");
+            CHECK(v && reelcore_position(v) == pos_before, "moved while paused");
             break;
         case P_RESUME:
             if (phase_step++ == 0) { memset(b, 0, 28); b[0] = WIN; b[6] = ' '; return 8; }   /* Space */
-            CHECK(v && !ffegl_paused(v), "Space didn't resume");
+            CHECK(v && !reelcore_paused(v), "Space didn't resume");
             break;
         case P_SEEKBAR:
             if (phase_step++ == 0) {
@@ -190,9 +190,9 @@ static int next_event(int *b)
                 return 6;
             }
             {
-                double d = ffegl_duration(v), p;
-                for (int i = 0; i < 30; i++) { ffegl_update(v); fake_time += 0.01; }
-                p = ffegl_position(v);
+                double d = reelcore_duration(v), p;
+                for (int i = 0; i < 30; i++) { reelcore_update(v); fake_time += 0.01; }
+                p = reelcore_position(v);
                 CHECK(p > d * 0.35 && p < d * 0.7, "position bar: %.2f of %.2f", p, d);
             }
             break;
@@ -247,7 +247,7 @@ static int next_event(int *b)
             {
                 const char *leaf = strrchr(clip2, '/');
                 CHECK(title_ptr && !strcmp((char *)title_ptr, leaf ? leaf + 1 : clip2), "title '%s'", title_ptr ? (char *)title_ptr : "");
-                CHECK(v && ffegl_width(v) > 0, "second file not playing");
+                CHECK(v && reelcore_width(v) > 0, "second file not playing");
             }
             break;
         case P_DIR:

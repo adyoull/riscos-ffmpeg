@@ -24,10 +24,11 @@ done
 CC="arm-linux-gnueabihf-gcc -O1 -g -marm -mno-unaligned-access -DEGL_NO_X11"
 $CC -I$HERE/../fake -c "$HERE/riscos_shim.c" -o "$O/riscos_shim.o"
 $CC -DFAKE_SDL_ONLY -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$HERE/.. -c "$HERE/../fake_sdl_gl.c" -o "$O/fake_sdl.o"
-$CC -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl.o"
-$CC -I$DEVKIT/include -I$TOP/ffegl -I$HERE/.. -c "$HERE/mesa_eglimage_test.c" -o "$O/mesa_eglimage_test.o"
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore.o"
+$CC -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl.o"
+$CC -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE/.. -c "$HERE/mesa_eglimage_test.c" -o "$O/mesa_eglimage_test.o"
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/mesa_eglimage_test" \
-  "$O/mesa_eglimage_test.o" "$O/ffegl.o" "$O/fake_sdl.o" "$O/riscos_shim.o" \
+  "$O/mesa_eglimage_test.o" "$O/ffegl.o" "$O/reelcore.o" "$O/fake_sdl.o" "$O/riscos_shim.o" \
   "$O/libEGL.a" "$O/libOSMesa.a" "$DEVKIT/lib/libz.a" \
   -L$S/lib -lavformat -lavcodec -lswscale -lswresample -lavutil -ldav1d -lx264 -lmp3lame \
   -lopus -lvorbisenc -lvorbis -logg /usr/arm-linux-gnueabihf/lib/libstdc++.so.6 -lm -lpthread \
@@ -37,6 +38,6 @@ bad=0
 for clip in h264_aac_322_182.mp4 h264_aac_640_360.mp4; do
   echo "== mesa_eglimage_test $clip ($(basename "$DEVKIT"))"
   "$TOP/tests/qemu/aligntrap.sh" "$O/mesa_eglimage_test" "$TOP/tests/qemu/samples/$clip" 2>&1 |
-    grep -v "swscaler\|ffegl: " || bad=1
+    grep -v "swscaler\|reelcore: \|ffegl: " || bad=1
 done
 exit $bad
