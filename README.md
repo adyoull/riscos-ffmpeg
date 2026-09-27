@@ -50,7 +50,7 @@ and the ARM assembly in FFmpeg, dav1d and x264 relies on that.
 
 - **`tools/neon-align.py`** rewrites every NEON load/store whose element is
   wider than a byte and that has no alignment qualifier, into forms that
-  can't fault and do the same thing. It changes about 490 instructions in
+  can't fault and do the same thing. It changes about 510 instructions in
   FFmpeg, 480 in dav1d and 280 in x264, at build time.
   - Whole-register transfers become `.8`. This is identical on
     little-endian and costs nothing.

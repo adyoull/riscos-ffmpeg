@@ -131,6 +131,17 @@ Results:
 Before the fix, the same rig faulted on the first H.264, AV1 and VP8
 files.
 
+### A last look at the binary
+
+`tools/scan-neon.py src/ffmpeg-5.1.10/ffplay_g` lists every function that
+still has a NEON access with a wide element and no qualifier. In
+5.1.10-riscos1 all of them are one of two kinds:
+
+- compiled C: Opus's intrinsics, dav1d's C and FFmpeg's C, on int16,
+  int32 or float arrays;
+- assembly on the allow lists: dav1d's cdef, film grain, msac and 16-bit
+  MC, FFmpeg's SBC input, and x264's SSIM sums.
+
 ## When updating FFmpeg, dav1d or x264
 
 1. Apply the patches, then run
@@ -138,5 +149,6 @@ files.
    New "need a look" lines need a decision: fix the caller, add
    `whole`, or allow the line with a comment saying why.
 2. Build with `LINUX_ARM_TEST=1` and run `tests/qemu/run-all.sh`.
-3. Look for new `ldr`/`ldrh`/`str` on byte pointers in any assembly the
-   tests don't reach.
+3. Run `tools/scan-neon.py` on the RISC OS binary. Also look for new
+   `ldr`/`ldrh`/`str` on byte pointers in any assembly the tests don't
+   reach.

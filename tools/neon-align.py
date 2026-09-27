@@ -51,8 +51,13 @@ DTYPE = re.compile(r"^(?:[iusfp]?)(8|16|32|64)$", re.I)
 INSN = re.compile(
     r"^(?P<indent>\s*)(?P<label>(?:[\w.$\\]+:\s*)?)"
     r"(?P<op>v(?:ld|st)(?P<n>[1-4]))\.(?P<dt>\\?\w+)(?P<sp>\s+)"
-    r"\{(?P<regs>[^}]*)\}\s*,\s*\[(?P<base>[^\]]*)\](?P<post>[^@;/]*?)"
+    r"(?:\{(?P<regs>[^}]*)\}|(?P<reg1>[^\s{,][^,]*?))\s*,\s*\[(?P<base>[^\]]*)\](?P<post>[^@;/]*?)"
     r"(?P<tail>\s*(?:(?:@|//|/\*).*)?)$", re.I)
+
+
+def regs_of(m):
+    """The register list without braces (GAS also takes "vst1.32 d0[0], ...")."""
+    return m.group("regs") if m.group("regs") is not None else m.group("reg1").strip()
 
 
 def split_regs(regs):
@@ -116,7 +121,7 @@ def rewrite(line, whole=False):
 
 
 def rewrite_sized(m, line, size, whole=False):
-    if size == 64 and any(lane_of(r) for r in split_regs(m.group("regs"))):
+    if size == 64 and any(lane_of(r) for r in split_regs(regs_of(m))):
         return None, None           # no 64-bit lanes: can't be this size
     base = m.group("base")
     if ":" in base:            # alignment qualifier: aligned by contract
@@ -131,7 +136,7 @@ def rewrite_sized(m, line, size, whole=False):
         base = bm.group(1)
     op = m.group("op").lower()
     ind, label, tail = m.group("indent"), m.group("label"), m.group("tail").strip()
-    regs = split_regs(m.group("regs"))
+    regs = split_regs(regs_of(m))
     lanes = [lane_of(r) for r in regs]
     note = "  @ neon-align: was " + line.strip()
     nb = size // 8
@@ -141,24 +146,24 @@ def rewrite_sized(m, line, size, whole=False):
     if not whole and any("\\" in r and "[" not in r for r in regs):
         # {\regs}: a macro argument that may be whole registers or a lane
         # (d0[0]); can't tell here, so it's listed for a look.
-        return None, "register list from a macro argument {%s}" % m.group("regs")
+        return None, "register list from a macro argument {%s}" % regs_of(m)
 
     if all(l is None for l in lanes):                      # rule 1
         if nregs != 1:
             return None, "%s.%s with %d-bit elements, unaligned-capable" % (op, m.group("dt"), size)
         new = "%s%s%s.8%s{%s}, [%s]%s" % (ind, label, m.group("op"), m.group("sp"),
-                                          m.group("regs"), orig_base, m.group("post").rstrip())
+                                          regs_of(m), orig_base, m.group("post").rstrip())
         return [new + ("  " + tail if tail else "")], None
 
     if any(l is None for l in lanes):
-        return None, "unhandled register list {%s}" % m.group("regs")
+        return None, "unhandled register list {%s}" % regs_of(m)
 
     def lane_bytes(idx):
         return str(int(idx) * nb) if idx.isdigit() else "(%s)*%d" % (idx, nb)
 
     if all(l[1] != "" for l in lanes):                     # rules 2 and 4
         if len(regs) != nregs:
-            return None, "unhandled register list {%s}" % m.group("regs")
+            return None, "unhandled register list {%s}" % regs_of(m)
         parts = [(d, lane_bytes(i), nb) for d, i in lanes]
         out = expand_bytes(ind, single, parts, base, m.group("post"))
     elif all(l[1] == "" for l in lanes) and op.startswith("vld"):  # rules 3 and 4
@@ -167,7 +172,7 @@ def rewrite_sized(m, line, size, whole=False):
         elif len(regs) == nregs:
             parts = [(d, "0", nb) for d, _ in lanes]
         else:
-            return None, "unhandled register list {%s}" % m.group("regs")
+            return None, "unhandled register list {%s}" % regs_of(m)
         out = expand_bytes(ind, "vld1", parts, base, m.group("post"))
         for d, _, _ in parts:
             out.append("%svdup.%d %s, %s[0]" % (ind, size, d, d))
@@ -175,7 +180,7 @@ def rewrite_sized(m, line, size, whole=False):
             for other, _ in lanes[1:]:
                 out.append("%svmov %s, %s" % (ind, other, lanes[0][0]))
     else:
-        return None, "unhandled register list {%s}" % m.group("regs")
+        return None, "unhandled register list {%s}" % regs_of(m)
     out[0] += note
     if qual_arg:
         arg = re.match(r"\\(\w+)", qual_arg).group(0)
