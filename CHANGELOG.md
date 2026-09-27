@@ -1,5 +1,33 @@
 # Changes
 
+## Reel 0.7 (2026-09-27)
+
+- **The trailer froze after half a second, now with SharedSoundBuffer.**
+  Reel 0.6's log on the Pi: the sound started (SharedSoundBuffer 0.07,
+  StreamManager 0.03 and SharedSound 1.20 all loaded), played 0.51 s,
+  then `queued 0.00 s ... 7 pictures waiting` for good: the clock stayed
+  at 0.49 s.
+  - In this file the video is read about a second ahead of its sound.
+    ffegl read packets only while fewer than 7 pictures were waiting, so
+    with 7 decoded pictures (all ahead of the clock) it stopped reading;
+    the sound ran dry; the clock (the sound) stopped; no picture became
+    due. Every build since ffegl 1 had this; the SDL stall fallback hid it
+    in 0.3.
+  - Now ffegl keeps the video packets it reads (compressed) in a queue
+    and decodes them separately: the file is read as far as the sound
+    needs (0.5 s queued), however far the video is ahead or however slow
+    it decodes (up to 48 MB of packets).
+- **Falling behind:** 0.3 s behind the clock, ffegl skips decoding
+  non-reference frames (`skip_frame = AVDISCARD_NONREF`, mostly
+  B-frames); 1.5 s behind, keyframes only; back to every frame once
+  within 0.05 s. The log says when ("0.32 s behind: skipping
+  non-reference frames"), and `ffegl_debug()` shows the packets waiting
+  and the skip level.
+- Tests: `chunky_h264_aac_322_184.mp4` (fragments of 1.5 s, video then
+  sound) freezes 0.6 and plays with 0.7 in `reel_ssb_test`;
+  `slow_test` makes decoding cost more than real time and checks that
+  the pictures keep up with the sound.
+
 ## Reel 0.6, !FFmpeg front end log (2026-09-27)
 
 - **Reel and ReelEGL write a log**: `<Wimp$ScrapDir>.ReelLog`

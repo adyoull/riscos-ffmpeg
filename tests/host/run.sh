@@ -45,6 +45,13 @@ for clip in h264_aac_640_360.mp4 h264_aac_322_182.mp4; do
   echo "== ffegl_test $clip"
   "$TOP/tests/qemu/aligntrap.sh" "$O/ffegl_test" "$SAMPLES/$clip" 2>&1 | grep -v "swscaler\|ffegl: " || bad=1
 done
+# ffegl on a CPU too slow for the video: skipping frames keeps it with the sound
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -I$HERE -c "$HERE/slow_test.c" -o "$O/slow_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcodec_send_packet -o "$O/slow_test" "$O/ffegl.o" \
+  "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/slow_test.o" $LIBS 2>/dev/null
+echo "== slow_test (decoding slower than real time)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/slow_test" "$SAMPLES/long_h264_aac_322_184.mp4" 2>&1 | grep -v "swscaler" || bad=1
+
 # Reel (player/reel.c) with ffegl built without GL, fake Wimp, fake SDL audio
 $CC -DFFEGL_NO_GL -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_nogl.o"
 $CC -DREEL_TEST -DREEL_NO_MAIN -I$S/include -I$DEVKIT/include -I$TOP/ffegl -c "$TOP/player/reel.c" -o "$O/reel.o"
@@ -72,6 +79,9 @@ for want in "Reel log" "module SharedSoundBuffer" "open .*long_h264_aac_322_184"
   grep -q "$want" "$O/reel_ssb.log" || { echo "  the log has no \"$want\""; bad=1; }
 done
 echo "  log: $(wc -l < "$O/reel_ssb.log") lines"
+echo "== reel_ssb_test, video read 1 s ahead of the sound (the trailer's freeze)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/reel_ssb_test" "$SAMPLES/chunky_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
+  grep -v "swscaler\|ffegl: " || bad=1
 
 # ReelEGL: the same player drawing through (fake) EGL surfaces
 $CC -DFFEGL_NO_TEXTURE -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/ffegl -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_notex.o"

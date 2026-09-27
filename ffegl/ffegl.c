@@ -42,6 +42,11 @@
 #define SSB_AHEAD     0.5    /* and with SharedSoundBuffer: rides out a busy desktop */
 #define SSB_BLOCK     2048   /* sample frames per StreamManager block */
 #define READ_BUDGET   64     /* packets read per ffegl_update at most */
+#define DECODE_BUDGET 8      /* video packets decoded per ffegl_update at most */
+#define VPK_MAX_BYTES (48 << 20)  /* video packets read ahead (for the sound) at most */
+#define LATE_SKIP     0.3    /* this far behind: skip decoding non-reference frames, */
+#define LATE_KEYS     1.5    /* this far: decode only keyframes, */
+#define LATE_OK       0.05   /* until this close again */
 
 struct FFEGLVideo {
     int flags;
@@ -57,6 +62,16 @@ struct FFEGLVideo {
     AVFrame *q[QMAX];
     double qpts[QMAX];
     int qn;
+    /* video packets read but not decoded yet: the file is read as far as
+       the sound needs, however slowly the pictures decode (Reel 0.6 on the
+       Pi: 7 pictures waiting blocked reading, the sound ran dry at 0.5 s
+       and its clock stopped with it) */
+    AVPacket **vpk;
+    int vpk_head, vpk_n, vpk_cap;
+    size_t vpk_bytes;
+    int vflushed;                      /* the video decoder has been sent the end */
+    int skipping;                      /* behind: non-reference frames aren't decoded */
+    unsigned skip_spells;
     AVFrame *cur;                      /* the current frame (NULL before the first) */
     double cur_pts;
     int need_first;                    /* show the next frame at once, and sync to it */
@@ -579,6 +594,7 @@ static void clear_queue(FFEGLVideo *v)
 }
 
 static void texture_image_free(FFEGLVideo *v, int unlink);
+static void vpk_clear(FFEGLVideo *v);
 
 void ffegl_close(FFEGLVideo *v)
 {
@@ -587,6 +603,8 @@ void ffegl_close(FFEGLVideo *v)
     if (v->dev)
         aud_close(v);
     clear_queue(v);
+    vpk_clear(v);
+    av_freep(&v->vpk);
     av_frame_free(&v->cur);
     av_frame_free(&v->frame);
     av_packet_free(&v->pkt);
@@ -617,9 +635,13 @@ int ffegl_debug(const FFEGLVideo *v, char *buf, int size)
     double c = v->paused ? v->pause_pos
              : v->audio_clock && v->audio_end >= 0 ? v->audio_end - q - v->latency
              : (av_gettime_relative() - v->t0) / 1e6;
-    int n = snprintf(buf, size, "pos %.2f clock %.2f%s, %d pictures waiting, %u late",
+    int n = snprintf(buf, size, "pos %.2f clock %.2f%s, %d pictures and %d packets (%u KB) waiting, "
+                     "%u late%s, %u skip spells",
                      ffegl_position(v), c,
-                     v->paused ? " (paused)" : v->audio_clock ? " (sound)" : " (timer)", v->qn, v->dropped);
+                     v->paused ? " (paused)" : v->audio_clock ? " (sound)" : " (timer)", v->qn,
+                     v->vpk_n, (unsigned)(v->vpk_bytes >> 10), v->dropped,
+                     v->skipping == 2 ? ", keyframes only" : v->skipping ? ", skipping non-reference frames" : "",
+                     v->skip_spells);
     if (n >= size)
         return n;
     if (!v->dev)
@@ -769,6 +791,52 @@ static void got_audio(FFEGLVideo *v, AVFrame *f)
     v->audio_end += n / (double)v->rate;
 }
 
+/* ---- video packets waiting to be decoded ---- */
+
+static int vpk_push(FFEGLVideo *v, AVPacket *pkt)
+{
+    AVPacket *p;
+    if (v->vpk_n == v->vpk_cap) {
+        int cap = v->vpk_cap ? v->vpk_cap * 2 : 256;
+        AVPacket **q = av_malloc_array(cap, sizeof(*q));
+        if (!q)
+            return -1;
+        for (int i = 0; i < v->vpk_n; i++)
+            q[i] = v->vpk[(v->vpk_head + i) % v->vpk_cap];
+        av_free(v->vpk);
+        v->vpk = q;
+        v->vpk_cap = cap;
+        v->vpk_head = 0;
+    }
+    if (!(p = av_packet_alloc()))
+        return -1;
+    av_packet_move_ref(p, pkt);
+    v->vpk[(v->vpk_head + v->vpk_n) % v->vpk_cap] = p;
+    v->vpk_n++;
+    v->vpk_bytes += p->size;
+    return 0;
+}
+
+static AVPacket *vpk_pop(FFEGLVideo *v)
+{
+    AVPacket *p;
+    if (!v->vpk_n)
+        return NULL;
+    p = v->vpk[v->vpk_head];
+    v->vpk_head = (v->vpk_head + 1) % v->vpk_cap;
+    v->vpk_n--;
+    v->vpk_bytes -= p->size;
+    return p;
+}
+
+static void vpk_clear(FFEGLVideo *v)
+{
+    AVPacket *p;
+    while ((p = vpk_pop(v)) != NULL)
+        av_packet_free(&p);
+    v->vpk_head = 0;
+}
+
 /* Sends pkt (NULL = flush) to a decoder and takes all it gives back. */
 static void decode(FFEGLVideo *v, AVCodecContext *dec, AVPacket *pkt, int video)
 {
@@ -788,31 +856,84 @@ static void decode(FFEGLVideo *v, AVCodecContext *dec, AVPacket *pkt, int video)
     }
 }
 
-/* Reads and decodes until a few frames and a little sound are ready. */
+/* Behind the clock: stop decoding the frames nothing else refers to (most
+   B-frames) until caught up; far behind, decode only keyframes. Those
+   frames would only be dropped as late anyway, and the sound (the clock)
+   doesn't wait. */
+static void check_late(FFEGLVideo *v)
+{
+    static const char *what[3] = { "decoding every frame", "skipping non-reference frames",
+                                   "decoding only keyframes" };
+    double lag, last;
+    int want;
+    if (v->paused || !v->cur || v->need_first)
+        return;
+    last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
+    lag = clock_now(v) - last;
+    want = lag > LATE_KEYS ? 2 : lag > LATE_SKIP ? (v->skipping > 1 ? 2 : 1) : lag < LATE_OK ? 0 : v->skipping;
+    if (want != v->skipping) {
+        if (want > v->skipping)
+            v->skip_spells++;
+        v->skipping = want;
+        v->vdec->skip_frame = want == 2 ? AVDISCARD_NONKEY : want ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+        av_log(NULL, AV_LOG_VERBOSE, "ffegl: %.2f s behind: %s\n", lag, what[want]);
+    }
+}
+
+/* Reads until there's a little sound queued and a video packet to decode,
+   then decodes pictures until a few are ready. */
 static void fill(FFEGLVideo *v)
 {
     for (int budget = READ_BUDGET; budget > 0 && !v->eof_demux; budget--) {
-        int need_v = v->qn < 3;
         int need_a = v->dev && !v->stalled && queued_audio(v) < v->ahead;
+        int need_v = v->qn < 3 && v->vpk_n == 0;
         int ret;
-        if (!need_v && !need_a)
+        if (!need_a && !need_v)
             break;
-        if (need_a && !need_v && v->qn >= QMAX - 1)
-            break;                         /* don't throw pictures away for sound */
+        if (!need_v && v->vpk_bytes > VPK_MAX_BYTES)
+            break;                         /* a strange file: don't eat all the memory */
         ret = av_read_frame(v->fmt, v->pkt);
         if (ret == AVERROR(EAGAIN))
             break;
-        if (ret < 0) {                     /* the end: flush the decoders */
-            v->eof_demux = 1;
-            decode(v, v->vdec, NULL, 1);
+        if (ret < 0) {                     /* the end: flush the sound decoder now, */
+            v->eof_demux = 1;              /* the video's once its packets are done */
             if (v->adec) decode(v, v->adec, NULL, 0); else v->eof_audio = 1;
             break;
         }
         if (v->pkt->stream_index == v->vs)
-            decode(v, v->vdec, v->pkt, 1);
+            vpk_push(v, v->pkt);
         else if (v->pkt->stream_index == v->as)
             decode(v, v->adec, v->pkt, 0);
         av_packet_unref(v->pkt);
+    }
+    /* after a seek, decode on to the seek point in one go (as before) */
+    int budget = v->need_first ? READ_BUDGET : DECODE_BUDGET;
+    for (int n = 0; n < budget && v->qn < 3; n++) {
+        if (!v->vpk_n && !v->eof_demux && v->need_first) {
+            /* more packets on the way to the seek point */
+            int ret = av_read_frame(v->fmt, v->pkt);
+            if (ret < 0 && ret != AVERROR(EAGAIN)) {
+                v->eof_demux = 1;
+                if (v->adec) decode(v, v->adec, NULL, 0); else v->eof_audio = 1;
+            } else if (ret >= 0) {
+                if (v->pkt->stream_index == v->vs)
+                    vpk_push(v, v->pkt);
+                else if (v->pkt->stream_index == v->as)
+                    decode(v, v->adec, v->pkt, 0);
+                av_packet_unref(v->pkt);
+                continue;
+            }
+        }
+        AVPacket *p = vpk_pop(v);
+        if (p) {
+            check_late(v);
+            decode(v, v->vdec, p, 1);
+            av_packet_free(&p);
+        } else if (v->eof_demux && !v->vflushed) {
+            v->vflushed = 1;
+            decode(v, v->vdec, NULL, 1);
+        } else
+            break;
     }
     if (!v->adec)
         v->eof_audio = v->eof_demux;
@@ -908,6 +1029,8 @@ int ffegl_seek(FFEGLVideo *v, double seconds)
     if (v->swr)
         swr_init(v->swr);                 /* drop what it buffered */
     clear_queue(v);
+    vpk_clear(v);
+    v->vflushed = 0;
     v->eof_demux = v->eof_video = v->eof_audio = 0;
     v->audio_end = -1;
     v->audio_clock = v->dev != 0 && !v->stalled;
