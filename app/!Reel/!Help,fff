@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.12
+!Reel - a video player for RISC OS                        0.1.13
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -117,6 +117,17 @@ The volume, Deinterlace, Keep on top and where the mini player goes are saved in
 stopped in <Choices$Write>.Reel.Resume. The other options are for this
 session only.
 
+NEON
+----
+Besides FFmpeg's own NEON code (H.264, VP8/VP9, AV1 through dav1d,
+MPEG-1/2/4, HEVC's brightness), this port adds NEON for:
+  - deinterlacing (yadif);
+  - HEVC's colour (chroma motion compensation);
+  - resizing and colour conversion to the screen whenever the picture
+    isn't shown at its own size: full screen, a resized window, the
+    mini player, Fill and Stretch.
+Each gives exactly the same pictures as FFmpeg's plain C code.
+
 Media info
 ----------
 A window (it stays open while you watch; I or the window menu) with,
@@ -155,7 +166,10 @@ screen mode, each file opened and what's in it, what you did (pause,
 seek, full screen), any errors, FFmpeg's messages, and once a second
 while playing: the position, the clock, the sound (queued, and
 StreamManager's added and played counts) and how many pictures were
-shown. If something goes wrong, the log says what Reel saw.
+shown, and what each picture cost in milliseconds: decoding,
+converting (to what size), drawing and deinterlacing - in full screen
+too, where Media info can't be seen. If something goes wrong, the log
+says what Reel saw.
 To put it somewhere else: *Set Reel$Log <file> before starting Reel;
 *Set Reel$Log off for none.
 

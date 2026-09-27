@@ -3,6 +3,35 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel 0.1.13: NEON for resizing and HEVC colour (2026-09-27)
+
+- **FFmpeg patch 0017: swscale scaling to RGB32 in NEON.** With
+  `SWS_FAST_BILINEAR` to RGBA/BGRA (what Reel uses whenever the picture
+  isn't 1:1: full screen, resized windows, the mini player, Fill,
+  Stretch; and ffplay's direct drawing) the 32-bit ARM path was C.
+  Now the fast bilinear horizontal scalers (8 outputs a step, source
+  bytes through `vtbl`, down to about 1.85x) and the `yuv2rgbx32`
+  output (`_1` and `_2`) are NEON. The 32 bpp colour tables can't be
+  looked up in NEON, so `ff_yuv2rgb_c_init_tables` now also stores them
+  as arithmetic (`SwsContext.yuv2rgb_arith`), which gives exactly the
+  tables' values.
+- **FFmpeg patch 0016: HEVC chroma motion compensation in NEON**
+  (`put_hevc_epel`, `_uni`, `_bi`; h, v, hv; widths 2–64). FFmpeg's
+  32-bit ARM NEON had luma only. The whole-sample chroma copies now use
+  luma's NEON too.
+- **Tests:** `hevc_epel_test` (1,900 cases against the C; four
+  deliberate bugs all caught) and HEVC decodes giving the same pictures
+  with NEON, with `-cpuflags 0` and on x86 FFmpeg; `swscale_rgb_test`
+  (2,747 cases: the functions alone over many scales and colour
+  settings, and whole pictures in the same context with and without the
+  NEON functions). FFmpeg's checkasm: all 962 pass. qemu emulates NEON
+  slowly, so the speed-up is for the Pi to show.
+- **The log** now has, once a second, what each picture cost: decoding,
+  converting (and to what size), drawing and deinterlacing, so full
+  screen can be measured.
+- The ffmpeg/ffplay programs get patches 0015–0017 in the next FFmpeg
+  package; Reel's zip carries them in `docs.source.patches`.
+
 ## Reel 0.1.12: deinterlacing, with yadif in NEON (2026-09-27)
 
 - **Deinterlace** (window menu: Auto, On, Off; D; remembered). reelcore

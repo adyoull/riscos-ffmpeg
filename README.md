@@ -38,8 +38,12 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
     full screen; drop a file on the icon or double-click it in the Filer.
   - A mini player above the icon bar (optionally kept on top), playlists,
     speed 0.5x–2x, picture sizes, sound tracks, A-B repeat, carry on
-    where you stopped, vsync full screen, fast decoding, deinterlacing
-    (yadif, with a NEON line filter added in this port).
+    where you stopped, vsync full screen, fast decoding, deinterlacing.
+- **NEON added by this port** (each bit-exact with FFmpeg's C, tested
+  under the alignment-trapping qemu): yadif deinterlacing (patch 0015),
+  HEVC chroma motion compensation (0016), and swscale's fast bilinear
+  scaling to RGB32 (0017), which Reel uses whenever the picture is
+  resized.
   - Sound straight to SharedSoundBuffer, which is also the clock the
     pictures follow; late frames are skipped (and, when far behind,
     non-reference frames aren't decoded).

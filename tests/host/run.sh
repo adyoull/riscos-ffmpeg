@@ -81,6 +81,27 @@ for vf in yadif=0:0:0 yadif=1:1:0 yadif=2:0:0 yadif=3:1:0; do
   if [ "$1" = "$2" ] && [ "$1" = "$3" ]; then echo "  $vf: the same ($1)"; else echo "FAIL: $vf: $sums"; bad=1; fi
 done
 
+# HEVC chroma motion compensation in NEON (patch 0016) against the C, and
+# whole HEVC decodes: NEON, without (-cpuflags 0) and x86 FFmpeg, picture by picture
+$CC -O2 -I$F -c "$HERE/hevc_epel_test.c" -o "$O/hevc_epel_test.o"
+arm-linux-gnueabihf-gcc -no-pie -o "$O/hevc_epel_test" "$O/hevc_epel_test.o" -L$S/lib -lavcodec -lavutil -lm -lpthread
+echo "== hevc_epel_test (HEVC chroma MC: NEON against C)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/hevc_epel_test" || bad=1
+echo "== HEVC decodes: NEON, C and x86 FFmpeg"
+for clip in mv_hevc.mkv hevc_322_182.mkv hevc_640_360.mkv; do
+  pics() { grep -v "^#" | awk -F, '{print $NF}' | md5sum | cut -c1-32; }
+  a=$("$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -i "$SAMPLES/$clip" -f framemd5 - | pics)
+  b=$("$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -cpuflags 0 -i "$SAMPLES/$clip" -f framemd5 - | pics)
+  c=$(ffmpeg -v error -i "$SAMPLES/$clip" -f framemd5 - | pics)
+  if [ "$a" = "$b" ] && [ "$a" = "$c" ]; then echo "  $clip: the same ($a)"; else echo "FAIL: $clip: $a $b $c"; bad=1; fi
+done
+
+# scaling to RGB32 in NEON (patch 0017) against the C
+$CC -O2 -I$F -c "$HERE/swscale_rgb_test.c" -o "$O/swscale_rgb_test.o"
+arm-linux-gnueabihf-gcc -no-pie -o "$O/swscale_rgb_test" "$O/swscale_rgb_test.o" -L$S/lib -lswscale -lavutil -lm -lpthread
+echo "== swscale_rgb_test (fast bilinear to RGBA/BGRA: NEON against C)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/swscale_rgb_test" || bad=1
+
 # reelcore's deinterlacing (Auto/On/Off) against x86 FFmpeg's yadif
 ffmpeg -v error -y -i "$SAMPLES/mv_h264_mbaff.mkv" -vf yadif=0:-1:1 -f rawvideo -pix_fmt yuv420p "$O/mbaff_yadif.yuv"
 ffmpeg -v error -y -i "$SAMPLES/mv_h264_mbaff.mkv" -f rawvideo -pix_fmt yuv420p "$O/mbaff_plain.yuv"
@@ -119,7 +140,7 @@ env 'Reel$Log'="$O/reel_ssb.log" "$TOP/tests/qemu/aligntrap.sh" "$O/reel_ssb_tes
   grep -v "swscaler\|reelcore: \|ffegl: " || bad=1
 # the log (Reel$Log): what was opened, the sound stream, the once-a-second lines, quit
 for want in "Reel log" "module SharedSoundBuffer" "open .*long_h264_aac_322_184" "playing: h264" \
-            "SharedSoundBuffer stream" "sound starts" "SSB playing" "nulls, .* pictures in" "full screen on" \
+            "SharedSoundBuffer stream" "sound starts" "SSB playing" "nulls, .* pictures in" "ms a picture: decode .*convert" "full screen on" \
             "report: That's a directory" "close: pos" "quit"; do
   grep -q "$want" "$O/reel_ssb.log" || { echo "  the log has no \"$want\""; bad=1; }
 done

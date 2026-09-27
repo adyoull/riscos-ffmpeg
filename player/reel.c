@@ -2276,9 +2276,28 @@ static void tick(void)
     t = r.r[0];
     if (logf && t - S.log_cs >= 100) {    /* once a second */
         char d[300];
+        /* what each picture cost (full screen too, where Media info can't be seen) */
+        static ReelCoreStats p;
+        static unsigned p_draw_n, p_draw_cs;
+        ReelCoreStats st;
+        unsigned dec, shown, draws;
+        reelcore_stats(S.v, &st);
+        if (st.decoded < p.decoded)       /* a new file */
+            memset(&p, 0, sizeof(p));
+        dec = st.decoded - p.decoded;
+        shown = st.shown - p.shown;
+        draws = S.draw_n - p_draw_n;
         reelcore_debug(S.v, d, sizeof(d));
-        lg("%s; %d nulls, %d pictures in %.2f s, asleep %u%%", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0,
-           (unsigned)((S.slept_cs - S.log_slept) * 100 / (t - S.log_cs)));
+        lg("%s; %d nulls, %d pictures in %.2f s, asleep %u%%; ms a picture: decode %.1f, convert %.1f (to %dx%d), "
+           "draw %.1f, deinterlace %.1f", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0,
+           (unsigned)((S.slept_cs - S.log_slept) * 100 / (t - S.log_cs)),
+           dec ? (st.decode_time - p.decode_time) * 1000 / dec : 0.0,
+           shown ? (st.convert_time - p.convert_time) * 1000 / shown : 0.0, st.convert_w, st.convert_h,
+           draws ? (S.draw_cs - p_draw_cs) * 10.0 / draws : 0.0,
+           st.deinterlaced > p.deinterlaced ? (st.deinterlace_time - p.deinterlace_time) * 1000 / (st.deinterlaced - p.deinterlaced) : 0.0);
+        p = st;
+        p_draw_n = S.draw_n;
+        p_draw_cs = S.draw_cs;
         S.log_slept = S.slept_cs;
         S.log_cs = t;
         S.log_nulls = S.log_frames = 0;
