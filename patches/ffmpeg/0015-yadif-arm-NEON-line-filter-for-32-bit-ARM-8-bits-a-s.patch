@@ -1,7 +1,8 @@
-From 4eb168663cb70135235836a4ebe55c93383fd38b Mon Sep 17 00:00:00 2001
+From 60a2d43058344dbcb327bc0d5f6262bb9deec71d Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Sun, 27 Sep 2026 22:57:31 +0100
-Subject: [PATCH] yadif arm: NEON line filter for 32-bit ARM (8 bits a sample)
+Subject: [PATCH 15/17] yadif arm: NEON line filter for 32-bit ARM (8 bits a
+ sample)
 
 Bit-exact with filter_line_c: eight pixels an iteration, sums and scores
 in 16 bits, the averages with vhadd. Byte-element loads and stores only,
@@ -11,11 +12,11 @@ which vf_yadif.c leaves room for (filter_edges writes the right-hand
 pixels afterwards).
 ---
  libavfilter/arm/Makefile        |   3 +
- libavfilter/arm/vf_yadif_init.c |  36 ++++++
- libavfilter/arm/vf_yadif_neon.S | 198 ++++++++++++++++++++++++++++++++
+ libavfilter/arm/vf_yadif_init.c |  36 +++++
+ libavfilter/arm/vf_yadif_neon.S | 276 ++++++++++++++++++++++++++++++++
  libavfilter/vf_yadif.c          |   3 +
  libavfilter/yadif.h             |   1 +
- 5 files changed, 241 insertions(+)
+ 5 files changed, 319 insertions(+)
  create mode 100644 libavfilter/arm/Makefile
  create mode 100644 libavfilter/arm/vf_yadif_init.c
  create mode 100644 libavfilter/arm/vf_yadif_neon.S
@@ -73,19 +74,75 @@ index 0000000..a9663c8
 +}
 diff --git a/libavfilter/arm/vf_yadif_neon.S b/libavfilter/arm/vf_yadif_neon.S
 new file mode 100644
-index 0000000..8f34e13
+index 0000000..b1c68ab
 --- /dev/null
 +++ b/libavfilter/arm/vf_yadif_neon.S
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,276 @@
 +/*
-+ * yadif: the line filter in NEON for 32-bit ARM, 8 bits a sample
++ * yadif deinterlacer: the line filter in NEON for 32-bit ARM, 8 bits a sample
 + *
-+ * Bit-exact with filter_line_c (vf_yadif.c): eight pixels an iteration,
-+ * the sums and scores in 16 bits, the averages ((a + b) >> 1) with vhadd.
-+ * Byte-element loads and stores only, so it needs no alignment (RISC OS
-+ * traps unaligned wider-element accesses). Like the x86 versions it may
-+ * read up to 2 bytes and write up to 7 pixels past w (vf_yadif.c leaves
-+ * that room and filter_edges writes the right-hand pixels afterwards).
++ * WHAT IT DOES
++ *   One output line of yadif (vf_yadif.c, filter_line_c): each missing
++ *   pixel of the current field is predicted from the lines above and below
++ *   it in this field (a spatial prediction that follows edges, CHECK(-2..2))
++ *   and limited by how much the picture changes over time between the
++ *   previous and next frames (the temporal part). The result is bit-exact
++ *   with filter_line_c for every input: tests/host/yadif_test.c checks it
++ *   (and that the test catches deliberate bugs), and tests/host/run.sh
++ *   checks whole pictures against -cpuflags 0 and x86 FFmpeg.
++ *
++ * THE C IT MIRRORS (vf_yadif.c, FILTER with is_not_edge = 1), per pixel:
++ *   c = cur[mrefs]            the line above in this field
++ *   e = cur[prefs]            the line below
++ *   d = (prev2[0] + next2[0]) >> 1                 temporal prediction
++ *   diff = max(|prev2[0] - next2[0]| >> 1,
++ *              (|prev[mrefs] - c| + |prev[prefs] - e|) >> 1,
++ *              (|next[mrefs] - c| + |next[prefs] - e|) >> 1)
++ *   spatial_pred  = (c + e) >> 1
++ *   spatial_score = |cur[mrefs-1] - cur[prefs-1]| + |c - e|
++ *                 + |cur[mrefs+1] - cur[prefs+1]| - 1
++ *   CHECK(j): score_j = sum over k = -1, 0, 1 of |cur[mrefs+j+k] - cur[prefs-j+k]|;
++ *             if (score_j < spatial_score) take it, and its prediction
++ *             (cur[mrefs+j] + cur[prefs-j]) >> 1
++ *     CHECK(-1), then CHECK(-2) only if -1 was taken;
++ *     CHECK(+1), then CHECK(+2) only if +1 was taken.
++ *   if !(mode & 2):  b, f = the same average two lines further out;
++ *     diff = max(diff, min3(d-e, d-c, max(b-c, f-e)), -max3(d-e, d-c, min(b-c, f-e)))
++ *   out = clip spatial_pred into [d - diff, d + diff]
++ *
++ * HOW, IN NEON
++ *   - Eight pixels an iteration. The 16 bytes around each of the two cur
++ *     lines are loaded once; vext makes the seven shifted views (x-3 .. x+3)
++ *     the CHECKs need, so no load is repeated.
++ *   - Averages (a + b) >> 1 of bytes are vhadd.u8: exact (no rounding), so
++ *     they stay in 8 bits. Absolute differences widen with vabdl/vabal:
++ *     scores (up to 3 x 255) are 16-bit.
++ *   - The C's "if (score < best)" becomes a mask (vcgt) and a select
++ *     (vbit); the nested CHECK(-2) is ANDed with CHECK(-1)'s mask, so a
++ *     lane only takes it where the C would have looked. spatial_score is
++ *     kept signed: it starts at "base - 1", which is -1 when base is 0.
++ *   - The final clip is max then min in 16 bits: diff >= 0 always, so
++ *     d - diff <= d + diff and the order doesn't matter, and the result
++ *     is always 0..255 (as the C's store to a uint8_t assumes).
++ *
++ * THE CONTRACT WITH vf_yadif.c (filter_slice)
++ *   It's called with the pointers at x = 3 and w = width - 10 (for 8 bits:
++ *   3 + MAX_ALIGN - 1 = 10 pixels are left for filter_edges). Rounding w up
++ *   to 8 writes at most 7 pixels past w and reads at most 2 bytes past what
++ *   the C would, all still inside the line; filter_edges then rewrites the
++ *   right-hand pixels. This is the same room the x86 versions use.
++ *   mode is 2 on the first and last lines (their b, f lines don't exist).
++ *
++ * RISC OS
++ *   Only vld1.8 / vst1.8 (byte elements), with no alignment qualifier:
++ *   they never fault, whatever the address. RISC OS runs with alignment
++ *   checking on, and wider elements (vld1.16/.32/.64) fault on addresses
++ *   that aren't a multiple of their size (docs/NEON.md, docs/ALIGNMENT.md).
++ *   tools/neon-align.py --check finds nothing to change here; run.sh
++ *   keeps it that way.
++ *
++ * Written for riscos-ffmpeg (patch 0015). Timing on hardware: the
++ * "Deinterlacing" row of Reel's Media info, or ffmpeg -benchmark.
 + *
 + * This file is part of FFmpeg.
 + *
@@ -110,32 +167,48 @@ index 0000000..8f34e13
 +@                                uint8_t *next, int w, int prefs, int mrefs,
 +@                                int parity, int mode)
 +@
-+@ r0 dst, r1 prev, r2 cur, r3 next, r4 pixels left, r5 prefs, r6 mrefs,
-+@ r7 prev2 (parity ? prev : cur), r8 next2 (parity ? cur : next), r9 mode,
-+@ ip, lr addresses.
++@ Core registers
++@   r0  dst          r1  prev         r2  cur          r3  next
++@   r4  pixels left  r5  prefs        r6  mrefs        r7  prev2
++@   r8  next2        r9  mode         ip, lr  addresses
++@   prev2/next2 are the frames the temporal prediction averages: with
++@   parity set, prev and cur; otherwise cur and next (as the C).
 +@
-+@ d16 m-3 (cur[mrefs - 3]), d20 m-2, d21 m-1, d22 m0 (c), d23 m1, d24 m2, d25 m3
-+@ d18 p-3 (cur[prefs - 3]), d26 p-2, d27 p-1, d28 p0 (e), d29 p1, d30 p2, d31 p3
-+@ d17 spatial_pred, q0 spatial_score, q4 1s
++@ NEON registers, one iteration (8 pixels, lanes 0..7 = x .. x+7)
++@   the spatial part (cur's line above: "m", below: "p"; the suffix is the
++@   offset from x):
++@     d16 m-3   d20 m-2   d21 m-1   d22 m0 (= c)   d23 m+1   d24 m+2   d25 m+3
++@     d18 p-3   d26 p-2   d27 p-1   d28 p0 (= e)   d29 p+1   d30 p+2   d31 p+3
++@     d17  spatial_pred (bytes)
++@     q0   spatial_score (s16), q1 the score being tried,
++@     q2, q3  the "taken" masks, d6 a mask narrowed to bytes, d19 a prediction
++@     q4   1 in every lane (for "- 1"); d8-d9 are callee-saved, hence vpush
++@   the temporal part (reusing the registers the spatial part is done with):
++@     d0 prev2[0]  d1 next2[0]  d2 prev[mrefs]  d3 prev[prefs]
++@     d4 next[mrefs]  d5 next[prefs]  d19 d (bytes)  q15 d (s16)
++@     q13 diff (s16), q10/q12 temporal_diff1/2, q14 max, q2 min
 +
 +function ff_yadif_filter_line_neon, export=1
 +        push            {r4-r9, lr}
 +        vpush           {d8-d9}
++        @ the stack arguments: 7 core + 2 NEON registers pushed = 44 bytes
 +        ldr             r4,  [sp, #44]          @ w
 +        ldr             r5,  [sp, #48]          @ prefs
 +        ldr             r6,  [sp, #52]          @ mrefs
 +        ldr             r7,  [sp, #56]          @ parity
 +        ldr             r9,  [sp, #60]          @ mode
 +        cmp             r7,  #0
-+        movne           r7,  r1                 @ prev2
++        movne           r7,  r1                 @ prev2 = parity ? prev : cur
 +        moveq           r7,  r2
-+        movne           r8,  r2                 @ next2
++        movne           r8,  r2                 @ next2 = parity ? cur : next
 +        moveq           r8,  r3
 +        cmp             r4,  #0
 +        ble             9f
 +        vmov.i16        q4,  #1
 +1:
-+        @ the spatial prediction: cur's lines above (m) and below (p)
++        @ ---- the spatial prediction -------------------------------------
++        @ 16 bytes from x-3 on each of cur's lines above and below; vext
++        @ gives the views at x-2 .. x+3 (vld1.8: any alignment)
 +        add             ip,  r2,  r6
 +        sub             ip,  ip,  #3
 +        vld1.8          {d16-d17}, [ip]
@@ -156,31 +229,32 @@ index 0000000..8f34e13
 +        vext.8          d31, d18, d19, #6
 +
 +        vhadd.u8        d17, d22, d28           @ spatial_pred = (c + e) >> 1
-+        vabdl.u8        q0,  d21, d27           @ spatial_score
-+        vabal.u8        q0,  d22, d28
-+        vabal.u8        q0,  d23, d29
-+        vsub.i16        q0,  q0,  q4            @ ... - 1
++        vabdl.u8        q0,  d21, d27           @ spatial_score = |m-1 - p-1|
++        vabal.u8        q0,  d22, d28           @   + |c - e|
++        vabal.u8        q0,  d23, d29           @   + |m+1 - p+1|
++        vsub.i16        q0,  q0,  q4            @   - 1
 +
-+        @ CHECK(-1)
++        @ CHECK(-1): |m-2 - p0| + |m-1 - p+1| + |m0 - p+2|, prediction (m-1 + p+1) >> 1
 +        vabdl.u8        q1,  d20, d28
 +        vabal.u8        q1,  d21, d29
 +        vabal.u8        q1,  d22, d30
-+        vcgt.s16        q2,  q0,  q1            @ score < spatial_score
-+        vmin.s16        q0,  q0,  q1
++        vcgt.s16        q2,  q0,  q1            @ q2: lanes where score < spatial_score
++        vmin.s16        q0,  q0,  q1            @ (taken: the new best score)
 +        vhadd.u8        d19, d21, d29
 +        vmovn.i16       d6,  q2
-+        vbit            d17, d19, d6
-+        @ CHECK(-2), only where CHECK(-1) chose
++        vbit            d17, d19, d6            @ take the prediction where q2
++        @ CHECK(-2), only where CHECK(-1) was taken:
++        @ |m-3 - p+1| + |m-2 - p+2| + |m-1 - p+3|, prediction (m-2 + p+2) >> 1
 +        vabdl.u8        q1,  d16, d29
 +        vabal.u8        q1,  d20, d30
 +        vabal.u8        q1,  d21, d31
 +        vcgt.s16        q3,  q0,  q1
-+        vand            q3,  q3,  q2
++        vand            q3,  q3,  q2            @ ... and CHECK(-1) was taken there
 +        vbit            q0,  q1,  q3
 +        vhadd.u8        d19, d20, d30
 +        vmovn.i16       d6,  q3
 +        vbit            d17, d19, d6
-+        @ CHECK(1)
++        @ CHECK(+1): |m0 - p-2| + |m+1 - p-1| + |m+2 - p0|, prediction (m+1 + p-1) >> 1
 +        vabdl.u8        q1,  d22, d26
 +        vabal.u8        q1,  d23, d27
 +        vabal.u8        q1,  d24, d28
@@ -189,7 +263,9 @@ index 0000000..8f34e13
 +        vhadd.u8        d19, d23, d27
 +        vmovn.i16       d6,  q2
 +        vbit            d17, d19, d6
-+        @ CHECK(2), only where CHECK(1) chose
++        @ CHECK(+2), only where CHECK(+1) was taken:
++        @ |m+1 - p-3| + |m+2 - p-2| + |m+3 - p-1|, prediction (m+2 + p-2) >> 1
++        @ (the last check: its score isn't needed afterwards)
 +        vabdl.u8        q1,  d23, d18
 +        vabal.u8        q1,  d24, d26
 +        vabal.u8        q1,  d25, d27
@@ -199,7 +275,7 @@ index 0000000..8f34e13
 +        vmovn.i16       d6,  q3
 +        vbit            d17, d19, d6
 +
-+        @ the temporal prediction
++        @ ---- the temporal limit -----------------------------------------
 +        vld1.8          {d0}, [r7]              @ prev2[0]
 +        vld1.8          {d1}, [r8]              @ next2[0]
 +        add             ip,  r1,  r6
@@ -210,22 +286,23 @@ index 0000000..8f34e13
 +        vld1.8          {d4}, [ip]              @ next[mrefs]
 +        add             ip,  r3,  r5
 +        vld1.8          {d5}, [ip]              @ next[prefs]
-+        vhadd.u8        d19, d0,  d1            @ d
-+        vabd.u8         d6,  d0,  d1            @ temporal_diff0
++        vhadd.u8        d19, d0,  d1            @ d = (prev2[0] + next2[0]) >> 1
++        vabd.u8         d6,  d0,  d1            @ temporal_diff0 >> 1
 +        vshr.u8         d6,  d6,  #1
-+        vabdl.u8        q10, d2,  d22           @ temporal_diff1
-+        vabal.u8        q10, d3,  d28
++        vabdl.u8        q10, d2,  d22           @ temporal_diff1 =
++        vabal.u8        q10, d3,  d28           @   (|prev[mrefs] - c| + |prev[prefs] - e|) >> 1
 +        vshr.u16        q10, q10, #1
-+        vabdl.u8        q12, d4,  d22           @ temporal_diff2
++        vabdl.u8        q12, d4,  d22           @ temporal_diff2, the same with next
 +        vabal.u8        q12, d5,  d28
 +        vshr.u16        q12, q12, #1
-+        vmovl.u8        q13, d6                 @ diff
++        vmovl.u8        q13, d6                 @ diff = max of the three (0..255)
 +        vmax.u16        q13, q13, q10
 +        vmax.u16        q13, q13, q12
-+        vmovl.u8        q15, d19                @ d, 16 bits
++        vmovl.u8        q15, d19                @ d, widened (both paths need it)
 +
-+        tst             r9,  #2
++        tst             r9,  #2                 @ mode 2 (first and last lines): no b, f
 +        bne             2f
++        @ b and f: the temporal averages two lines above and below
 +        lsl             lr,  r6,  #1
 +        add             ip,  r7,  lr
 +        vld1.8          {d0}, [ip]              @ prev2[2 * mrefs]
@@ -238,30 +315,32 @@ index 0000000..8f34e13
 +        vld1.8          {d3}, [ip]              @ next2[2 * prefs]
 +        vhadd.u8        d0,  d0,  d1            @ b
 +        vhadd.u8        d2,  d2,  d3            @ f
++        @ signed 16-bit from here: the differences can be negative
 +        vmovl.u8        q10, d28                @ e
 +        vmovl.u8        q12, d22                @ c
-+        vmovl.u8        q2,  d0
-+        vmovl.u8        q3,  d2
++        vmovl.u8        q2,  d0                 @ b
++        vmovl.u8        q3,  d2                 @ f
 +        vsub.i16        q0,  q15, q10           @ d - e
 +        vsub.i16        q1,  q15, q12           @ d - c
 +        vsub.i16        q2,  q2,  q12           @ b - c
 +        vsub.i16        q3,  q3,  q10           @ f - e
-+        vmin.s16        q14, q2,  q3            @ max
++        vmin.s16        q14, q2,  q3            @ max = max3(d-e, d-c, min(b-c, f-e))
 +        vmax.s16        q14, q14, q0
 +        vmax.s16        q14, q14, q1
-+        vmax.s16        q2,  q2,  q3            @ min
++        vmax.s16        q2,  q2,  q3            @ min = min3(d-e, d-c, max(b-c, f-e))
 +        vmin.s16        q2,  q2,  q0
 +        vmin.s16        q2,  q2,  q1
 +        vneg.s16        q14, q14
-+        vmax.s16        q13, q13, q2            @ diff = FFMAX3(diff, min, -max)
++        vmax.s16        q13, q13, q2            @ diff = max3(diff, min, -max)
 +        vmax.s16        q13, q13, q14
 +2:
-+        vmovl.u8        q0,  d17                @ spatial_pred into [d - diff, d + diff]
++        @ out = spatial_pred clipped into [d - diff, d + diff]
++        vmovl.u8        q0,  d17
 +        vsub.i16        q1,  q15, q13
 +        vadd.i16        q2,  q15, q13
 +        vmax.s16        q0,  q0,  q1
 +        vmin.s16        q0,  q0,  q2
-+        vmovn.i16       d0,  q0
++        vmovn.i16       d0,  q0                 @ (always 0..255)
 +        vst1.8          {d0}, [r0]!
 +
 +        add             r1,  r1,  #8

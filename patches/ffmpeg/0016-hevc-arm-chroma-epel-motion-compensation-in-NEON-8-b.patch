@@ -1,4 +1,4 @@
-From 39890699f39a97f4b043f61047e7d29989b8990f Mon Sep 17 00:00:00 2001
+From 4160e50e279ef61c14e3797167bcea37cce814f5 Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Sun, 27 Sep 2026 23:25:48 +0100
 Subject: [PATCH 16/17] hevc arm: chroma (epel) motion compensation in NEON, 8
@@ -15,9 +15,9 @@ traps unaligned wider accesses). The whole-sample copies use the same
 NEON functions as luma's (the C shares put_hevc_pel_pixels).
 ---
  libavcodec/arm/Makefile            |   3 +-
- libavcodec/arm/hevcdsp_epel_neon.S | 247 +++++++++++++++++++++++++++++
- libavcodec/arm/hevcdsp_init_neon.c | 101 ++++++++++++
- 3 files changed, 350 insertions(+), 1 deletion(-)
+ libavcodec/arm/hevcdsp_epel_neon.S | 336 +++++++++++++++++++++++++++++
+ libavcodec/arm/hevcdsp_init_neon.c | 101 +++++++++
+ 3 files changed, 439 insertions(+), 1 deletion(-)
  create mode 100644 libavcodec/arm/hevcdsp_epel_neon.S
 
 diff --git a/libavcodec/arm/Makefile b/libavcodec/arm/Makefile
@@ -36,22 +36,81 @@ index c4ab93a..b9806eb 100644
                                            arm/rv40dsp_neon.o
 diff --git a/libavcodec/arm/hevcdsp_epel_neon.S b/libavcodec/arm/hevcdsp_epel_neon.S
 new file mode 100644
-index 0000000..08275bc
+index 0000000..5882c83
 --- /dev/null
 +++ b/libavcodec/arm/hevcdsp_epel_neon.S
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,336 @@
 +/*
 + * HEVC chroma (epel) motion compensation in NEON for 32-bit ARM, 8 bits
 + *
-+ * Bit-exact with hevcdsp_template.c's put_hevc_epel_{h,v,hv},
-+ * _uni_{h,v,hv} and _bi_{h,v,hv}. The 4-tap filters are all
-+ * (-, +, +, -), so the first pass is u8 x u8 multiply-accumulates with the
-+ * outer taps subtracted (its sum always fits in 16 bits); the second pass
-+ * of hv is 16 x 16 -> 32 bits. Columns in strips of 8, a strip's rows in
-+ * turn (the vertical filter keeps its four rows in registers); the last
-+ * strip of a width of 2, 4 or 6 stores only those. Byte loads (.8 on whole
-+ * registers) and lane stores, so nothing needs aligning (RISC OS traps
-+ * unaligned wider-element accesses).
++ * WHAT IT DOES
++ *   HEVC predicts a block of chroma from a reference picture at a
++ *   position with 1/8-sample precision. The fractional part is
++ *   interpolated with one of seven 4-tap filters (ff_hevc_epel_filters),
++ *   horizontally (h), vertically (v) or both (hv, horizontal first).
++ *   The result goes out in one of three ways ("kinds" below):
++ *     0  int16_t, at 14-bit precision, into a MAX_PB_SIZE-wide buffer
++ *        (the first half of a bi-predicted block): put_hevc_epel_*
++ *     1  uint8_t pixels, rounded and clipped: put_hevc_epel_uni_*
++ *     2  uint8_t pixels from this prediction plus the int16 one in src2,
++ *        averaged, rounded and clipped: put_hevc_epel_bi_*
++ *   FFmpeg 5.1's 32-bit ARM NEON had luma (qpel) only; this is the chroma
++ *   half. Bit-exact with hevcdsp_template.c for every input:
++ *   tests/host/hevc_epel_test.c compares each function with the C (and is
++ *   shown to catch deliberate bugs), and run.sh decodes HEVC files with
++ *   and without NEON and on x86, picture by picture.
++ *
++ * THE C IT MIRRORS (hevcdsp_template.c, BIT_DEPTH 8)
++ *   F(src, stride) = f0*src[x-stride] + f1*src[x] + f2*src[x+stride] + f3*src[x+2*stride]
++ *   h, v:  kind 0: F                (">> (BIT_DEPTH - 8)" is ">> 0")
++ *          kind 1: clip_u8((F + 32) >> 6)
++ *          kind 2: clip_u8((F + src2[x] + 64) >> 7)
++ *   hv:    tmp = F_h over height + 3 rows, from the row above (int16)
++ *          A = F_v(tmp) >> 6, then kind 0: A; 1: clip_u8((A + 32) >> 6);
++ *          2: clip_u8((A + src2[x] + 64) >> 7)
++ *
++ * WHY THE ARITHMETIC IS EXACT
++ *   - Every epel filter has the sign pattern (-, +, +, -), e.g.
++ *     {-2, 58, 10, -2}. So F on 8-bit samples is
++ *     vmull.u8(s1, f1) + vmlal.u8(s2, f2) - vmlsl.u8(s0, |f0|) - vmlsl.u8(s3, |f3|):
++ *     unsigned 8 x 8 multiplies. The true sum lies within +-(255 * 84), so
++ *     it fits int16; the unsigned 16-bit arithmetic wraps to exactly those
++ *     bits, which are then read as signed.
++ *   - hv's second pass is on int16 values: 16 x 16 -> 32-bit
++ *     multiply-accumulates (vmull.s16 / vmlal.s16), then ">> 6" and
++ *     narrowing (vshrn keeps bits 6..21; the value fits int16).
++ *   - Rounding and clipping: vqrshrun.s16 #n computes (x + 2^(n-1)) >> n
++ *     without overflow and saturates to 0..255: exactly clip_u8((x + 32) >> 6)
++ *     for n = 6, and ... + 64) >> 7 for n = 7.
++ *   - Kind 2 adds src2 with vqadd.s16 (saturating). Where the true sum
++ *     doesn't fit 16 bits the C's result is clipped anyway: above 32767 it
++ *     is 255, and so is the saturated 32767's; below -32768 both give 0.
++ *
++ * HOW
++ *   Columns in strips of 8. For each strip, its rows in turn: the vertical
++ *   filter keeps the 4 rows it needs in registers and loads one new row a
++ *   step. The last strip of a width of 2, 4 or 6 (widths are always even)
++ *   computes 8 but stores only those; nothing outside the block is
++ *   written. Loads of the last strip may read up to 8 bytes past the
++ *   block's right edge (inside the reference picture's padding, as the
++ *   x86 versions do).
++ *
++ * RISC OS
++ *   Byte-element loads and stores (vld1.8 / vst1.8, whole registers or
++ *   one byte lane) with no alignment qualifier, which never fault whatever
++ *   the address: RISC OS runs with alignment checking on, and wider
++ *   elements fault on addresses that aren't a multiple of their size
++ *   (docs/NEON.md). The one exception says so in the instruction: the
++ *   int16 tail's 16-bit lane stores carry ":16", because an int16_t
++ *   destination is always 2-byte aligned.
++ *   tools/neon-align.py --check finds nothing to change here; run.sh
++ *   keeps it that way.
++ *
++ * The C side, hevcdsp_init_neon.c: wrappers that pick the filter
++ * (ff_hevc_epel_filters[mx - 1] / [my - 1]), pass the width, and for hv
++ * run the horizontal pass into a stack buffer then the vertical one.
++ *
++ * Written for riscos-ffmpeg (patch 0016).
 + *
 + * This file is part of FFmpeg.
 + *
@@ -72,31 +131,47 @@ index 0000000..08275bc
 +
 +#include "libavutil/arm/asm.S"
 +
-+@ All of them:
++@ Every function here:
 +@ void f(void *dst, ptrdiff_t dststride, const void *src, ptrdiff_t srcstride,
 +@        int height, const int8_t *filter, int width, const int16_t *src2)
-+@ kind 0: int16_t dst (the unrounded filter), 1: uint8_t dst (uni),
-+@ 2: uint8_t dst with src2 added (bi; src2's rows are 128 bytes apart).
++@   dst, dststride  the output (kind 0: int16_t rows, dststride in bytes)
++@   src, srcstride  the input at the block's top left (v16: int16_t rows)
++@   filter          4 taps, from ff_hevc_epel_filters
++@   width           2 .. 64, even;  height  1 .. 64 (+3 for hv's first pass)
++@   src2            kind 2 only: int16_t rows 128 bytes (MAX_PB_SIZE) apart
 +@
-+@ r0 dst, r1 dststride, r2 src, r3 srcstride, r4 height, r5 scratch,
-+@ r6 width, r7 src2, r8 x, r9 rows left, r10 dst row, r11 src row,
-+@ ip src2 row, lr columns in this strip (2, 4, 6 or 8)
++@ Core registers
++@   r0  dst          r1  dststride    r2  src          r3  srcstride
++@   r4  height       r5  filter, then a scratch pointer for tail stores
++@   r6  width        r7  src2         r8  x (the strip's first column)
++@   r9  rows left    r10 dst row      r11 src row      ip  src2 row
++@   lr  columns in this strip: 8, or 2 / 4 / 6 in the last one
++@
++@ NEON registers
++@   u8 taps:  d28 |f0|  d29 f1  d30 f2  d31 |f3|
++@   s16 taps: d7[0..3] = f0 .. f3 (by-scalar operands must be in d0-d7)
++@   q8  the 8 results of a row (int16);  d16 the 8 pixels once rounded
++@   q9  src2's 8 values (kind 2), or the high half's sums (v16)
++@   h:   d0-d1 the 16 source bytes from x-1, d2-d4 the views at x, x+1, x+2
++@   v:   d0-d3 rows y-1 .. y+2 (d3 the new one each step)
++@   v16: q10-q13 rows y-1 .. y+2 (q13 the new one each step)
 +
 +.macro  epel_start
 +        push            {r4-r11, lr}
-+        ldr             r4,  [sp, #36]
-+        ldr             r5,  [sp, #40]
-+        ldr             r6,  [sp, #44]
-+        ldr             r7,  [sp, #48]
++        @ 9 registers pushed = 36 bytes: the stack arguments follow them
++        ldr             r4,  [sp, #36]          @ height
++        ldr             r5,  [sp, #40]          @ filter
++        ldr             r6,  [sp, #44]          @ width
++        ldr             r7,  [sp, #48]          @ src2
 +.endm
 +
-+@ the u8 taps: d28 |f0|, d29 f1, d30 f2, d31 |f3|
++@ The taps for 8-bit sources: |f0| and |f3| (subtracted), f1 and f2 (added)
 +.macro  epel_coeffs_u8
 +        ldrsb           r8,  [r5]
 +        ldrsb           r9,  [r5, #1]
 +        ldrsb           r10, [r5, #2]
 +        ldrsb           r11, [r5, #3]
-+        rsb             r8,  r8,  #0
++        rsb             r8,  r8,  #0            @ f0 and f3 are <= 0
 +        rsb             r11, r11, #0
 +        vdup.8          d28, r8
 +        vdup.8          d29, r9
@@ -104,7 +179,7 @@ index 0000000..08275bc
 +        vdup.8          d31, r11
 +.endm
 +
-+@ the s16 taps in d7[0..3]
++@ The taps as signed 16-bit scalars, for int16 sources
 +.macro  epel_coeffs_s16
 +        ldrsb           r8,  [r5]
 +        ldrsb           r9,  [r5, #1]
@@ -116,8 +191,9 @@ index 0000000..08275bc
 +        vmov.16         d7[3], r11
 +.endm
 +
-+@ the strip at x: its pointers and width
-+.macro  epel_strip srcoff, elsize
++@ The strip starting at column r8: its width (lr), dst and src2 pointers,
++@ and the row count. elsize: bytes a dst element (2 for kind 0, else 1).
++.macro  epel_strip elsize
 +        sub             lr,  r6,  r8
 +        cmp             lr,  #8
 +        movgt           lr,  #8
@@ -130,154 +206,167 @@ index 0000000..08275bc
 +        mov             r9,  r4
 +.endm
 +
-+@ q8: 8 int16 results (before rounding) -> the destination row
++@ Stores bytes \first .. \last of d\reg at r5, advancing it
++.macro  store_lanes reg, first, last
++        .irp i, \first, \first+1
++        vst1.8          {d\reg[\i]}, [r5]!
++        .endr
++.if \last > \first + 1
++        store_lanes     \reg, \first+2, \last
++.endif
++.endm
++
++@ The row's results (q8) out, then r10 to the next row. A full strip is
++@ one store; a last strip of 2, 4 or 6 columns stores only those, a lane
++@ at a time (d16 holds columns 0-3 / 0-7 of int16 / uint8 output, d17 the rest).
 +.macro  epel_out kind
-+.if \kind == 0
++.if \kind == 0                                  @ int16_t: 2 bytes a column
 +        cmp             lr,  #8
 +        bne             1f
 +        vst1.8          {d16-d17}, [r10], r1
 +        b               2f
++        @ int16_t is always 2-byte aligned: 16-bit lane stores, with the
++        @ qualifier saying so (":16"; tools/neon-align.py leaves those alone)
 +1:      mov             r5,  r10
-+        vst1.16         {d16[0]}, [r5]!
-+        vst1.16         {d16[1]}, [r5]!
++        vst1.16         {d16[0]}, [r5, :16]!    @ columns 0, 1
++        vst1.16         {d16[1]}, [r5, :16]!
 +        cmp             lr,  #4
 +        blt             3f
-+        vst1.16         {d16[2]}, [r5]!
-+        vst1.16         {d16[3]}, [r5]!
++        vst1.16         {d16[2]}, [r5, :16]!    @ columns 2, 3
++        vst1.16         {d16[3]}, [r5, :16]!
 +        cmp             lr,  #6
 +        blt             3f
-+        vst1.16         {d17[0]}, [r5]!
-+        vst1.16         {d17[1]}, [r5]!
++        vst1.16         {d17[0]}, [r5, :16]!    @ columns 4, 5
++        vst1.16         {d17[1]}, [r5, :16]!
 +3:      add             r10, r10, r1
 +2:
-+.else
++.else                                           @ uint8_t pixels
 +.if \kind == 2
-+        vld1.8          {d18-d19}, [ip]
++        vld1.8          {d18-d19}, [ip]         @ src2's row (int16, any alignment)
 +        add             ip,  ip,  #128
-+        vqadd.s16       q8,  q8,  q9
-+        vqrshrun.s16    d16, q8,  #7
++        vqadd.s16       q8,  q8,  q9            @ + src2 (saturating: exact after the clip)
++        vqrshrun.s16    d16, q8,  #7            @ clip_u8((. + 64) >> 7)
 +.else
-+        vqrshrun.s16    d16, q8,  #6
++        vqrshrun.s16    d16, q8,  #6            @ clip_u8((. + 32) >> 6)
 +.endif
 +        cmp             lr,  #8
 +        bne             1f
 +        vst1.8          {d16}, [r10], r1
 +        b               2f
 +1:      mov             r5,  r10
-+        vst1.8          {d16[0]}, [r5]!
-+        vst1.8          {d16[1]}, [r5]!
++        store_lanes     16, 0, 1
 +        cmp             lr,  #4
 +        blt             3f
-+        vst1.8          {d16[2]}, [r5]!
-+        vst1.8          {d16[3]}, [r5]!
++        store_lanes     16, 2, 3
 +        cmp             lr,  #6
 +        blt             3f
-+        vst1.8          {d16[4]}, [r5]!
-+        vst1.8          {d16[5]}, [r5]!
++        store_lanes     16, 4, 5
 +3:      add             r10, r10, r1
 +2:
 +.endif
 +.endm
 +
-+@ horizontal, u8 source
++@ The outer loop: the strips, 8 columns apart
++.macro  epel_next_strip
++        add             r8,  r8,  #8
++        cmp             r8,  r6
++        blt             4b
++        pop             {r4-r11, pc}
++.endm
++
++@ Horizontal: 8-bit source; taps at x-1 .. x+2
 +.macro  epel_h kind, elsize
 +function ff_hevc_epel_h\kind\()_neon_8, export=1
 +        epel_start
 +        epel_coeffs_u8
 +        mov             r8,  #0
 +4:
-+        epel_strip      -1, \elsize
++        epel_strip      \elsize
 +        add             r11, r2,  r8
 +        sub             r11, r11, #1
 +5:
-+        vld1.8          {d0-d1}, [r11], r3
-+        vext.8          d2,  d0,  d1,  #1
-+        vext.8          d3,  d0,  d1,  #2
-+        vext.8          d4,  d0,  d1,  #3
-+        vmull.u8        q8,  d2,  d29
++        vld1.8          {d0-d1}, [r11], r3      @ 16 bytes from x-1 (11 are used)
++        vext.8          d2,  d0,  d1,  #1       @ x
++        vext.8          d3,  d0,  d1,  #2       @ x+1
++        vext.8          d4,  d0,  d1,  #3       @ x+2
++        vmull.u8        q8,  d2,  d29           @ F = f1*s[x] + f2*s[x+1]
 +        vmlal.u8        q8,  d3,  d30
-+        vmlsl.u8        q8,  d0,  d28
++        vmlsl.u8        q8,  d0,  d28           @   - |f0|*s[x-1] - |f3|*s[x+2]
 +        vmlsl.u8        q8,  d4,  d31
 +        epel_out        \kind
 +        subs            r9,  r9,  #1
 +        bgt             5b
-+        add             r8,  r8,  #8
-+        cmp             r8,  r6
-+        blt             4b
-+        pop             {r4-r11, pc}
++        epel_next_strip
 +endfunc
 +.endm
 +
-+@ vertical, u8 source
++@ Vertical: 8-bit source; rows y-1 .. y+2, three loaded before the loop
 +.macro  epel_v kind, elsize
 +function ff_hevc_epel_v\kind\()_neon_8, export=1
 +        epel_start
 +        epel_coeffs_u8
 +        mov             r8,  #0
 +4:
-+        epel_strip      0, \elsize
++        epel_strip      \elsize
 +        add             r11, r2,  r8
-+        sub             r11, r11, r3
-+        vld1.8          {d0}, [r11], r3
-+        vld1.8          {d1}, [r11], r3
-+        vld1.8          {d2}, [r11], r3
++        sub             r11, r11, r3            @ from the row above
++        vld1.8          {d0}, [r11], r3         @ y-1
++        vld1.8          {d1}, [r11], r3         @ y
++        vld1.8          {d2}, [r11], r3         @ y+1
 +5:
-+        vld1.8          {d3}, [r11], r3
++        vld1.8          {d3}, [r11], r3         @ y+2
 +        vmull.u8        q8,  d1,  d29
 +        vmlal.u8        q8,  d2,  d30
 +        vmlsl.u8        q8,  d0,  d28
 +        vmlsl.u8        q8,  d3,  d31
-+        vmov            d0,  d1
++        vmov            d0,  d1                 @ the window moves down a row
 +        vmov            d1,  d2
 +        vmov            d2,  d3
 +        epel_out        \kind
 +        subs            r9,  r9,  #1
 +        bgt             5b
-+        add             r8,  r8,  #8
-+        cmp             r8,  r6
-+        blt             4b
-+        pop             {r4-r11, pc}
++        epel_next_strip
 +endfunc
 +.endm
 +
-+@ vertical, int16 source (the second pass of hv): (sum >> 6) first
++@ Vertical on int16 rows (hv's second pass, over the first's output):
++@ 32-bit sums, then >> 6 into q8
 +.macro  epel_v16 kind, elsize
 +function ff_hevc_epel_v16_\kind\()_neon_8, export=1
 +        epel_start
 +        epel_coeffs_s16
 +        mov             r8,  #0
 +4:
-+        epel_strip      0, \elsize
++        epel_strip      \elsize
 +        add             r11, r2,  r8,  lsl #1
 +        sub             r11, r11, r3
-+        vld1.8          {d20-d21}, [r11], r3
-+        vld1.8          {d22-d23}, [r11], r3
-+        vld1.8          {d24-d25}, [r11], r3
++        vld1.8          {d20-d21}, [r11], r3    @ y-1 (8 int16, any alignment)
++        vld1.8          {d22-d23}, [r11], r3    @ y
++        vld1.8          {d24-d25}, [r11], r3    @ y+1
 +5:
-+        vld1.8          {d26-d27}, [r11], r3
-+        vmull.s16       q8,  d20, d7[0]
++        vld1.8          {d26-d27}, [r11], r3    @ y+2
++        vmull.s16       q8,  d20, d7[0]         @ columns 0-3
 +        vmlal.s16       q8,  d22, d7[1]
 +        vmlal.s16       q8,  d24, d7[2]
 +        vmlal.s16       q8,  d26, d7[3]
-+        vmull.s16       q9,  d21, d7[0]
++        vmull.s16       q9,  d21, d7[0]         @ columns 4-7
 +        vmlal.s16       q9,  d23, d7[1]
 +        vmlal.s16       q9,  d25, d7[2]
 +        vmlal.s16       q9,  d27, d7[3]
-+        vshrn.i32       d16, q8,  #6
++        vshrn.i32       d16, q8,  #6            @ A = sum >> 6 (fits int16)
 +        vshrn.i32       d17, q9,  #6
-+        vmov            q10, q11
++        vmov            q10, q11                @ the window moves down a row
 +        vmov            q11, q12
 +        vmov            q12, q13
 +        epel_out        \kind
 +        subs            r9,  r9,  #1
 +        bgt             5b
-+        add             r8,  r8,  #8
-+        cmp             r8,  r6
-+        blt             4b
-+        pop             {r4-r11, pc}
++        epel_next_strip
 +endfunc
 +.endm
 +
++@ The nine functions: ff_hevc_epel_{h,v}{0,1,2}_neon_8 and
++@ ff_hevc_epel_v16_{0,1,2}_neon_8 (kind 0 writes int16, 2 bytes a column)
 +epel_h   0, 2
 +epel_h   1, 1
 +epel_h   2, 1

@@ -61,8 +61,12 @@ echo "== options_test (speed, fast decoding, sound tracks, picture modes)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/options_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/twoaudio_h264_aac_322_184.mp4" 2>&1 |
   grep -v "swscaler\|reelcore: " || bad=1
 
+# the patches reproduce the tested code, and the port's NEON is alignment-safe as written
+echo "== check-fresh-tree (patches/ffmpeg on a fresh FFmpeg = the tested tree)"
+"$TOP/tools/check-fresh-tree.sh" "$F" || bad=1
+
 # yadif's NEON line filter (FFmpeg patch 0015) against its C, bit for bit
-$CC -c "$F/libavfilter/arm/vf_yadif_neon.S" -I$F -o "$O/vf_yadif_neon.o"
+$CC -mfpu=neon -c "$F/libavfilter/arm/vf_yadif_neon.S" -I$F -o "$O/vf_yadif_neon.o"
 $CC -O2 -c "$HERE/yadif_test.c" -o "$O/yadif_test.o"
 arm-linux-gnueabihf-gcc -no-pie -o "$O/yadif_test" "$O/yadif_test.o" "$O/vf_yadif_neon.o"
 echo "== yadif_test (NEON line filter against C)"

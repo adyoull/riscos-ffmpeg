@@ -1,4 +1,4 @@
-From 86c2934713b1db45ee50b87033a3ec329f36eb9e Mon Sep 17 00:00:00 2001
+From 2f129011e8d1e5db3f846b62b486495a0682bd0b Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Sun, 27 Sep 2026 23:25:48 +0100
 Subject: [PATCH 17/17] swscale arm: scaling to RGB32 in NEON (fast bilinear,
@@ -17,11 +17,11 @@ packed RGB output. Now, bit-exact with the C:
 Byte-element loads and stores only.
 ---
  libswscale/arm/Makefile          |   1 +
- libswscale/arm/scaled_rgb_neon.S | 257 +++++++++++++++++++++++++++++++
- libswscale/arm/swscale.c         | 129 ++++++++++++++++
- libswscale/swscale_internal.h    |   9 ++
- libswscale/yuv2rgb.c             |  21 +++
- 5 files changed, 417 insertions(+)
+ libswscale/arm/scaled_rgb_neon.S | 345 +++++++++++++++++++++++++++++++
+ libswscale/arm/swscale.c         | 135 ++++++++++++
+ libswscale/swscale_internal.h    |   9 +
+ libswscale/yuv2rgb.c             |  21 ++
+ 5 files changed, 511 insertions(+)
  create mode 100644 libswscale/arm/scaled_rgb_neon.S
 
 diff --git a/libswscale/arm/Makefile b/libswscale/arm/Makefile
@@ -38,18 +38,84 @@ index 792da6b..d31987f 100644
                 arm/yuv2rgb_neon.o               \
 diff --git a/libswscale/arm/scaled_rgb_neon.S b/libswscale/arm/scaled_rgb_neon.S
 new file mode 100644
-index 0000000..35c3112
+index 0000000..2372b07
 --- /dev/null
 +++ b/libswscale/arm/scaled_rgb_neon.S
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,345 @@
 +/*
-+ * swscale, scaling to RGB32 in NEON for 32-bit ARM:
-+ *  - the fast bilinear horizontal scalers (ff_hyscale_fast_c,
-+ *    ff_hcscale_fast_c), for up to about 1.85x down;
-+ *  - yuv2rgbx32 packed output (_1 and _2 vertical steps), the tables
-+ *    worked out as arithmetic (SwsContext.yuv2rgb_arith).
-+ * Both bit-exact with the C. Byte-element loads and stores only (RISC OS
-+ * traps unaligned wider-element accesses).
++ * swscale: scaling to RGB32 in NEON for 32-bit ARM
++ *
++ * WHAT IT DOES
++ *   When swscale resizes YUV to RGB32 (RGBA/BGRA on little-endian) with
++ *   SWS_FAST_BILINEAR (what players use: ffplay's direct drawing, Reel
++ *   whenever the picture isn't 1:1), two steps did all the work and were C
++ *   on 32-bit ARM:
++ *     1. the fast bilinear horizontal scalers, ff_hyscale_fast_c and
++ *        ff_hcscale_fast_c (hscale_fast_bilinear.c): each output sample
++ *        from the two source samples around its position, into 15-bit
++ *        intermediate lines;
++ *     2. the vertical step and the conversion to RGB, output.c's yuv2rgbx32
++ *        _1 (one line, or two chroma lines averaged) and _2 (two lines
++ *        weighted), which look the colours up in tables.
++ *   Both are here, bit-exact with the C: tests/host/swscale_rgb_test.c
++ *   compares the functions alone and whole pictures (in the same context,
++ *   with and without them), over many scales and colour settings.
++ *
++ * 1. THE HORIZONTAL SCALERS
++ *   C, for output i (xpos = i * xInc, 16.16 fixed point):
++ *     xx = xpos >> 16,  a = (xpos & 0xFFFF) >> 9   (a 7-bit weight)
++ *     luma:   dst[i] = (src[xx] << 7) + (src[xx+1] - src[xx]) * a
++ *                    = src[xx] * (128 - a) + src[xx+1] * a
++ *     chroma: dst[i] = src[xx] * (a ^ 127) + src[xx+1] * a     (a ^ 127 = 127 - a)
++ *   NEON has no gather load, but for 8 outputs xx spans at most 15 bytes
++ *   while xInc < 13/7 * 65536 (about 1.85x down). So: load the 16 bytes
++ *   from the first output's xx, and pick each output's two bytes with
++ *   vtbl (index = its xx - the first's). The positions are kept as 8
++ *   32-bit lanes (q8, q9) and stepped by 8 * xInc; unsigned wrap-around
++ *   matches the C's unsigned xpos. The products fit 16 bits unsigned
++ *   (255 * 128 at most).
++ *   The C wrappers (arm/swscale.c) give this function only whole groups of
++ *   8 whose 16 bytes lie inside the source line, and finish the line, and
++ *   larger scales, with the C's own loop.
++ *
++ * 2. THE RGB OUTPUT
++ *   The C (not SWS_FULL_CHR_H_INT: one chroma sample for two pixels):
++ *     Y, U, V from the 15-bit lines: _2: (a0 * (4096 - w) + a1 * w) >> 19;
++ *     _1: (a + 64) >> 7 (or (u0 + u1 + 128) >> 8 for chroma when
++ *     uvalpha >= 2048); then r[Y] + g[Y] + b[Y], where r = table_rV[V],
++ *     g = table_gU[U] + table_gV[V], b = table_bU[U]: pointers into
++ *     32-bit tables that hold each channel already shifted into place.
++ *   NEON can't look up tables that size, but the tables are built by
++ *   arithmetic (yuv2rgb.c, ff_yuv2rgb_c_init_tables), which works out to
++ *     R = clip_u8((Y * cy + kR + ((clip_u8(V) * crv) >> 16) * cy) >> 16)
++ *     G = clip_u8((Y * cy + kG + (((clip_u8(U) * cgu) >> 16) + ((clip_u8(V) * cgv) >> 16)) * cy) >> 16)
++ *     B = clip_u8((Y * cy + kB + ((clip_u8(U) * cbu) >> 16) * cy) >> 16)
++ *   with cy, crv, cbu, cgu, cgv and the constants k as the table code has
++ *   them (it stores them in SwsContext.yuv2rgb_arith, and sets
++ *   yuv2rgb_arith_ok only where every term fits 32 bits). The table index
++ *   a pixel's value comes from is Y plus its chroma's offset; the value at
++ *   index i is clip_u8((yb + i * cy + 0x8000) >> 16): the formula above
++ *   with the constant parts folded into k. Every step is an integer
++ *   operation the C does too, so the result is the same byte.
++ *   - ">> 16 and clip to 0..255" is vqshrun.s32 #16 (to 0..65535) then
++ *     vqmovn.u16 (to 0..255): saturation is the clip.
++ *   - The chroma part is worked out for 4 chroma samples and each is used
++ *     for two pixels (vzip.32 with a copy).
++ *   - Alpha: 255, as the table adds for formats without alpha.
++ *   The wrappers give this function whole groups of 8 pixels and finish
++ *   the line (dstW is even here: swscale uses full chroma for odd widths)
++ *   with the C function, from the same offsets.
++ *
++ * RISC OS
++ *   Only byte-element loads and stores (vld1.8 / vst1.8 / vst4.8) with no
++ *   alignment qualifier, which never fault whatever the address: RISC OS
++ *   runs with alignment checking on, and wider elements fault on
++ *   addresses that aren't a multiple of their size (docs/NEON.md). The
++ *   constants come from the argument block with plain ldr (C int32_t
++ *   fields: word-aligned). tools/neon-align.py --check finds nothing to
++ *   change here; run.sh keeps it that way.
++ *
++ * Written for riscos-ffmpeg (patch 0017).
 + *
 + * This file is part of FFmpeg.
 + *
@@ -70,7 +136,10 @@ index 0000000..35c3112
 +
 +#include "libavutil/arm/asm.S"
 +
-+@ The positions of 8 outputs: q8 = xpos of 0..3, q9 of 4..7, q10 = 8 * xInc
++@ ---- 1. the fast bilinear horizontal scalers -----------------------------
++
++@ The positions of 8 outputs from xpos 0: q8 = outputs 0..3, q9 = 4..7,
++@ q10 = the step (8 * xInc) in every lane. d31 = 127 in every byte.
 +.macro  xpos_start xinc
 +        mov             ip,  #0
 +        vmov.32         d16[0], ip
@@ -93,27 +162,30 @@ index 0000000..35c3112
 +        vmov.i8         d31, #0x7f
 +.endm
 +
-+@ lr = xx of output 0; d2 = the 8 xx - lr, d3 = d2 + 1, d4 = xalpha (7 bits)
++@ For the 8 outputs at q8/q9: lr = the first one's xx; d2 = each one's xx
++@ minus that (0..14: the vtbl index of src[xx]), d3 = d2 + 1 (of src[xx+1]),
++@ d4 = the weight a = (xpos & 0xFFFF) >> 9. Then steps q8/q9 on by 8.
 +.macro  xpos_split
 +        vmov.32         lr,  d16[0]
 +        lsr             lr,  lr,  #16
-+        vshrn.u32       d2,  q8,  #16
++        vshrn.u32       d2,  q8,  #16           @ xx (low 16 bits are enough)
 +        vshrn.u32       d3,  q9,  #16
 +        vdup.16         q2,  lr
 +        vsub.i16        q1,  q1,  q2
 +        vmovn.i16       d2,  q1
 +        vmov.i8         d3,  #1
 +        vadd.i8         d3,  d2,  d3
-+        vshrn.u32       d4,  q8,  #9
++        vshrn.u32       d4,  q8,  #9            @ bits 9..16 of xpos ...
 +        vshrn.u32       d5,  q9,  #9
 +        vmovn.i16       d4,  q2
-+        vand            d4,  d4,  d31
++        vand            d4,  d4,  d31           @ ... keep 9..15: (xpos & 0xFFFF) >> 9
 +        vadd.i32        q8,  q8,  q10
 +        vadd.i32        q9,  q9,  q10
 +.endm
 +
 +@ void ff_hyscale_fast_neon(int16_t *dst, const uint8_t *src, int groups, int xInc)
-+@ groups of 8 outputs from 0; every source byte read is below xx(first) + 16
++@ groups of 8 outputs from output 0 (the caller checks each group's 16
++@ source bytes are inside the line)
 +function ff_hyscale_fast_neon, export=1
 +        push            {r4, lr}
 +        xpos_start      r3
@@ -121,13 +193,13 @@ index 0000000..35c3112
 +1:
 +        xpos_split
 +        add             r4,  r1,  lr
-+        vld1.8          {d0-d1}, [r4]
-+        vtbl.8          d6,  {d0-d1}, d2
-+        vtbl.8          d7,  {d0-d1}, d3
-+        vsub.i8         d5,  d30, d4            @ 128 - xalpha
-+        vmull.u8        q12, d6,  d5            @ (a << 7) + (b - a) * xalpha
++        vld1.8          {d0-d1}, [r4]           @ src[xx0 .. xx0+15]
++        vtbl.8          d6,  {d0-d1}, d2        @ src[xx]
++        vtbl.8          d7,  {d0-d1}, d3        @ src[xx+1]
++        vsub.i8         d5,  d30, d4            @ 128 - a
++        vmull.u8        q12, d6,  d5            @ src[xx] * (128 - a) + src[xx+1] * a
 +        vmlal.u8        q12, d7,  d4
-+        vst1.8          {d24-d25}, [r0]!
++        vst1.8          {d24-d25}, [r0]!        @ 8 int16 (byte stores: any alignment)
 +        subs            r2,  r2,  #1
 +        bgt             1b
 +        pop             {r4, pc}
@@ -135,26 +207,27 @@ index 0000000..35c3112
 +
 +@ void ff_hcscale_fast_neon(int16_t *dst1, int16_t *dst2, const uint8_t *src1,
 +@                           const uint8_t *src2, int groups, int xInc)
++@ U and V together: the same positions and weights for both
 +function ff_hcscale_fast_neon, export=1
 +        push            {r4-r6, lr}
-+        ldr             r4,  [sp, #16]          @ groups
++        ldr             r4,  [sp, #16]          @ groups (4 registers pushed = 16 bytes)
 +        ldr             r5,  [sp, #20]          @ xInc
 +        xpos_start      r5
 +1:
 +        xpos_split
-+        vsub.i8         d5,  d31, d4            @ xalpha ^ 127
++        vsub.i8         d5,  d31, d4            @ a ^ 127 (= 127 - a)
 +        add             r6,  r2,  lr
 +        vld1.8          {d0-d1}, [r6]
 +        vtbl.8          d6,  {d0-d1}, d2
 +        vtbl.8          d7,  {d0-d1}, d3
-+        vmull.u8        q12, d6,  d5
++        vmull.u8        q12, d6,  d5            @ src1[xx] * (a ^ 127) + src1[xx+1] * a
 +        vmlal.u8        q12, d7,  d4
 +        vst1.8          {d24-d25}, [r0]!
 +        add             r6,  r3,  lr
 +        vld1.8          {d0-d1}, [r6]
 +        vtbl.8          d6,  {d0-d1}, d2
 +        vtbl.8          d7,  {d0-d1}, d3
-+        vmull.u8        q12, d6,  d5
++        vmull.u8        q12, d6,  d5            @ the same for src2
 +        vmlal.u8        q12, d7,  d4
 +        vst1.8          {d24-d25}, [r1]!
 +        subs            r4,  r4,  #1
@@ -162,45 +235,59 @@ index 0000000..35c3112
 +        pop             {r4-r6, pc}
 +endfunc
 +
++@ ---- 2. yuv2rgbx32: the vertical step and RGB ----------------------------
++
 +@ void ff_yuv2rgbx32_neon(const YUV2RGBX32Args *a, uint8_t *dest, int groups,
 +@                         int mode, int rgb32)
-+@ a: y0, y1, u0, u1, v0, v1 (int16_t *), then int32: yalpha1, yalpha,
-+@    uvalpha1, uvalpha, cy, crv, cbu, cgu, cgv, kR, kG, kB
-+@ mode 0: yuv2rgb_2 (both lines weighted), 1: yuv2rgb_1 with uvalpha < 2048,
-+@ 2: yuv2rgb_1 with uvalpha >= 2048. groups of 8 pixels (4 chroma).
-+@ rgb32: bytes B, G, R, A (AV_PIX_FMT_RGB32 on little-endian); else R, G, B, A.
++@ a (arm/swscale.c; offsets in bytes):
++@    0  y0, y1, u0, u1, v0, v1         the 15-bit lines (int16_t *)
++@   24  yalpha1, yalpha, uvalpha1, uvalpha    (int32_t; the weights, 0..4096)
++@   40  cy, crv, cbu, cgu, cgv, kR, kG, kB    (int32_t; SwsContext.yuv2rgb_arith)
++@ mode  0: yuv2rgbx32_2 (two lines, weighted)
++@       1: yuv2rgbx32_1, uvalpha < 2048 (one line; the first chroma line)
++@       2: yuv2rgbx32_1, uvalpha >= 2048 (chroma: the two lines averaged)
++@ groups: of 8 pixels (4 chroma samples)
++@ rgb32 != 0: bytes B, G, R, A (AV_PIX_FMT_RGB32 on little-endian);
++@         0: R, G, B, A (AV_PIX_FMT_BGR32)
 +@
-+@ d0 {yalpha1, yalpha, uvalpha1, uvalpha} (s16); d1 {cy, crv}; d2 {cbu, cgu};
-+@ d3 {cgv, -}; q2 kR, q3 kG, q4 kB; d10-d13 R, G, B, A out
++@ Core registers
++@   r1 dest, r2 groups, r3 mode, r4-r9 y0 y1 u0 u1 v0 v1, r10 rgb32, ip scratch
++@ NEON registers
++@   d0 {yalpha1, yalpha, uvalpha1, uvalpha} (s16 scalars: must be in d0-d7)
++@   d1 {cy, crv}   d2 {cbu, cgu}   d3 {cgv, -}          (s32 scalars)
++@   q2 kR, q3 kG, q4 kB (in every lane)
++@   q12, q13  Y * cy for pixels 0-3, 4-7;  q8 U, q9 V (4 chroma, 0..255)
++@   d10 R, d11 G, d12 B, d13 A = 255: vst4.8 interleaves them
++@   (d8-d13 are callee-saved, hence vpush)
 +function ff_yuv2rgbx32_neon, export=1
 +        push            {r4-r11, lr}
 +        vpush           {d8-d13}
-+        ldr             r10, [sp, #84]          @ rgb32
++        ldr             r10, [sp, #84]          @ rgb32 (9 + 6*2 words pushed = 84 bytes)
 +        ldm             r0,  {r4-r9}            @ y0, y1, u0, u1, v0, v1
 +        ldr             ip,  [r0, #24]
-+        vmov.16         d0[0], ip
++        vmov.16         d0[0], ip               @ yalpha1
 +        ldr             ip,  [r0, #28]
-+        vmov.16         d0[1], ip
++        vmov.16         d0[1], ip               @ yalpha
 +        ldr             ip,  [r0, #32]
-+        vmov.16         d0[2], ip
++        vmov.16         d0[2], ip               @ uvalpha1
 +        ldr             ip,  [r0, #36]
-+        vmov.16         d0[3], ip
++        vmov.16         d0[3], ip               @ uvalpha
 +        add             ip,  r0,  #40
-+        vld1.8          {d1-d3}, [ip]           @ cy, crv, cbu, cgu, cgv, kR
-+        add             ip,  r0,  #60
-+        vld1.32         {d4[], d5[]}, [ip]      @ kR  (the struct is 4-aligned)
-+        add             ip,  r0,  #64
-+        vld1.32         {d6[], d7[]}, [ip]      @ kG
-+        add             ip,  r0,  #68
-+        vld1.32         {d8[], d9[]}, [ip]      @ kB
-+        vmov.i8         d13, #255
++        vld1.8          {d1-d3}, [ip]           @ cy, crv, cbu, cgu, cgv, (kR)
++        ldr             ip,  [r0, #60]
++        vdup.32         q2,  ip                 @ kR
++        ldr             ip,  [r0, #64]
++        vdup.32         q3,  ip                 @ kG
++        ldr             ip,  [r0, #68]
++        vdup.32         q4,  ip                 @ kB
++        vmov.i8         d13, #255               @ alpha
 +1:
 +        cmp             r3,  #0
 +        bne             2f
-+        @ _2: Y = (y0 * yalpha1 + y1 * yalpha) >> 19, U, V the same with uvalpha
-+        vld1.8          {d16-d17}, [r4]!
++        @ _2: Y = (y0 * yalpha1 + y1 * yalpha) >> 19, U and V the same with uvalpha
++        vld1.8          {d16-d17}, [r4]!        @ 8 Y from each line
 +        vld1.8          {d18-d19}, [r5]!
-+        vld1.8          {d20}, [r6]!
++        vld1.8          {d20}, [r6]!            @ 4 U, 4 V from each line
 +        vld1.8          {d21}, [r7]!
 +        vld1.8          {d22}, [r8]!
 +        vld1.8          {d23}, [r9]!
@@ -218,7 +305,7 @@ index 0000000..35c3112
 +        vshr.s32        q9,  q9,  #19
 +        b               4f
 +2:
-+        @ _1: Y = (y0 + 64) >> 7
++        @ _1: Y = (y0 + 64) >> 7 (vrshr rounds without overflowing)
 +        vld1.8          {d16-d17}, [r4]!
 +        vrshr.s16       q8,  q8,  #7
 +        vmovl.s16       q12, d16
@@ -228,13 +315,13 @@ index 0000000..35c3112
 +        cmp             r3,  #1
 +        bne             3f
 +        vrshr.s16       d20, d20, #7            @ U = (u0 + 64) >> 7
-+        vrshr.s16       d22, d22, #7
++        vrshr.s16       d22, d22, #7            @ V = (v0 + 64) >> 7
 +        vmovl.s16       q8,  d20
 +        vmovl.s16       q9,  d22
 +        b               4f
 +3:
 +        vld1.8          {d21}, [r7]!            @ U = (u0 + u1 + 128) >> 8
-+        vld1.8          {d23}, [r9]!
++        vld1.8          {d23}, [r9]!            @ (summed in 32 bits: 2 x 32640 > 32767)
 +        vaddl.s16       q8,  d20, d21
 +        vaddl.s16       q9,  d22, d23
 +        vrshr.s32       q8,  q8,  #8
@@ -242,26 +329,27 @@ index 0000000..35c3112
 +4:
 +        vmul.i32        q12, q12, d1[0]         @ Y * cy
 +        vmul.i32        q13, q13, d1[0]
-+        vqmovun.s32     d20, q8                 @ U, V into 0..255 (the tables' clip)
++        @ U and V clipped to 0..255, as the tables' index clip does
++        vqmovun.s32     d20, q8                 @ (< 0 -> 0)
 +        vqmovun.s32     d21, q9
-+        vqmovn.u16      d20, q10
++        vqmovn.u16      d20, q10                @ (> 255 -> 255): U0-3, V0-3 as bytes
 +        vmovl.u8        q10, d20
 +        vmovl.u16       q8,  d20                @ U
 +        vmovl.u16       q9,  d21                @ V
 +
-+        @ R: kR + ((V * crv) >> 16) * cy
++        @ R: Y * cy + kR + ((V * crv) >> 16) * cy, >> 16, clipped
 +        vmul.i32        q10, q9,  d1[1]
 +        vshr.s32        q10, q10, #16
 +        vmov            q11, q2
 +        vmla.i32        q11, q10, d1[0]
 +        vmov            q10, q11
-+        vzip.32         q11, q10                @ each for two pixels
++        vzip.32         q11, q10                @ q11 = k0 k0 k1 k1, q10 = k2 k2 k3 k3
 +        vadd.i32        q11, q11, q12
 +        vadd.i32        q10, q10, q13
 +        vqshrun.s32     d22, q11, #16
 +        vqshrun.s32     d23, q10, #16
 +        vqmovn.u16      d10, q11
-+        @ B: kB + ((U * cbu) >> 16) * cy
++        @ B: Y * cy + kB + ((U * cbu) >> 16) * cy
 +        vmul.i32        q10, q8,  d2[0]
 +        vshr.s32        q10, q10, #16
 +        vmov            q11, q4
@@ -273,7 +361,7 @@ index 0000000..35c3112
 +        vqshrun.s32     d22, q11, #16
 +        vqshrun.s32     d23, q10, #16
 +        vqmovn.u16      d12, q11
-+        @ G: kG + (((U * cgu) >> 16) + ((V * cgv) >> 16)) * cy
++        @ G: Y * cy + kG + (((U * cgu) >> 16) + ((V * cgv) >> 16)) * cy
 +        vmul.i32        q10, q8,  d2[1]
 +        vmul.i32        q14, q9,  d3[0]
 +        vshr.s32        q10, q10, #16
@@ -289,18 +377,18 @@ index 0000000..35c3112
 +        vqshrun.s32     d23, q10, #16
 +        vqmovn.u16      d11, q11
 +
-+        cmp             r10, #0
++        cmp             r10, #0                 @ RGB32: B first
 +        beq             5f
 +        vswp            d10, d12
 +5:
-+        vst4.8          {d10-d13}, [r1]!
++        vst4.8          {d10-d13}, [r1]!        @ 8 pixels, 4 bytes each, interleaved
 +        subs            r2,  r2,  #1
 +        bgt             1b
 +        vpop            {d8-d13}
 +        pop             {r4-r11, pc}
 +endfunc
 diff --git a/libswscale/arm/swscale.c b/libswscale/arm/swscale.c
-index 5f2fd2c..e2f05e6 100644
+index 5f2fd2c..9e6345d 100644
 --- a/libswscale/arm/swscale.c
 +++ b/libswscale/arm/swscale.c
 @@ -16,6 +16,8 @@
@@ -312,7 +400,7 @@ index 5f2fd2c..e2f05e6 100644
  #include "config.h"
  #include "libavutil/attributes.h"
  #include "libswscale/swscale.h"
-@@ -30,6 +32,119 @@ void ff_yuv2planeX_8_neon(const int16_t *filter, int filterSize,
+@@ -30,6 +32,125 @@ void ff_yuv2planeX_8_neon(const int16_t *filter, int filterSize,
                            const int16_t **src, uint8_t *dest, int dstW,
                            const uint8_t *dither, int offset);
  
@@ -330,6 +418,12 @@ index 5f2fd2c..e2f05e6 100644
 +
 +void ff_yuv2rgbx32_neon(const YUV2RGBX32Args *a, uint8_t *dest, int groups,
 +                        int mode, int rgb32);
++
++/* scaled_rgb_neon.S reads the block at these offsets */
++#include <stddef.h>
++_Static_assert(offsetof(YUV2RGBX32Args, yalpha1) == 24 && offsetof(YUV2RGBX32Args, k) == 40 &&
++               sizeof(((YUV2RGBX32Args *)0)->k) == sizeof(((SwsContext *)0)->yuv2rgb_arith),
++               "YUV2RGBX32Args must match ff_yuv2rgbx32_neon's offsets");
 +
 +/* Groups of 8 outputs the NEON scalers can do from the start of the line:
 +   a group's source is 16 bytes from its first position, within the line
@@ -432,7 +526,7 @@ index 5f2fd2c..e2f05e6 100644
  av_cold void ff_sws_init_swscale_arm(SwsContext *c)
  {
      int cpu_flags = av_get_cpu_flags();
-@@ -44,5 +159,19 @@ av_cold void ff_sws_init_swscale_arm(SwsContext *c)
+@@ -44,5 +165,19 @@ av_cold void ff_sws_init_swscale_arm(SwsContext *c)
          if (c->dstBpc == 8) {
              c->yuv2planeX = ff_yuv2planeX_8_neon;
          }

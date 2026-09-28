@@ -19,7 +19,10 @@
 #define FFMIN(a,b) ((a) > (b) ? (b) : (a))
 #define FFMIN3(a,b,c) FFMIN(FFMIN(a,b),c)
 
-/* ---- vf_yadif.c (FFmpeg 5.1.10), unchanged ---- */
+/* ---- vf_yadif.c (FFmpeg 5.1.10), unchanged ----
+   A copy, so the NEON is compared with the C as FFmpeg has it. When
+   updating FFmpeg, copy FILTER, CHECK and filter_line_c again if
+   vf_yadif.c changed them (docs/NEON.md, "Updating FFmpeg"). */
 #define CHECK(j)\
     {   int score = FFABS(cur[mrefs - 1 + (j)] - cur[prefs - 1 - (j)])\
                   + FFABS(cur[mrefs  +(j)] - cur[prefs  -(j)])\

@@ -1,5 +1,9 @@
 # Unaligned access and the ARM assembly
 
+(The overview, the NEON added by this port, rules for new NEON and how to
+maintain it all: `docs/NEON.md`. This file is the detail of making the
+codecs' own assembly safe.)
+
 ## The problem
 
 RISC OS 5 runs ARMv7 CPUs with alignment checking on (SCTLR.A = 1). An
@@ -117,8 +121,8 @@ used; the C versions run instead. NEON has no 4-wide SAD.
 
 Results:
 
-- **FFmpeg checkasm:** 881/881 tests pass (every arm32 DSP function it
-  knows).
+- **FFmpeg checkasm:** 962/962 tests pass (every arm32 DSP function it
+  knows; 881 at riscos2).
 - **dav1d checkasm:** 2039/2039 pass (built with `-Dtrim_dsp=false`).
 - **x264 checkasm** (8 and 10 bit): "All tests passed".
 - **`run.sh`:** 128 ffmpeg jobs.
@@ -171,3 +175,6 @@ still has a NEON access with a wide element and no qualifier. In
 3. Run `tools/scan-neon.py` on the RISC OS binary. Also look for new
    `ldr`/`ldrh`/`str` on byte pointers in any assembly the tests don't
    reach.
+4. Run `tests/host/run.sh` (the port's own NEON: patches 0015-0017) and
+   `tools/check-fresh-tree.sh` (the patches reproduce the tested code).
+   `docs/NEON.md` section 6 has the rest.
