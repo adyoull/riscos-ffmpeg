@@ -92,6 +92,7 @@ int __dynamic_da_max_size = 512 << 20;
 #define Wimp_UpdateWindow      0x400C9
 #define Wimp_GetRectangle      0x400CA
 #define Wimp_GetWindowState    0x400CB
+#define OS_SWINumberFromString 0x39
 #define Wimp_SetIconState      0x400CD
 #define Wimp_GetPointerInfo    0x400CF
 #define Wimp_DragBox           0x400D0
@@ -252,6 +253,7 @@ static struct {
     int speed_i;                        /* speeds[] */
     int fast;                           /* fast decoding */
     int deint_i;                        /* deint_modes[] */
+    int hw_accel;                       /* Hardware acceleration: the overlay when there is one */
     int ab;                             /* A-B repeat: 0 off, 1 A set, 2 repeating */
     double ab_a, ab_b;
     /* the playlist */
@@ -393,10 +395,13 @@ static void log_open(void)
 /* Opens the log in the editor (Filer_Run) */
 static void log_show(void);
 
+static int ov_hide(void);
+
 static void report(const char *text)
 {
     _kernel_oserror e;
     _kernel_swi_regs r;
+    ov_hide();                          /* the overlay would cover the error box */
     e.errnum = 0;
     snprintf(e.errmess, sizeof(e.errmess), "%s", text);
     lg("report: %s", text);
@@ -1003,6 +1008,342 @@ static void update_controls(int force)
     }
 }
 
+/* ---- hardware overlay (VideoOverlay) -----------------------------------
+
+   "Hardware acceleration" on the window menu (on by default, in Choices):
+   when the VideoOverlay module can give us one, each new picture is copied
+   as YV12 (Y, Cb, Cr planes: the decoder's own yuv420p) into an overlay
+   buffer and the display scales it and turns it into RGB on its way to the
+   monitor, instead of swscale converting and scaling it and the sprite (or
+   EGL surface) being plotted. What the Pi 4 taught us (riscos-mesa's
+   ovltest, 2026-09-28, VideoOverlay 0.02, BCMVideo):
+     - Vet fails for every format: probe with Create;
+     - overlay memory is uncached (write 2-3 GB/s, read 152 MB/s): only
+       ever write it (row copies), never read it back;
+     - a buffer switch takes effect at the next vsync: 3 buffers, and never
+       write into one until a vsync has passed since the last switch
+       (else it tears); 2 when the GPU has no room for 3;
+     - the overlay is "Basic": it covers everything, menus and windows
+       included, so while anything overlaps the picture (found by walking
+       the window stack up from ours), while paused, at the end and around
+       error boxes it is hidden and the picture is drawn as before;
+     - a mode change doesn't free the old overlay: destroy it ourselves.
+   Everything falls back to drawing as before, with no error: the option
+   off, Reel$NoOverlay or EGL$Overlay "off" set, the module missing, Create
+   refusing, a buffer that can't be mapped, a size outside the overlay's
+   scaling limits, or any error while showing a picture (then not again
+   until the video's size or the screen mode changes). */
+
+enum { OV_CREATE, OV_DESTROY, OV_DISPLAY, OV_MAP, OV_UNMAP, OV_SCALE, OV_WINDOW, OV_POSITION, OV_REDRAW, OV_N };
+static const char *const ov_names[OV_N] = {
+    "VideoOverlay_Create", "VideoOverlay_Destroy", "VideoOverlay_DisplayBuffer", "VideoOverlay_MapBuffer",
+    "VideoOverlay_UnmapBuffer", "VideoOverlay_SetScale", "VideoOverlay_SetWindow", "VideoOverlay_SetPosition",
+    "VideoOverlay_RedrawWindow"
+};
+#define YV12_FOURCC 0x32315659
+
+static struct {
+    int found;                          /* the SWIs were found */
+    int swi[OV_N];
+    int id, type, banks, next, last, shown, vsync;
+    int minw, minh, maxw, maxh;         /* its scaling limits (pixels) */
+    int win;                            /* the window it's attached to */
+    int fw, fh, colour, mode;           /* what it was made for (or failed for) */
+    int failed;                         /* not again until those change */
+    int placed[9];
+} ov;
+
+static int ov_allowed(void)
+{
+    const char *e = getenv("EGL$Overlay");      /* one switch for every program's overlays */
+    if (!S.hw_accel || getenv(APP "$NoOverlay"))
+        return 0;
+    return !(e && (!strcasecmp(e, "off") || !strcasecmp(e, "no") || !strcmp(e, "0")));
+}
+
+/* Is VideoOverlay loaded? (Looked for again each time until it is: it may be loaded later.) */
+static int ov_available(void)
+{
+    _kernel_swi_regs r;
+    if (ov.found)
+        return 1;
+    for (int i = 0; i < OV_N; i++) {
+        r.r[0] = 0;
+        r.r[1] = (intptr_t)ov_names[i];
+        if (swi(OS_SWINumberFromString, &r))
+            return 0;
+        ov.swi[i] = r.r[0] & ~0x20000;
+    }
+    ov.found = 1;
+    return 1;
+}
+
+static _kernel_oserror *ov_call(int which, int a, int b)
+{
+    _kernel_swi_regs r;
+    r.r[0] = a;
+    r.r[1] = b;
+    return swi(ov.swi[which], &r);
+}
+
+static int ov_vsyncs(void)
+{
+    _kernel_swi_regs r;
+    r.r[0] = 176;                       /* OS_Byte 176: the vsync counter */
+    r.r[1] = 0;
+    r.r[2] = 255;
+    return swi(0x06, &r) ? 0 : r.r[1] & 0xFF;
+}
+
+static int ov_mode_sig(void) { return S.scr_w ^ (S.scr_h << 12) ^ (S.log2bpp << 24) ^ (S.trgb << 28); }
+
+static void ov_destroy(void)
+{
+    if (ov.id) {
+        if (ov.shown)
+            ov_call(OV_DISPLAY, ov.id, -1);
+        ov_call(OV_DESTROY, ov.id, 0);
+        lg("overlay: destroyed");
+    }
+    ov.id = ov.shown = ov.win = 0;
+}
+
+static void ov_fail(const char *why)
+{
+    ov_destroy();
+    ov.failed = 1;
+    lg("overlay: %s: drawing as before", why);
+}
+
+/* Hides the overlay (the caller draws the picture as before); 1 if it was showing */
+static int ov_hide(void)
+{
+    if (!ov.shown)
+        return 0;
+    ov_call(OV_DISPLAY, ov.id, -1);
+    ov.shown = 0;
+    return 1;
+}
+
+/* A YV12 overlay of the frame's size and colours: 3 buffers, else 2, each
+   mapped once now so a GPU without room shows up here. */
+static int ov_create(int fw, int fh, int colour)
+{
+    int sel[12], b, banks;
+    _kernel_swi_regs r;
+    for (banks = 3; banks >= 2; banks--) {
+        sel[0] = 1; sel[1] = fw; sel[2] = fh; sel[3] = 7; sel[4] = -1;     /* Log2BPP 7: planar */
+        sel[5] = 0;                                     /* ModeFlags: YCbCr, bit 14 video range, bit 15 BT.709 */
+        sel[6] = 0x2000 | (colour & REELCORE_YUV_FULL ? 0 : 0x4000) | (colour & REELCORE_YUV_709 ? 0x8000 : 0);
+        sel[7] = 3; sel[8] = YV12_FOURCC;               /* NColour */
+        sel[9] = 13; sel[10] = banks;                   /* MinScreenBanks */
+        sel[11] = -1;
+        r.r[0] = (intptr_t)sel;
+        r.r[1] = (fw << 16) | fh;
+        r.r[2] = 1;                                     /* must scale */
+        r.r[3] = S.task;
+        if (swi(ov.swi[OV_CREATE], &r)) {
+            lg("overlay: Create refused YV12 %dx%d", fw, fh);
+            return 0;
+        }
+        ov.id = r.r[0];
+        ov.type = r.r[1] & 0xFF;
+        ov.minw = r.r[2]; ov.minh = r.r[3]; ov.maxw = r.r[4]; ov.maxh = r.r[5];
+        for (b = 0; b < banks; b++) {
+            if (ov_call(OV_MAP, ov.id, b))
+                break;
+            ov_call(OV_UNMAP, ov.id, b);
+        }
+        if (b == banks)
+            break;
+        lg("overlay: only %d of %d buffers (GPU memory)", b, banks);
+        ov_call(OV_DESTROY, ov.id, 0);
+        ov.id = 0;
+    }
+    if (!ov.id)
+        return 0;
+    ov.banks = banks;
+    ov.next = 0;
+    ov.last = -1;
+    ov.win = 0;
+    ov.vsync = ov_vsyncs() - 1;                         /* "a vsync has passed since" */
+    memset(ov.placed, 0, sizeof(ov.placed));
+    lg("overlay: YV12 %dx%d, BT.%s %s range, %d buffers, %s, scales %dx%d to %dx%d", fw, fh,
+       colour & REELCORE_YUV_709 ? "709" : "601", colour & REELCORE_YUV_FULL ? "full" : "video", banks,
+       ov.type == 0 ? "Z-Order" : ov.type == 1 ? "Basic" : "type ?", ov.minw, ov.minh, ov.maxw, ov.maxh);
+    return 1;
+}
+
+/* The picture area of window w (work area coordinates) */
+static box_t ov_pic_box(int w)
+{
+    return S.fullscreen && w == S.full ? (box_t){ 0, -S.vis_h, S.vis_w, 0 } : S.pic;
+}
+
+/* Is anything over the picture: the window not open, or a window or menu
+   in front of it overlapping the picture? Each window's "behind" word is
+   the window just in front of it (-1 at the front). */
+static int ov_covered(int w)
+{
+    int st[9], o[9], n, h;
+    box_t pic = ov_pic_box(w), sc;
+    window_state(w, st);
+    if (!(st[8] & (1 << 16)))
+        return 1;
+    sc.x0 = st[1] - st[5] + pic.x0; sc.x1 = st[1] - st[5] + pic.x1;
+    sc.y0 = st[4] - st[6] + pic.y0; sc.y1 = st[4] - st[6] + pic.y1;
+    for (h = st[7], n = 0; h != -1 && n < 256; n++) {
+        _kernel_swi_regs r;
+        o[0] = h;
+        r.r[1] = (intptr_t)o;
+        if (swi(Wimp_GetWindowState, &r))
+            return 1;                                   /* can't tell: be safe */
+        if ((o[8] & (1 << 16)) && o[1] < sc.x1 && o[3] > sc.x0 && o[2] < sc.y1 && o[4] > sc.y0)
+            return 1;
+        h = o[7];
+    }
+    return 0;
+}
+
+/* Sizes and places the overlay over the picture area as the picture mode
+   says (Fit, Fill, Original, Stretch), clipped to it. 1 placed, 0 outside
+   its scaling limits (drawn as before at this size), -1 an error. */
+static int ov_place(int w)
+{
+    box_t pic = ov_pic_box(w);
+    int bw = (pic.x1 - pic.x0) >> S.xeig, bh = (pic.y1 - pic.y0) >> S.yeig;
+    int dw = reelcore_width(S.v), dh = reelcore_height(S.v), rw = bw, rh = bh, x, y;
+    int want[9];
+    _kernel_swi_regs r;
+    if (bw < 1 || bh < 1 || dw < 1 || dh < 1)
+        return 0;
+    if (S.pic_mode != PIC_STRETCH) {
+        double sx = (double)bw / dw, sy = (double)bh / dh;
+        double sc = S.pic_mode == PIC_FIT ? (sx < sy ? sx : sy) : S.pic_mode == PIC_FILL ? (sx > sy ? sx : sy) : 1.0;
+        rw = (int)(dw * sc + 0.5);
+        rh = (int)(dh * sc + 0.5);
+        if (S.pic_mode == PIC_FIT) {
+            if (rw > bw) rw = bw;
+            if (rh > bh) rh = bh;
+        }
+    }
+    if (rw < 1) rw = 1;
+    if (rh < 1) rh = 1;
+    if ((ov.minw && rw < ov.minw) || (ov.minh && rh < ov.minh) || (ov.maxw && rw > ov.maxw) || (ov.maxh && rh > ov.maxh))
+        return 0;
+    x = pic.x0 + (((bw - rw) / 2) << S.xeig);           /* top left: can be outside (Fill, Original) */
+    y = pic.y1 - (((bh - rh) / 2) << S.yeig);
+    want[0] = w; want[1] = rw; want[2] = rh; want[3] = x; want[4] = y;
+    want[5] = pic.x0; want[6] = pic.y0; want[7] = pic.x1; want[8] = pic.y1;
+    if (!memcmp(want, ov.placed, sizeof(want)))
+        return 1;
+    if (ov.win != w) {
+        if (ov_call(OV_WINDOW, ov.id, w))
+            return -1;
+        ov.win = w;
+    }
+    r.r[0] = ov.id; r.r[1] = rw; r.r[2] = rh; r.r[3] = (rw << 16) | rh;
+    if (swi(ov.swi[OV_SCALE], &r))
+        return -1;
+    r.r[0] = ov.id; r.r[1] = x; r.r[2] = y;
+    r.r[3] = pic.x0; r.r[4] = pic.y0; r.r[5] = pic.x1; r.r[6] = pic.y1;
+    if (swi(ov.swi[OV_POSITION], &r))
+        return -1;
+    memcpy(ov.placed, want, sizeof(want));
+    lg("overlay: %dx%d pixels at %d,%d in window &%x", rw, rh, x, y, w);
+    return 1;
+}
+
+/* A new picture: shown through the overlay if we can (1), else the caller
+   draws it as before (0). */
+static int ov_show_frame(void)
+{
+    int w = S.fullscreen ? S.full : S.win, fw, fh, colour, mode, placed, b;
+    _kernel_swi_regs r;
+    if (!S.v || !w || reelcore_paused(S.v) || S.ended || !ov_allowed() || !ov_available() ||
+        reelcore_frame_size(S.v, &fw, &fh) < 0) {
+        if (ov.id && !ov_allowed())
+            ov_destroy();                               /* switched off: give the memory back */
+        ov_hide();
+        return 0;
+    }
+    fw &= ~1;
+    fh &= ~1;
+    reelcore_draw_yuv420(S.v, NULL, NULL, 0, 0, &colour);
+    mode = ov_mode_sig();
+    if ((ov.id || ov.failed) && (ov.fw != fw || ov.fh != fh || ov.colour != colour || ov.mode != mode)) {
+        ov_destroy();                                   /* a new size, colours or mode: start again */
+        ov.failed = 0;
+    }
+    ov.fw = fw; ov.fh = fh; ov.colour = colour; ov.mode = mode;
+    if (ov.failed || fw < 2 || fh < 2)
+        return 0;
+    if (ov_covered(w)) {                                /* something over the picture */
+        ov_hide();
+        return 0;
+    }
+    if (!ov.id && !ov_create(fw, fh, colour)) {
+        ov.failed = 1;
+        return 0;
+    }
+    if ((placed = ov_place(w)) < 0) {
+        ov_fail("placing it failed");
+        return 0;
+    }
+    if (!placed) {                                      /* outside its limits at this size */
+        ov_hide();
+        return 0;
+    }
+    /* a switch happens at the next vsync: don't write into a buffer until one has passed */
+    if (ov_vsyncs() == ov.vsync) {
+        r.r[0] = 19;
+        swi(0x06, &r);
+    }
+    b = ov.next;
+    r.r[0] = ov.id;
+    r.r[1] = b;
+    if (swi(ov.swi[OV_MAP], &r)) {
+        ov_fail("MapBuffer failed");
+        return 0;
+    }
+    {
+        const int *a = (const int *)(intptr_t)r.r[0];
+        uint8_t *planes[3] = { (uint8_t *)(intptr_t)a[0], (uint8_t *)(intptr_t)a[2], (uint8_t *)(intptr_t)a[4] };
+        int pitch[3] = { a[1], a[3], a[5] };
+        int e = reelcore_draw_yuv420(S.v, planes, pitch, fw, fh, NULL);
+        ov_call(OV_UNMAP, ov.id, b);
+        if (e < 0) {
+            ov_fail("copying the picture failed");
+            return 0;
+        }
+    }
+    if (ov_call(OV_DISPLAY, ov.id, b)) {
+        ov_fail("DisplayBuffer failed");
+        return 0;
+    }
+    ov.vsync = ov_vsyncs();
+    ov.last = b;
+    ov.next = (b + 1) % ov.banks;
+    if (!ov.shown) {
+        box_t pic = ov_pic_box(w);
+        ov.shown = 1;
+        lg("overlay: showing");
+        force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);   /* VideoOverlay_RedrawWindow prepares the area */
+    }
+    return 1;
+}
+
+/* Paused, ended, an error box: hide it and draw the picture as before */
+static void ov_hide_and_draw(void)
+{
+    int w = S.fullscreen ? S.full : S.win;
+    if (ov_hide() && w) {
+        box_t pic = ov_pic_box(w);
+        pic_refresh();
+        force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);
+    }
+}
+
 /* ---- the picture: redraw and update ---------------------------------------- */
 
 static void draw_rects(int w, int *b, int more, int update)
@@ -1028,6 +1369,11 @@ static void draw_rects(int w, int *b, int more, int update)
             sprite_plot(ox + pic.x0, oy + pic.y1, &c);
 #endif
         }
+        if (!update && ov.shown && w == ov.win) {          /* the overlay's part of the redraw */
+            r.r[0] = ov.id;
+            r.r[1] = (intptr_t)b;
+            swi(ov.swi[OV_REDRAW], &r);
+        }
         r.r[1] = (intptr_t)b;
         more = swi(Wimp_GetRectangle, &r) ? 0 : r.r[0];
     }
@@ -1042,7 +1388,7 @@ static void redraw(int *block)
         return;
     draw_rects(block[0], block, r.r[0], 0);
 #ifdef REEL_EGL
-    if (S.fullscreen && block[0] == S.full)
+    if (S.fullscreen && block[0] == S.full && !ov.shown)
         pic_refresh();                  /* the Wimp painted it black: draw the frame again */
 #endif
 }
@@ -1052,7 +1398,8 @@ static void show_frame_now(void);
 static void show_frame(void)
 {
     int t0 = now_cs();
-    show_frame_now();
+    if (!ov_show_frame())
+        show_frame_now();
     S.draw_cs += now_cs() - t0;
     S.draw_n++;
 }
@@ -1151,6 +1498,7 @@ static void close_video(void)
         choices_save();
     }
     info_close();
+    ov_destroy();
     reelcore_close(S.v);
     S.v = NULL;
     source_free(&S.cur);
@@ -1205,8 +1553,9 @@ static void choices_save(void)
     FILE *f = choices_open("Choices", 1);
     if (!f)
         return;
-    fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_width %d\nmini_right %d\nmini_bottom %d\ndeinterlace %s\n",
-            APP, S.vol, S.ontop, S.mini_w, S.mini_right, S.mini_bottom, deint_names[S.deint_i]);
+    fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_width %d\nmini_right %d\nmini_bottom %d\ndeinterlace %s\n"
+            "hardware_acceleration %d\n",
+            APP, S.vol, S.ontop, S.mini_w, S.mini_right, S.mini_bottom, deint_names[S.deint_i], S.hw_accel);
     fclose(f);
 }
 
@@ -1230,6 +1579,8 @@ static void choices_load(void)
         while (fgets(line, sizeof(line), f)) {
             if (sscanf(line, "volume %lf", &vol) == 1 && vol >= 0 && vol <= 1)
                 S.vol = vol;
+            else if (sscanf(line, "hardware_acceleration %d", &n) == 1)
+                S.hw_accel = n != 0;
             else if (sscanf(line, "keep_on_top %d", &n) == 1)
                 S.ontop = n != 0;
             else if (sscanf(line, "mini_width %d", &n) == 1 && n >= MINI_MIN_W && n <= 4096)
@@ -1302,6 +1653,7 @@ static int resume_ask(double pos)
     _kernel_swi_regs r;
     char t[16];
     format_time(t, sizeof(t), pos);
+    ov_hide();                          /* the overlay would cover the question */
     e.errnum = 0;
     snprintf(e.errmess, sizeof(e.errmess), "%s was stopped at %s. Carry on from there?", S.title, t);
     r.r[0] = (intptr_t)&e;
@@ -1929,10 +2281,15 @@ static void info_stats(void)
              st.skip_spells, st.skip_spells == 1 ? "" : "s");
     if (dec || shown) {
         unsigned conv = shown ? shown : dec;
-        snprintf(r[6].value, sizeof(r[6].value), "%.1f ms a picture, to %dx%d (%sswscale)",
-                 (st.convert_time - info_prev.convert_time) * 1000 / conv, st.convert_w, st.convert_h,
-                 st.halvings == 1 ? "halved, then " : st.halvings == 2 ? "halved twice, then " :
-                 st.halvings > 2 ? "halved 3 times, then " : "");
+        if (ov.shown)
+            snprintf(r[6].value, sizeof(r[6].value), "%.1f ms a picture: copied as YV12 %dx%d; the display "
+                     "scales it and makes it RGB", (st.convert_time - info_prev.convert_time) * 1000 / conv,
+                     st.convert_w, st.convert_h);
+        else
+            snprintf(r[6].value, sizeof(r[6].value), "%.1f ms a picture, to %dx%d (%sswscale)",
+                     (st.convert_time - info_prev.convert_time) * 1000 / conv, st.convert_w, st.convert_h,
+                     st.halvings == 1 ? "halved, then " : st.halvings == 2 ? "halved twice, then " :
+                     st.halvings > 2 ? "halved 3 times, then " : "");
     }
     {
         unsigned dn = st.deinterlaced - info_prev.deinterlaced;
@@ -1946,8 +2303,11 @@ static void info_stats(void)
                      st.deinterlace == REELCORE_DEINT_ON ? "On" : "Auto", dn ? dtm * 1000 / dn : 0.0,
                      st.interlaced, st.decoded);
     }
-    if (draws)
-        snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (%s)",
+    if (draws && ov.shown)
+        snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (hardware overlay, %s, %d buffers)",
+                 (S.draw_cs - info_prev_draw_cs) * 10.0 / draws, ov.type == 1 ? "Basic" : "Z-Order", ov.banks);
+    else if (draws)
+        snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (%s%s)",
                  (S.draw_cs - info_prev_draw_cs) * 10.0 / draws,
 #ifdef REEL_EGL
                  S.fullscreen ? (!S.vsync ? "EGL screen surface, direct" : "EGL screen surface, vsync")
@@ -1955,7 +2315,8 @@ static void info_stats(void)
 #else
                  "OS_SpriteOp, with converting"
 #endif
-                 );
+                 , !S.hw_accel ? "; hardware acceleration off" : !ov_available() ? "; no VideoOverlay module" :
+                 ov.failed ? "; the overlay wasn't possible" : ov.id ? "; overlay hidden: something is over the picture" : "");
     snprintf(r[9].value, sizeof(r[9].value), "%d pictures, %d packets (%u KB)",
              st.pictures_waiting, st.packets_waiting, st.packet_bytes >> 10);
     if (st.sound == 0)
@@ -2214,7 +2575,7 @@ static int menu_is_bar;                 /* the open menu: 1 icon bar, 0 window *
 static int menu_x, menu_y;
 
 /* The window menu */
-enum { WM_INFO, WM_FULL, WM_MINI, WM_ONTOP, WM_SIZE, WM_PIC, WM_DEINT, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_CLOSE, WM_N };
+enum { WM_INFO, WM_FULL, WM_MINI, WM_ONTOP, WM_SIZE, WM_PIC, WM_DEINT, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_HWACCEL, WM_CLOSE, WM_N };
 
 static void menu_start(menu_t *m, const char *title)
 {
@@ -2326,10 +2687,13 @@ static void menu_open(int bar, int x, int y)
         menu_add(&menu, 0, &n, "Loop", S.loop, NULL, 0);
         menu_add(&menu, 0, &n, "Fast decode", S.fast, NULL, 0);
         menu_add(&menu, 0, &n, "Vsync (full screen)", S.vsync, NULL, 0);
+        /* shaded when there's no VideoOverlay module to use */
+        menu_add(&menu, 0, &n, ov.shown ? "Hardware acceleration (in use)" : "Hardware acceleration",
+                 S.hw_accel, NULL, !ov_available());
         menu_add(&menu, 0, &n, "Close", 0, NULL, 0);
         menu.item[WM_ONTOP].flags |= 2;             /* dotted lines between the groups */
         menu.item[WM_LIST].flags |= 2;
-        menu.item[WM_VSYNC].flags |= 2;
+        menu.item[WM_HWACCEL].flags |= 2;
         x -= 64;
     }
     menu_end(&menu, n);
@@ -2646,6 +3010,16 @@ static void menu_select(const int *sel)
         case WM_LOOP: S.loop = !S.loop; break;          /* a single file: from the next one */
         case WM_FAST: set_fast(!S.fast); break;
         case WM_VSYNC: set_vsync(!S.vsync); break;
+        case WM_HWACCEL:
+            S.hw_accel = !S.hw_accel;
+            lg("hardware acceleration %s", S.hw_accel ? "on" : "off");
+            if (!S.hw_accel) {                  /* at once: back to drawing it ourselves */
+                ov_hide_and_draw();
+                ov_destroy();
+            }
+            ov.failed = 0;                      /* (on again: try again) */
+            choices_save();
+            break;
         case WM_CLOSE: close_video(); return;
         }
     }
@@ -2667,6 +3041,8 @@ static void toggle_pause(void)
     } else
         reelcore_pause(S.v, !reelcore_paused(S.v));
     lg("%s at %.2f", reelcore_paused(S.v) ? "pause" : "play", reelcore_position(S.v));
+    if (reelcore_paused(S.v))
+        ov_hide_and_draw();             /* paused: an ordinary window, which menus can cover */
     if (S.info_open) {                  /* no null events while paused: show where it stopped */
         info_stats();
         info_update();
@@ -2768,6 +3144,7 @@ static void tick(void)
     } else if (r2 == REELCORE_END) {
         lg("end of the file");
         S.ended = 1;
+        ov_hide_and_draw();
         if (S.list_i + 1 < S.list_n) {          /* the playlist: the next file */
             list_play(S.list_i + 1);
             return;
@@ -2979,6 +3356,8 @@ static void message(int *b)
         break;
     case MSG_MODECHANGE:
         lg("mode change");
+        ov_destroy();                   /* the old one outlives a mode change: a new one next frame */
+        ov.failed = 0;
         read_screen();
         if (S.fullscreen) {
             set_fullscreen(0);
@@ -3048,6 +3427,7 @@ int reel_main(int argc, char **argv)
     S.nosleep = getenv(APP "$NoSleep") != NULL;
     S.vsync = getenv(APP "$NoVsync") == NULL;
     S.vol = 1;
+    S.hw_accel = 1;
     r.r[0] = 380;
     r.r[1] = 0x4B534154;
     r.r[2] = (intptr_t)APP;

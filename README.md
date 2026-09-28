@@ -45,6 +45,9 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
     best video and best sound apart, played together) or `-j`'s JSON
     (title, addresses, the site's HTTP headers; a line per video for a
     playlist). A thread in reelcore reads up to 10 s ahead.
+  - **Hardware acceleration** through the VideoOverlay module: pictures are
+    copied as YV12 into a hardware overlay, which the display scales and
+    converts; drawn as before whenever that isn't possible.
 - **NEON added by this port** (each bit-exact with FFmpeg's C, tested
   under the alignment-trapping qemu): yadif deinterlacing (patch 0015),
   HEVC chroma motion compensation (0016), and swscale's fast bilinear

@@ -152,6 +152,7 @@ struct ReelCore {
     /* conversion */
     struct SwsContext *sws;
     int cs_key[8];
+    struct SwsContext *sws_yuv;         /* reelcore_draw_yuv420: other formats to 4:2:0 */
     uint8_t *half[REELCORE_HALVINGS];  /* big reductions: the picture halved, once per level */
     size_t half_size[REELCORE_HALVINGS];
     int halvings;                      /* how many the last conversion did (reelcore_stats) */
@@ -1166,6 +1167,7 @@ void reelcore_close(ReelCore *v)
     swr_free(&v->swr);
     tempo_close(v);
     sws_freeContext(v->sws);
+    sws_freeContext(v->sws_yuv);
     for (int i = 0; i < REELCORE_HALVINGS; i++)
         av_free(v->half[i]);
     av_free(v->abuf);
@@ -2448,6 +2450,48 @@ int reelcore_set_audio_track(ReelCore *v, int i)
     v->as = s;
     av_log(NULL, AV_LOG_VERBOSE, "reelcore: sound track %d (stream %d)\n", i + 1, s);
     return reelcore_seek(v, reelcore_position(v));   /* the new track from here */
+}
+
+int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[3], int w, int h, int *colour)
+{
+    AVFrame *f = v->cur;
+    int64_t t0;
+    int c = 0;
+    if (!f)
+        return AVERROR(EAGAIN);
+    if (f->colorspace == AVCOL_SPC_BT709)            /* as convert() decides */
+        c |= REELCORE_YUV_709;
+    if (f->color_range == AVCOL_RANGE_JPEG || f->format == AV_PIX_FMT_YUVJ420P)
+        c |= REELCORE_YUV_FULL;
+    if (colour)
+        *colour = c;
+    if (!planes)
+        return 0;                                   /* just the colours */
+    if (w < 2 || h < 2 || w > f->width || h > f->height)
+        return AVERROR(EINVAL);
+    t0 = av_gettime_relative();
+    if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
+        /* the decoder's own planes: row copies (the rows may be wider) */
+        for (int p = 0; p < 3; p++) {
+            int pw = p ? w / 2 : w, ph = p ? h / 2 : h;
+            for (int y = 0; y < ph; y++)
+                memcpy(planes[p] + (size_t)y * pitch[p], f->data[p] + (size_t)y * f->linesize[p], pw);
+        }
+    } else {
+        /* anything else (10-bit, 4:2:2, 4:4:4, ...): to 4:2:0 at the same size */
+        const uint8_t *src[4] = { f->data[0], f->data[1], f->data[2], f->data[3] };
+        uint8_t *d[4] = { planes[0], planes[1], planes[2], NULL };
+        int dp[4] = { pitch[0], pitch[1], pitch[2], 0 };
+        v->sws_yuv = sws_getCachedContext(v->sws_yuv, w, h, f->format, w, h, AV_PIX_FMT_YUV420P,
+                                          SWS_POINT, NULL, NULL, NULL);
+        if (!v->sws_yuv || sws_scale(v->sws_yuv, src, f->linesize, 0, h, d, dp) < 0)
+            return AVERROR_EXTERNAL;
+    }
+    v->t_convert += av_gettime_relative() - t0;
+    v->conv_w = w;
+    v->conv_h = h;
+    v->halvings = 0;
+    return 0;
 }
 
 int reelcore_frame_size(const ReelCore *v, int *w, int *h)

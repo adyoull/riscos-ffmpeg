@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.17
+!Reel - a video player for RISC OS                        0.1.18
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -80,6 +80,9 @@ Menu on the window:
                       each picture: no tearing. Untick it to draw at
                       once (a little faster; you may see a tear line).
                       *Set Reel$NoVsync 1 starts with it off
+  Hardware acceleration  show the picture through a hardware overlay
+                      when the machine has one (below). On by default,
+                      remembered; shaded without the VideoOverlay module
   Close               close the video
 
 Menu on the icon: Info (the program's name, author and version), Open
@@ -180,6 +183,29 @@ whether the file says it's interlaced (Scan) and, while playing, what
 deinterlacing is doing and its cost a picture (Deinterlacing).
 With Auto, progressive video (most downloads) costs nothing.
 
+Hardware acceleration
+---------------------
+With the VideoOverlay module (in !System on RISC OS 5; !Run loads it) and
+hardware that has video overlays (the Raspberry Pi does), Reel copies
+each picture as it comes from the decoder (YUV, "YV12") into an overlay,
+and the display itself scales it to the window and turns it into RGB on
+its way to the monitor. Converting, scaling and plotting each picture are
+gone: on a Pi 4 that is about a third of the work for a 720p video in a
+window, and more full screen, so files that were only just too much for
+the machine play smoothly. Decoding is still done by the CPU.
+On the Pi the overlay sits on top of everything on the screen, so Reel
+hides it, and draws the picture as before, whenever a window or menu is
+over the picture, while paused, at the end, and while it asks you
+something; it comes back by itself. Screen grabs don't see the overlay.
+Media info's Converting and Drawing lines say when it's in use (or why
+not).
+Whenever an overlay isn't possible, the picture is drawn exactly as
+before, with no message: the option off, no VideoOverlay module, the
+display refusing the size or running short of memory, any error from the
+module. To turn it off: untick Hardware acceleration on the window menu,
+or *Set Reel$NoOverlay 1 (or *Set EGL$Overlay off, which turns overlays
+off for every program) before starting Reel.
+
 Carrying on where you stopped
 -----------------------------
 Reel remembers where you stopped each file (the last 100). Open one
@@ -188,7 +214,7 @@ played to the end, or hardly started, aren't remembered.
 
 Choices
 -------
-The volume, Deinterlace, Keep on top and where the mini player goes are saved in
+The volume, Deinterlace, Keep on top, Hardware acceleration and where the mini player goes are saved in
 <Choices$Write>.Reel.Choices (ReelEGL for !ReelEGL); where files were
 stopped in <Choices$Write>.Reel.Resume. The other options are for this
 session only.

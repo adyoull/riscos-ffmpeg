@@ -44,9 +44,11 @@ static const uint8_t *reel_test_sprite(int *w, int *h, int *rows)
     return fake_shown;
 }
 #define PLOTS (plots + fake_swaps + fake_plots)
+#define FRAMES_DRAWN fake_swaps
 #else
 const uint8_t *reel_test_sprite(int *w, int *h, int *rows);
 #define PLOTS plots
+#define FRAMES_DRAWN updates
 #endif
 int reel_test_fullscreen(void);
 int reel_test_pic_flags(void);
@@ -65,6 +67,7 @@ static int fails, step;
 #define MINI 0x400                    /* the mini player */
 #define PROGINFO 0x500                /* About this program (Info on the icon bar menu) */
 #define URLW 0x600                    /* the Open address window */
+#define COVERW 0x700                  /* another task's window, put over the picture */
 #define SCR_W 1920                    /* pixels; eig 1 -> 3840 x 2160 OS units */
 #define SCR_H 1080
 
@@ -83,7 +86,7 @@ static double ab_lo, ab_hi;
 static char choices_dir[64];
 
 /* the window menu (reel.c's WM_*) */
-enum { M_INFO, M_FULL, M_MINI, M_ONTOP, M_SIZE, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_CLOSE };
+enum { M_INFO, M_FULL, M_MINI, M_ONTOP, M_SIZE, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_HWACCEL, M_CLOSE };
 static char title[64];
 static int *title_ptr;
 static int proginfo_made, proginfo_icons, bar_info_sub = -99;
@@ -99,6 +102,15 @@ static char *url_field;                 /* the address field's text (the icon's 
 static int sent_action, sent_code, sent_to, sent_my_ref, sent_your_ref, sent_flags, sent_win;
 static char scrap[64];
 static char last_report[256];
+
+/* a fake VideoOverlay module (off until the overlay phases) */
+static int ovl_present, ovl_create_fail, ovl_map_fail_from = 99, ovl_creates, ovl_destroys, ovl_id, ovl_banks;
+static int ovl_sel[16], ovl_displays, ovl_shown = -1, ovl_redraws, ovl_window, ovl_scale[2], ovl_pos[6];
+static int ovl_fw, ovl_fh, ovl_unmapped = 1;
+static uint8_t *ovl_buf[3];
+static int ovl_arr[3][6];
+static int cover_on;                  /* COVERW is open over the picture */
+static int fake_vsync;
 
 /* Choices: what Reel saved */
 static int choices_has(const char *want)
@@ -153,7 +165,8 @@ static int script(int *b)
 enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
        P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL,
        P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
-       P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
+       P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
+       P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
        P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_CLOSE2, P_QUIT };
 static int phase = -1, phase_step;
 /* the phases that play (deliver nulls) */
@@ -162,7 +175,9 @@ static int next_is_null(void)
     return phase == P_PLAY1 || phase == P_PLAY2 || phase == P_PLAY3 || phase == P_PLAYFULL || phase == P_PLAY4 ||
            phase == P_PLAY5 || phase == P_PLAY6 || phase == P_INFOPLAY || phase == P_SPEEDPLAY || phase == P_AB ||
            phase == P_ABPLAY || phase == P_MINIPLAY || phase == P_ONTOP || phase == P_URLPLAY || phase == P_URLFILEPLAY ||
-           phase == P_URLOPENING || phase == P_URLFILEOPENING;
+           phase == P_URLOPENING || phase == P_URLFILEOPENING || phase == P_OVLREFUSE || phase == P_OVLPLAY ||
+           phase == P_OVLCOVER || phase == P_OVLUNCOVER || phase == P_OVLRESUME || phase == P_OVLFEWER ||
+           phase == P_OVLOFF || phase == P_OVLMODE;
 }
 
 /* The picture (sprite or surface) holds the current frame as reelcore
@@ -606,6 +621,141 @@ static int next_event(int *b)
             if (phase_step++ == 0) { message(b, 5, 0, 0, 0xBF8, clip1); return 17; }    /* DataOpen, MPEG */
             CHECK(acks == 5, "video not claimed (%d acks)", acks);
             break;
+        /* ---- the hardware overlay (a fake VideoOverlay) ---- */
+        case P_OVLREFUSE: {                                           /* the module there, but Create refuses */
+            static int draws0;
+            if (phase_step == 0) {
+                ovl_present = 1;
+                ovl_create_fail = 1;
+                draws0 = FRAMES_DRAWN;
+            }
+            if (phase_step++ < 30) { fake_time += 0.02; return 0; }
+            CHECK(ovl_creates == 1 && !ovl_id, "Create refused: %d tries (want 1, not again), overlay %d",
+                  ovl_creates, ovl_id);
+            CHECK(FRAMES_DRAWN > draws0 + 10, "Create refused: pictures not drawn as before");
+            check_picture("overlay refused: drawn as before");
+            break;
+        }
+        case P_OVLMODE:                                               /* a mode change: tries again, and gets one */
+            if (phase_step == 0) {
+                phase_step++;
+                ovl_create_fail = 0;
+                memset(b, 0, 256); b[0] = 20; b[4] = 0x400C1;
+                return 17;                                            /* Message_ModeChange */
+            }
+            if (phase_step++ < 10) { fake_time += 0.02; return 0; }
+            {
+                int fw, fh;
+                reelcore_frame_size(v, &fw, &fh);
+                CHECK(ovl_creates == 2 && ovl_id && ovl_banks == 3, "after the mode change: %d creates, id %d, %d buffers",
+                      ovl_creates, ovl_id, ovl_banks);
+                CHECK(ovl_sel[1] == (fw & ~1) && ovl_sel[2] == (fh & ~1) && ovl_sel[3] == 7 && ovl_sel[5] == 0 &&
+                      (ovl_sel[6] & 0x3000) == 0x2000 && ovl_sel[7] == 3 && ovl_sel[8] == 0x32315659 &&
+                      ovl_sel[9] == 13 && ovl_sel[10] == 3 && ovl_sel[11] == -1,
+                      "the selector: %dx%d log2bpp %d, var %d=%x, var %d=%x, var %d=%d", ovl_sel[1], ovl_sel[2],
+                      ovl_sel[3], ovl_sel[5], ovl_sel[6], ovl_sel[7], ovl_sel[8], ovl_sel[9], ovl_sel[10]);
+                CHECK(ovl_sel[6] == 0x6000, "ModeFlags %x (want &6000: YCbCr, BT.601, video range)", ovl_sel[6]);
+            }
+            break;
+        case P_OVLPLAY: {                                             /* pictures go through it, not the sprite */
+            static int draws0, displays0;
+            if (phase_step == 0) {
+                draws0 = FRAMES_DRAWN;
+                displays0 = ovl_displays;
+            }
+            if (phase_step++ < 40) { fake_time += 0.02; return 0; }
+            CHECK(ovl_displays >= displays0 + 15 && ovl_shown >= 0 && ovl_unmapped, "overlay: %d pictures shown, buffer %d%s",
+                  ovl_displays - displays0, ovl_shown, ovl_unmapped ? "" : ", left mapped");
+            CHECK(FRAMES_DRAWN == draws0, "overlay: %d pictures drawn as well", FRAMES_DRAWN - draws0);
+            CHECK(ovl_window == WIN, "overlay attached to %x", ovl_window);
+            {   /* its Y plane is the frame's; Cb, Cr likewise */
+                int fw = ovl_fw, fh = ovl_fh, bad = 0;
+                uint8_t *p[3], *want = malloc((size_t)fw * fh * 3 / 2);
+                int pitch[3] = { fw, fw / 2, fw / 2 };
+                p[0] = want; p[1] = want + fw * fh; p[2] = p[1] + fw / 2 * (fh / 2);
+                reelcore_draw_yuv420(v, p, pitch, fw, fh, NULL);
+                bad = memcmp(ovl_buf[ovl_shown], want, (size_t)fw * fh * 3 / 2) != 0;
+                CHECK(!bad, "the overlay's buffer isn't the frame's YV12");
+                free(want);
+            }
+            {   /* Fit: the video's shape, as big as fits in the picture area, centred */
+                int bw = (icon_box[9][2]) / 2, bh = (st(WIN)[4] - st(WIN)[2] - 64) / 2;
+                int dw = reelcore_width(v), dh = reelcore_height(v);
+                double sc = (double)bw / dw < (double)bh / dh ? (double)bw / dw : (double)bh / dh;
+                int rw = (int)(dw * sc + 0.5), rh = (int)(dh * sc + 0.5);
+                CHECK(abs(ovl_scale[0] - rw) <= 1 && abs(ovl_scale[1] - rh) <= 1 && ovl_pos[4] == bw * 2 && ovl_pos[5] == 0 &&
+                      ovl_pos[2] == 0 && ovl_pos[3] == -(st(WIN)[4] - st(WIN)[2] - 64),
+                      "placed %dx%d (want %dx%d in %dx%d), clip %d,%d-%d,%d", ovl_scale[0], ovl_scale[1], rw, rh, bw, bh,
+                      ovl_pos[2], ovl_pos[3], ovl_pos[4], ovl_pos[5]);
+            }
+            printf("  overlay: %d pictures shown through it, %dx%d on screen\n", ovl_displays - displays0,
+                   ovl_scale[0], ovl_scale[1]);
+            break;
+        }
+        case P_OVLREDRAW:                                             /* a redraw asks VideoOverlay to do its part */
+            if (phase_step++ == 0) {
+                ovl_redraws = 0;
+                memset(b, 0, 64); b[0] = WIN;
+                return 1;
+            }
+            CHECK(ovl_redraws >= 1, "redraw: VideoOverlay_RedrawWindow not called");
+            break;
+        case P_OVLCOVER: {                                            /* a window over the picture: hidden, drawn as before */
+            static int draws0;
+            if (phase_step == 0) {
+                cover_on = 1;
+                st(WIN)[7] = COVERW;
+                draws0 = FRAMES_DRAWN;
+            }
+            if (phase_step++ < 10) { fake_time += 0.02; return 0; }
+            CHECK(ovl_shown == -1 && FRAMES_DRAWN > draws0 + 3, "covered: overlay buffer %d, %d pictures drawn",
+                  ovl_shown, FRAMES_DRAWN - draws0);
+            check_picture("covered: drawn as before");
+            break;
+        }
+        case P_OVLUNCOVER:
+            if (phase_step == 0) {
+                cover_on = 0;
+                st(WIN)[7] = -1;
+            }
+            if (phase_step++ < 10) { fake_time += 0.02; return 0; }
+            CHECK(ovl_shown >= 0, "uncovered: the overlay isn't back");
+            break;
+        case P_OVLPAUSE:                                              /* paused: hidden, the paused picture drawn */
+            if (phase_step++ == 0) { key_event(b, WIN, ' '); return 8; }
+            CHECK(ovl_shown == -1 && reelcore_paused(v), "paused: overlay buffer %d", ovl_shown);
+            check_picture("paused: drawn as before");
+            break;
+        case P_OVLRESUME:
+            if (phase_step == 0) { phase_step++; key_event(b, WIN, ' '); return 8; }
+            if (phase_step++ < 10) { fake_time += 0.02; return 0; }
+            CHECK(ovl_shown >= 0 && !reelcore_paused(v), "resumed: overlay buffer %d", ovl_shown);
+            break;
+        case P_OVLFEWER:                                              /* the GPU has room for 2 buffers only */
+            if (phase_step == 0) {
+                phase_step++;
+                ovl_map_fail_from = 2;
+                memset(b, 0, 256); b[0] = 20; b[4] = 0x400C1;
+                return 17;
+            }
+            if (phase_step++ < 10) { fake_time += 0.02; return 0; }
+            CHECK(ovl_id && ovl_banks == 2 && ovl_shown >= 0 && ovl_destroys >= 2,
+                  "short of GPU memory: id %d, %d buffers, shown %d, %d destroyed", ovl_id, ovl_banks, ovl_shown, ovl_destroys);
+            break;
+        case P_OVLOFF: {                                              /* Hardware acceleration off: drawn as before */
+            static int draws0;
+            MENU_PICK(WIN, M_HWACCEL, -1);
+            if (phase_step == 2) {
+                phase_step++;
+                CHECK(!ovl_id && ovl_shown == -1 && choices_has("hardware_acceleration 0"),
+                      "switched off: overlay %d, shown %d, saved %d", ovl_id, ovl_shown, choices_has("hardware_acceleration 0"));
+                draws0 = FRAMES_DRAWN;
+            }
+            if (phase_step++ < 20) { fake_time += 0.02; return 0; }
+            CHECK(!ovl_id && FRAMES_DRAWN > draws0 + 5, "switched off: overlay %d, %d drawn", ovl_id, FRAMES_DRAWN - draws0);
+            check_picture("hardware acceleration off");
+            break;
+        }
         case P_URL:                                                   /* Open address..., Ctrl-V, Return */
             if (!base_url)
                 break;
@@ -807,6 +957,8 @@ static int fake_ssb(int swi, _kernel_swi_regs *in, _kernel_swi_regs *out, _kerne
     ssb_advance();
     switch (swi) {
     case 0x39:                                                    /* OS_SWINumberFromString */
+        if (!strncmp((char *)(intptr_t)in->r[1], "VideoOverlay_", 13))
+            return 0;                                             /* (the fake VideoOverlay's) */
         *e = strncmp((char *)(intptr_t)in->r[1], "SharedSoundBuffer_", 18) &&
              strncmp((char *)(intptr_t)in->r[1], "StreamManager_", 14) ? &unknown : NULL;
         return 1;
@@ -843,6 +995,51 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     }
 #endif
     switch (swi) {
+    case 0x39: {                                                          /* OS_SWINumberFromString */
+        static const char *const names[] = { "Create", "Destroy", "DisplayBuffer", "MapBuffer", "UnmapBuffer",
+                                             "DiscardBuffer", "Vet", "SetScale", "SetWindow", "SetPosition",
+                                             "RedrawWindow" };
+        const char *n = (const char *)(intptr_t)in->r[1];
+        if (ovl_present && !strncmp(n, "VideoOverlay_", 13))
+            for (int i = 0; i < 11; i++)
+                if (!strcmp(n + 13, names[i])) { out->r[0] = 0x59CC0 + i; return NULL; }
+        return &err;
+    }
+    case 0x59CC0:                                                         /* VideoOverlay_Create */
+        ovl_creates++;
+        if (ovl_create_fail || ovl_id) return &err;
+        memcpy(ovl_sel, (const int *)(intptr_t)in->r[0], sizeof(ovl_sel));
+        ovl_fw = ovl_sel[1]; ovl_fh = ovl_sel[2]; ovl_banks = ovl_sel[10];
+        for (int i = 0; i < 3; i++) {
+            free(ovl_buf[i]);
+            ovl_buf[i] = calloc(1, (size_t)ovl_fw * ovl_fh * 3 / 2);
+            ovl_arr[i][0] = (int)(intptr_t)ovl_buf[i]; ovl_arr[i][1] = ovl_fw;
+            ovl_arr[i][2] = (int)(intptr_t)(ovl_buf[i] + ovl_fw * ovl_fh); ovl_arr[i][3] = ovl_fw / 2;
+            ovl_arr[i][4] = (int)(intptr_t)(ovl_buf[i] + ovl_fw * ovl_fh + ovl_fw / 2 * (ovl_fh / 2)); ovl_arr[i][5] = ovl_fw / 2;
+        }
+        ovl_id = 0x42; ovl_shown = -1; ovl_window = 0;
+        out->r[0] = ovl_id; out->r[1] = 1; out->r[2] = 16; out->r[3] = 16; out->r[4] = 4096; out->r[5] = 4096;
+        return NULL;
+    case 0x59CC1:                                                         /* Destroy */
+        if (in->r[0] != ovl_id || !ovl_id) return &err;
+        ovl_id = 0; ovl_shown = -1; ovl_destroys++;
+        return NULL;
+    case 0x59CC2:                                                         /* DisplayBuffer */
+        if (in->r[0] != ovl_id || !ovl_id || in->r[1] >= ovl_banks) return &err;
+        ovl_shown = in->r[1] < 0 ? -1 : in->r[1];
+        if (in->r[1] >= 0) ovl_displays++;
+        return NULL;
+    case 0x59CC3:                                                         /* MapBuffer */
+        if (in->r[0] != ovl_id || !ovl_id || in->r[1] < 0 || in->r[1] >= ovl_banks || in->r[1] >= ovl_map_fail_from)
+            return &err;
+        ovl_unmapped = 0;
+        out->r[0] = (int)(intptr_t)ovl_arr[in->r[1]];
+        return NULL;
+    case 0x59CC4: ovl_unmapped = 1; return NULL;                          /* UnmapBuffer */
+    case 0x59CC7: ovl_scale[0] = in->r[1]; ovl_scale[1] = in->r[2]; return NULL;       /* SetScale */
+    case 0x59CC8: ovl_window = in->r[1]; return NULL;                     /* SetWindow */
+    case 0x59CC9: for (int i = 0; i < 6; i++) ovl_pos[i] = in->r[1 + i]; return NULL;  /* SetPosition */
+    case 0x59CCA: ovl_redraws++; return NULL;                             /* RedrawWindow */
     case 0x400C0: out->r[1] = 0x1234; return NULL;                        /* Wimp_Initialise */
     case 0x42681: out->r[0] = -1; return NULL;                            /* EnumerateTasks */
     case 0x35:                                                            /* OS_ReadModeVariable */
@@ -895,7 +1092,15 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
             b[1] = 0; b[2] = 0; b[3] = SCR_W * 2; b[4] = 134; b[5] = b[6] = 0; b[7] = -1;
             return NULL;
         }
-        memcpy(b + 1, st(b[0]) + 1, 32);
+        if (b[0] == COVERW) {                                             /* over the picture */
+            int *w = st(WIN);
+            b[1] = w[1] + 50; b[2] = w[4] - 300; b[3] = w[1] + 400; b[4] = w[4] + 20;
+            b[5] = b[6] = 0; b[7] = -1; b[8] = cover_on ? 1 << 16 : 0;
+            return NULL;
+        }
+        memcpy(b + 1, st(b[0]) + 1, 28);
+        b[8] = (b[0] == WIN && win_open) || (b[0] == MINI && mini_open) || (b[0] == FULL && full_open) ||
+               (b[0] == INFO && info_open) || (b[0] == URLW && url_open) ? 1 << 16 : 0;
         return NULL;
     case 0x400C6:                                                         /* CloseWindow */
         if (b[0] == WIN) win_open = 0; else if (b[0] == INFO) info_open = 0; else if (b[0] == MINI) mini_open = 0;
@@ -924,7 +1129,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         }
         return NULL;
     case 0x06:                                                            /* OS_Byte */
-        if (in->r[0] == 19) vsyncs++;                                     /* wait for the vsync */
+        if (in->r[0] == 19) { vsyncs++; fake_vsync++; }                   /* wait for the vsync */
+        else if (in->r[0] == 176) out->r[1] = (fake_vsync + (int)(fake_time * 60)) & 0xFF;   /* vsync counter */
         else if (in->r[0] == 129) out->r[1] = 0;                          /* INKEY: Shift isn't held */
         return NULL;
     case 0x400E7:                                                         /* SendMessage */

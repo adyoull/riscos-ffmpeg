@@ -3,6 +3,52 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel 0.1.18 (2026-09-28): hardware acceleration (video overlays)
+
+- **Hardware acceleration** on the window menu (on by default, saved in
+  Choices as `hardware_acceleration`): with the VideoOverlay module, each
+  picture is copied as YV12 (the decoder's yuv420p planes, row by row;
+  other formats through swscale at the same size) into a hardware overlay,
+  and the display scales it and converts it to RGB. No swscale conversion,
+  scaling or plotting per picture. Both !Reel and !ReelEGL talk to
+  VideoOverlay themselves. riscos-mesa's EGL overlays are RGB, 1:1, for
+  visible-area surfaces; ReelEGL's picture is a work area surface.
+- Built from riscos-mesa's Pi 4 measurements (ovltest):
+  - Create is used as the probe (Vet fails on the Pi).
+  - 3 buffers, else 2 when the GPU is short of memory.
+  - It waits for a vsync when none has passed since the last switch (no
+    tearing).
+  - Overlay memory is only ever written (it is uncached: reads are slow).
+  - After a mode change the old overlay is destroyed and a new one made.
+- The Pi's overlays are "Basic" (over everything). The overlay is hidden,
+  and the picture drawn as before:
+  - while a window or menu overlaps the picture (Reel walks the window
+    stack up from its window, at every picture);
+  - while paused and at the end;
+  - around error boxes and the "carry on" question.
+- **Fallback:** whenever there's no overlay, the picture is drawn exactly
+  as before, with no message:
+  - the option off, `Reel$NoOverlay`, or `EGL$Overlay off`;
+  - no module;
+  - Create refused;
+  - a buffer that can't be mapped;
+  - a size outside the scaling limits;
+  - any SWI error (not tried again until the size, colours or mode change).
+- The menu item is shaded without the module and says "(in use)" when it
+  is. Media info's Converting and Drawing lines say what's happening.
+  `!Run` loads VideoOverlay if it's in !System (quietly).
+- reelcore: `reelcore_draw_yuv420()` (planar 4:2:0 at the frame's size,
+  write-only row copies; `REELCORE_YUV_709` / `_FULL` for the ModeFlags).
+- Tests: reel_test (and the SharedSoundBuffer and EGL builds) with a fake
+  VideoOverlay. The steps: Create refused (drawn as before, not retried),
+  a mode change bringing it back, the selector (YV12, ModeFlags &6000,
+  3 buffers), pictures going through the overlay and not the sprite, the
+  buffer equal to the frame's YV12, Fit placement and clipping,
+  RedrawWindow in redraws, a window over the picture (hidden, drawn as
+  before), uncovered, pause and resume, only 2 buffers mappable, and
+  switched off from the menu. Mutations (no covering check, no hiding on
+  pause) are caught.
+
 ## Reel 0.1.17 (2026-09-28): web addresses and yt-dlp's output
 
 - **Web addresses** in !Reel and !ReelEGL: http://, https:// (AcornSSL,

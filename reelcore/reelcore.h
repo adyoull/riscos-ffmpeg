@@ -253,6 +253,19 @@ int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h,
    0, or AVERROR(EAGAIN) before the first frame. */
 int reelcore_frame_size(const ReelCore *v, int *w, int *h);
 
+/* The current frame as planar 4:2:0, Y then Cb then Cr (RISC OS's "YV12",
+   FFmpeg's yuv420p), for a hardware overlay: w x h pixels (even, at most
+   the frame's size: normally reelcore_frame_size rounded down to even), no
+   scaling. yuv420p frames are copied row by row (write-only: fine for
+   uncached overlay memory); other formats go through swscale. *colour (may
+   be NULL): REELCORE_YUV_709 (else BT.601) | REELCORE_YUV_FULL (else video
+   range), for the overlay's ModeFlags; planes NULL: only *colour. 0, or a
+   negative AVERROR. */
+#define REELCORE_YUV_709   1
+#define REELCORE_YUV_FULL  2
+int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[3], int w, int h,
+                         int *colour);
+
 /* For a layer on top (ffegl keeps its texture state here): one pointer per
    video, and a function that frees it, called by reelcore_close(). */
 void reelcore_attach(ReelCore *v, void *data, void (*release)(void *data));

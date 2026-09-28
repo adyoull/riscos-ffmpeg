@@ -1,4 +1,4 @@
-!ReelEGL - Reel, drawing through EGL (an example)       0.1.17
+!ReelEGL - Reel, drawing through EGL (an example)       0.1.18
 ===================================================================
 
 ReelEGL is the Reel video player built a second way: the picture goes
@@ -24,6 +24,14 @@ How it draws
   Untick it and frames go straight into screen memory
   (EGL_SINGLE_BUFFER): no plot at all, the fastest way, but you may see
   tearing. *Set ReelEGL$NoVsync 1 starts with it off.
+- Hardware acceleration (the window menu, as in Reel): with the
+  VideoOverlay module, pictures go straight into a hardware overlay (as
+  YV12, the decoder's own format) and the display scales them, instead
+  of being converted into the EGL surface. The surface is then drawn only
+  while the overlay is hidden (something over the picture, paused, at
+  the end). ReelEGL talks to VideoOverlay itself: riscos-mesa's EGL
+  overlays (EGL_RISCOS_overlay) cover visible-area RGB surfaces 1:1, and
+  ReelEGL's picture is a work area surface.
 - The mini player (M) is a second window; its picture is a work area
   surface of its own, made when it opens (only one surface exists at a
   time, so switching makes the other window's surface again).
