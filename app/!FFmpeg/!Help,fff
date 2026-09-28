@@ -85,11 +85,15 @@ MimeMap.
 ffplay keys: Q or Escape quit, F full screen, P or Space pause,
 Left/Right seek 10 s, Up/Down seek 1 min, M mute, 9/0 volume,
 W cycle video/waveform/spectrum, S step one frame.
-ffplay plays sound through SharedSoundBuffer and StreamManager
-(John Duffell's ssb.zip, from the RDPClient page:
-https://orac.co.uk/software/rdpclient/rdpclient.html). Merge
-them into !System; !FFmpeg's !Run loads them (so double-click !FFmpeg
-once after starting the computer, or add it to Look at in Configure).
+ffplay plays sound through SharedSoundBuffer and StreamManager, John
+Duffell's modules (SharedSound, which they use, is part of RISC OS).
+Download ssb.zip from Andrew Sellors' RDPClient page:
+  https://orac.co.uk/software/rdpclient/rdpclient.html
+and merge its !System into yours. !FFmpeg's !Run loads them (so
+double-click !FFmpeg once after starting the computer, or add it to Look
+at in Configure). John Duffell's own site (now on the Internet Archive)
+has more details:
+  https://web.archive.org/web/20110920080106/http://www.duffell.riscos.me.uk/
 
 A TaskWindow can't open windows of its own, so when ffplay is started in
 one it starts itself again as a separate desktop task (as *WimpTask

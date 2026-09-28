@@ -19,9 +19,10 @@ RMEnsure PThreadTicker 0.01 IfThere System:Modules.PThrTicker Then RMLoad System
 RMEnsure PThreadTicker 0.01 IfThere <FFmpeg$Dir>.PThrTicker Then RMLoad <FFmpeg$Dir>.PThrTicker
 | https: RISC OS's AcornSSL module (RISC OS 5.28 or later); quiet if missing
 RMEnsure AcornSSL 0 IfThere System:Modules.Network.URL.AcornSSL Then RMLoad System:Modules.Network.URL.AcornSSL
-| Sound: SharedSoundBuffer, StreamManager and SharedSound (John Duffell's
-| ssb.zip, from https://orac.co.uk/software/rdpclient/rdpclient.html). Merged into !System they
-| still have to be loaded: these do it (and are quiet if they're missing).
+| Sound: SharedSoundBuffer and StreamManager (ssb.zip, from
+| https://orac.co.uk/software/rdpclient/rdpclient.html) and SharedSound
+| (part of RISC OS). Merged into !System they still have to be loaded:
+| these do it (and are quiet if they're missing).
 RMEnsure SharedSound 1.07 IfThere System:Modules.SSound Then RMLoad System:Modules.SSound
 RMEnsure StreamManager 0.03 IfThere System:Modules.StreamMan Then RMLoad System:Modules.StreamMan
 RMEnsure SharedSoundBuffer 0.07 IfThere System:Modules.SSBuffer Then RMLoad System:Modules.SSBuffer

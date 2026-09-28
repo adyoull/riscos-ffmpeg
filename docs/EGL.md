@@ -125,6 +125,11 @@ reelcore_close(v);
   the time.
 - **Sound:** on RISC OS straight to SharedSoundBuffer and StreamManager
   (`REELCORE_AUDIO=sdl` for SDL2's audio), and the pictures follow it.
+  They're John Duffell's modules: download `ssb.zip` from Andrew Sellors'
+  RDPClient page, https://orac.co.uk/software/rdpclient/rdpclient.html,
+  and merge its `!System` into yours (SharedSound, which they use, is part
+  of RISC OS). John Duffell's own site (now on the Internet Archive) has
+  more details: https://web.archive.org/web/20110920080106/http://www.duffell.riscos.me.uk/
   Without sound, or if no sound device opens, they follow a timer.
 - **Programs using them in a window** are desktop tasks, so they can't
   run inside a TaskWindow either: start them with `*WimpTask`, from an

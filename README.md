@@ -93,9 +93,12 @@ They need SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan).
 They are linked with UnixLib 5.0.1 and carry its PThreadTicker module
 (the thread timer's code; `third_party/pthreadticker`), which each `!Run`
 loads.
-For sound: SharedSoundBuffer and StreamManager (`ssb.zip` from the
-RDPClient page, https://orac.co.uk/software/rdpclient/rdpclient.html), merged into `!System`; the apps' `!Run`
-files load them. The EGL examples and !ReelEGL need riscos-mesa.
+For sound: SharedSoundBuffer and StreamManager, John Duffell's modules.
+Download `ssb.zip` from Andrew Sellors' RDPClient page,
+https://orac.co.uk/software/rdpclient/rdpclient.html, and merge its `!System` into yours;
+the apps' `!Run` files load them. (SharedSound, which they use, is part of
+RISC OS.) John Duffell's own site (now on the Internet Archive) has more
+details: https://web.archive.org/web/20110920080106/http://www.duffell.riscos.me.uk/ . The EGL examples and !ReelEGL need riscos-mesa.
 
 ## Alignment: the main porting work
 
