@@ -224,10 +224,10 @@ merged into !System first). Reel itself plays on one thread, so it's
 there for the cases that start one (SDL's sound). Licence:
 docs.Licences.PThreadTicker (BSD).
 SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan). For sound:
-SharedSoundBuffer and StreamManager (ssb.zip, from the RDPClient page at
-orac.co.uk), merged into !System: Reel's !Run loads them. Without them
-Reel plays the picture, keeps time itself, and Media info says why there
-is no sound.
+SharedSoundBuffer and StreamManager (ssb.zip, from the RDPClient page:
+https://orac.co.uk/software/rdpclient/rdpclient.html), merged into !System:
+Reel's !Run loads them. Without them Reel plays the picture, keeps time
+itself, and Media info says why there is no sound.
 Reel gives the sound straight to SharedSoundBuffer (from 0.1.5; before,
 it went through SDL). If the stream opens but doesn't play (for about a
 second nothing it was given is used up), Reel carries on without sound;

@@ -86,7 +86,8 @@ ffplay keys: Q or Escape quit, F full screen, P or Space pause,
 Left/Right seek 10 s, Up/Down seek 1 min, M mute, 9/0 volume,
 W cycle video/waveform/spectrum, S step one frame.
 ffplay plays sound through SharedSoundBuffer and StreamManager
-(John Duffell's ssb.zip, from the RDPClient page at orac.co.uk). Merge
+(John Duffell's ssb.zip, from the RDPClient page:
+https://orac.co.uk/software/rdpclient/rdpclient.html). Merge
 them into !System; !FFmpeg's !Run loads them (so double-click !FFmpeg
 once after starting the computer, or add it to Look at in Configure).
 

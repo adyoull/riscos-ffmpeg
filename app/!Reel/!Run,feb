@@ -15,7 +15,7 @@ RMEnsure ARMEABISupport 0 Error Reel needs the ARMEABISupport module. Install it
 RMEnsure PThreadTicker 0.01 IfThere System:Modules.PThrTicker Then RMLoad System:Modules.PThrTicker
 RMEnsure PThreadTicker 0.01 IfThere <Reel$Dir>.PThrTicker Then RMLoad <Reel$Dir>.PThrTicker
 | Sound: SharedSoundBuffer, StreamManager and SharedSound (John Duffell's
-| ssb.zip, from the RDPClient page at orac.co.uk). Merged into !System they
+| ssb.zip, from https://orac.co.uk/software/rdpclient/rdpclient.html). Merged into !System they
 | still have to be loaded: these do it (and are quiet if they're missing).
 RMEnsure SharedSound 1.07 IfThere System:Modules.SSound Then RMLoad System:Modules.SSound
 RMEnsure StreamManager 0.03 IfThere System:Modules.StreamMan Then RMLoad System:Modules.StreamMan
