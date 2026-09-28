@@ -160,3 +160,8 @@ EGLBoolean eglPlotSurfaceRISCOS(EGLDisplay d, EGLSurface s, const int *block)
     fake_plots++;
     return EGL_TRUE;
 }
+
+/* UnixLib's socket number -> RISC OS socket (libavformat's AcornSSL backend,
+   patch 0018, refers to it; the AcornSSL SWIs themselves aren't faked here:
+   tests/host/fake_acornssl.c does that for the https test) */
+__attribute__((weak)) int __get_ro_socket(int fd) { return fd; }

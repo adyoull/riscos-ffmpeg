@@ -698,6 +698,10 @@ static int fake_ssb(int swi, _kernel_swi_regs *in, _kernel_swi_regs *out, _kerne
 }
 #endif
 
+/* libavformat's AcornSSL backend (patch 0018) refers to UnixLib's
+   __get_ro_socket; Reel never opens https */
+__attribute__((weak)) int __get_ro_socket(int fd) { return fd; }
+
 _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *out)
 {
     static _kernel_oserror err = { 1, "fake" };

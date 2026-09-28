@@ -3,6 +3,31 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## 5.1.10-riscos11 (2026-09-28): https through AcornSSL
+
+- **https** (and TLS generally: HLS over https, rtmps, tls:) through RISC
+  OS's AcornSSL module, RISC OS 5.28 and later. FFmpeg patch 0018
+  (`libavformat/tls_acornssl.c`, `--enable-riscos-acornssl`): the TCP
+  connection is opened as usual and its RISC OS socket (UnixLib's
+  `__get_ro_socket`) handed to `AcornSSL_CreateSession`; reads and writes
+  go through `AcornSSL_Recv`/`AcornSSL_Send`, non-blocking, waiting on the
+  socket with FFmpeg's timeout and interrupt callback. The handshake is
+  driven with 1-byte peeks until AcornSSL stops answering ENOTCONN. The
+  host name is set (SNI, and the certificate must be for that name);
+  AcornSSL checks certificates against its own authorities and asks in the
+  desktop about one it can't verify. `AcornSSL_Close` leaves the socket to
+  the tcp: context. Written from AcornSSL's documentation and source
+  (ROOL's RiscOS/Sources/Networking/Fetchers/AcornSSL, doc/AcornSSL, c/api).
+- !Run loads AcornSSL (quiet if it isn't there); without it, https says
+  what's missing.
+- Tests: `tests/host/https.sh` runs the arm-linux ffmpeg/ffprobe with a
+  pass-through stand-in for the module (`tests/host/fake_acornssl.c`)
+  against a local HTTP server: the calls and their order for every
+  session, the host name, a whole file read (and seeked) through it, a
+  60-step handshake, a failed handshake, no module, and a server that
+  never answers (-rw_timeout). The real handshake needs a Pi.
+- !Help: https; the stale "ffplay has no desktop front end" limit removed.
+
 ## 5.1.10-riscos10 and Reel 0.1.16 (2026-09-28): UnixLib 5.0.1 and PThreadTicker
 
 - **Relinked with UnixLib 5.0.1** (github.com/adyoull/riscos-unixlib,

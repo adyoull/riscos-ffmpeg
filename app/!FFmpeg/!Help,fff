@@ -1,4 +1,4 @@
-!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                   riscos10
+!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                   riscos11
 ===================================================================
 
 FFmpeg converts, plays and inspects audio and video. This is FFmpeg
@@ -127,7 +127,19 @@ Decoders for almost everything FFmpeg knows (H.264, HEVC, VP8, VP9, AV1
 via dav1d, MPEG-1/2/4, ProRes, AAC, MP3, AC-3, Opus, Vorbis, FLAC, ...).
 Encoders: H.264 (x264), MP3 (LAME), Opus, Vorbis, AAC, MPEG-4, MPEG-2,
 MJPEG, FLAC, ProRes, FFV1 and more. Network: http, tcp, udp, rtp, rtmp,
-hls (no https: there is no TLS library in this build).
+hls, and https (and HLS over https) through RISC OS's AcornSSL module
+(RISC OS 5.28 or later; !Run loads it):
+
+  ffplay https://example.com/films/clip.mp4
+  ffprobe https://example.com/live/stream.m3u8
+
+AcornSSL checks each server's certificate against its own list of
+authorities and the server's name. If it can't vouch for one it asks in
+the desktop (Accept, Reject or Always); until you answer, ffmpeg waits.
+There's nobody to ask outside the desktop, so a certificate AcornSSL
+can't check is refused there. If the commands say https needs the
+AcornSSL module, double-click !FFmpeg once (its !Run loads it), or
+*RMLoad System:Modules.Network.URL.AcornSSL.
 
 Speed
 -----
@@ -171,14 +183,14 @@ uses it. Licence: docs.Licences.PThreadTicker (BSD).
 
 Known limits
 ------------
-- ffplay has no desktop front end: start it from a TaskWindow or Obey
-  file. It uses the whole CPU while it plays.
+- ffplay uses the whole CPU while it plays (Reel, a separate download,
+  is a video player that sleeps between pictures).
 - Version riscos1's ffplay stopped with "Window Manager is currently in
   use" when started in a TaskWindow; riscos2 started itself as its own
   task, but H.264 video could crash with "abort on data transfer"
   (riscos2 and riscos3). Fixed in riscos4.
 - If ffmpeg seems to wait for a key in a TaskWindow, add -nostdin.
-- No https (no TLS library), no hardware decoding.
+- No hardware decoding.
 
 Licence
 -------

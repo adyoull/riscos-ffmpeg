@@ -54,7 +54,11 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
     (`<Wimp$ScrapDir>.ReelLog`).
 - **Codec libraries:** x264 (H.264 encoding), dav1d (AV1 decoding, NEON),
   LAME, Opus, Vorbis, and zlib.
-- **Network:** http, tcp, udp, rtp, rtmp and hls. There is no https.
+- **Network:** http, tcp, udp, rtp, rtmp and hls, and **https** (and HLS
+  over https) through RISC OS's AcornSSL module (patch 0018,
+  `libavformat/tls_acornssl.c`; RISC OS 5.28 or later): the TCP socket is
+  handed to AcornSSL, which checks certificates itself and asks in the
+  desktop about one it can't verify.
 - **Input device:** `lavfi` (test patterns and sources).
 - **RISC OS file names:** `SDFS::Pi.$.clip/mp4` and `<Obey$Dir>.x/mkv` work
   both for input and output. The `/ext` part picks the output format.

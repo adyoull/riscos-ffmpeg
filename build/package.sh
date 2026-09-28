@@ -7,11 +7,11 @@
 #   dist/riscos-ffmpeg-devkit-VERSION.tgz  static libraries (and libreelcore, libffegl) + headers + .pc
 # Filetypes go in the zip's Acorn extra fields (tools/mkrozip.py), so SparkFS
 # and RISC OS unzip give the files their real types.
-# Usage: build/package.sh [VERSION]      (default 5.1.10-riscos10)
+# Usage: build/package.sh [VERSION]      (default 5.1.10-riscos11)
 #        ELF2AIF=path/to/elf2aif        (host elf2aif; see tools/elf2aif)
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
-V=${1:-5.1.10-riscos10}
+V=${1:-5.1.10-riscos11}
 ELF2AIF=${ELF2AIF:-$TOP/tools/elf2aif/elf2aif}
 [ -x "$ELF2AIF" ] || { echo "no elf2aif at $ELF2AIF (make -C tools/elf2aif GCCSDK_SRC=...)" >&2; exit 1; }
 FF=$SRC/ffmpeg-5.1.10

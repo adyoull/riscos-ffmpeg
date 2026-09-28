@@ -58,6 +58,10 @@ int ro_pthread_setspecific(unsigned k, const void *v) { keys[k] = (void *)v; ret
 /* SWIs. The screen: 640x480, 32bpp TBGR, eig 1. */
 #define OS_ReadModeVariable 0x35
 #define OS_ReadVduVariables 0x31
+/* libavformat's AcornSSL backend (patch 0018) refers to UnixLib's
+   __get_ro_socket */
+__attribute__((weak)) int __get_ro_socket(int fd) { return fd; }
+
 _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *out)
 {
     static _kernel_oserror err = { 1, "not faked" };

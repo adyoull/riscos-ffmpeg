@@ -11,6 +11,11 @@
 #include "convert.h"
 
 /* the window's Wimp side isn't used here */
+
+/* libavformat's AcornSSL backend (patch 0018) refers to UnixLib's
+   __get_ro_socket, if libavformat is linked in */
+__attribute__((weak)) int __get_ro_socket(int fd) { return fd; }
+
 _kernel_oserror *_kernel_swi(int n, _kernel_swi_regs *in, _kernel_swi_regs *out) { static _kernel_oserror e; return &e; }
 _kernel_oserror *fffront_start_task(const char *cmd) { return NULL; }
 void fffront_play(const char *file) { }

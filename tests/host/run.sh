@@ -70,6 +70,10 @@ echo "== halve_test (big reductions halved first: NEON vs C, and the picture)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/halve_test" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
   grep -v "swscaler\|reelcore: " || bad=1
 
+# https through AcornSSL (patch 0018): a stand-in module in the arm-linux build
+echo "== https (FFmpeg's AcornSSL backend, with a pass-through stand-in for the module)"
+bash "$HERE/https.sh" || bad=1
+
 # the patches reproduce the tested code, and the port's NEON is alignment-safe as written
 echo "== check-fresh-tree (patches/ffmpeg on a fresh FFmpeg = the tested tree)"
 "$TOP/tools/check-fresh-tree.sh" "$F" || bad=1

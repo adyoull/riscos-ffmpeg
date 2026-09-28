@@ -1,0 +1,428 @@
+From 8cd673eb611dcc99097b43ef404ade2bddd06819 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Mon, 28 Sep 2026 16:48:30 +0100
+Subject: [PATCH 18/18] avformat: TLS through RISC OS's AcornSSL module (https)
+
+--enable-riscos-acornssl: the tls protocol (and so https, tls, rtmps and
+HLS over https) through the AcornSSL module of RISC OS 5.28 and later.
+The TCP connection is opened as usual; its RISC OS socket is handed to
+AcornSSL_CreateSession, and reading and writing go through AcornSSL_Recv
+and AcornSSL_Send (non-blocking, waiting on the socket with the timeout
+and interrupt callback). The handshake is driven with 1-byte peeks until
+AcornSSL stops returning ENOTCONN; the host name is set for SNI and the
+certificate check. Certificates are always checked by AcornSSL, which asks
+the desktop user about one it can't verify.
+---
+ configure                  |   7 +-
+ libavformat/Makefile       |   1 +
+ libavformat/tls_acornssl.c | 340 +++++++++++++++++++++++++++++++++++++
+ 3 files changed, 347 insertions(+), 1 deletion(-)
+ create mode 100644 libavformat/tls_acornssl.c
+
+diff --git a/configure b/configure
+index 3bfb777..d9b4b6f 100755
+--- a/configure
++++ b/configure
+@@ -324,6 +324,7 @@ External library support:
+                            Windows if openssl and gnutls are not used [autodetect]
+   --disable-sdl2           disable sdl2 [autodetect]
+   --enable-riscos-egl      enable RISC OS EGL (riscos-mesa) output device [no]
++  --enable-riscos-acornssl enable TLS (https) through RISC OS's AcornSSL module [no]
+   --disable-securetransport disable Secure Transport, needed for TLS support
+                            on OSX if openssl and gnutls are not used [autodetect]
+   --enable-vapoursynth     enable VapourSynth demuxer [no]
+@@ -1809,6 +1810,7 @@ EXTERNAL_LIBRARY_GPLV3_LIST="
+ "
+ 
+ EXTERNAL_LIBRARY_LIST="
++    riscos_acornssl
+     riscos_egl
+     $EXTERNAL_LIBRARY_GPL_LIST
+     $EXTERNAL_LIBRARY_NONFREE_LIST
+@@ -3595,7 +3597,7 @@ sctp_protocol_select="network"
+ securetransport_conflict="openssl gnutls libtls mbedtls"
+ srtp_protocol_select="rtp_protocol srtp"
+ tcp_protocol_select="network"
+-tls_protocol_deps_any="gnutls openssl schannel securetransport libtls mbedtls"
++tls_protocol_deps_any="gnutls openssl schannel securetransport libtls mbedtls riscos_acornssl"
+ tls_protocol_select="tcp_protocol"
+ udp_protocol_select="network"
+ udplite_protocol_select="network"
+@@ -3619,6 +3621,7 @@ libsrt_protocol_deps="libsrt"
+ libsrt_protocol_select="network"
+ libssh_protocol_deps="libssh"
+ libtls_conflict="openssl gnutls mbedtls"
++riscos_acornssl_conflict="openssl gnutls libtls mbedtls schannel securetransport"
+ libzmq_protocol_deps="libzmq"
+ libzmq_protocol_select="network"
+ 
+@@ -6723,6 +6726,8 @@ enabled opencl            && { check_pkg_config opencl OpenCL CL/cl.h clEnqueueN
+                              { test_cpp_condition "OpenCL/cl.h" "defined(CL_VERSION_1_2)" ||
+                                test_cpp_condition "CL/cl.h" "defined(CL_VERSION_1_2)" ||
+                                die "ERROR: opencl must be installed and version must be 1.2 or compatible"; }
++# RISC OS's AcornSSL module (SWIs, no library): the tls protocol, so https
++enabled riscos_acornssl   && require riscos_acornssl kernel.h _kernel_swi
+ # riscos-mesa's EGL (RISC OS): the egl output device
+ enabled riscos_egl        && require riscos_egl EGL/eglext_riscos.h eglGetDisplay -lEGL -lOSMesa -lstdc++ -lz -lm
+ enabled opengl            && { check_lib opengl GL/glx.h glXGetProcAddress "-lGL" ||
+diff --git a/libavformat/Makefile b/libavformat/Makefile
+index 6c6b779..b4dd366 100644
+--- a/libavformat/Makefile
++++ b/libavformat/Makefile
+@@ -676,6 +676,7 @@ TLS-OBJS-$(CONFIG_MBEDTLS)               += tls_mbedtls.o
+ TLS-OBJS-$(CONFIG_OPENSSL)               += tls_openssl.o
+ TLS-OBJS-$(CONFIG_SECURETRANSPORT)       += tls_securetransport.o
+ TLS-OBJS-$(CONFIG_SCHANNEL)              += tls_schannel.o
++TLS-OBJS-$(CONFIG_RISCOS_ACORNSSL)       += tls_acornssl.o
+ OBJS-$(CONFIG_TLS_PROTOCOL)              += tls.o $(TLS-OBJS-yes)
+ OBJS-$(CONFIG_UDP_PROTOCOL)              += udp.o ip.o
+ OBJS-$(CONFIG_UDPLITE_PROTOCOL)          += udp.o ip.o
+diff --git a/libavformat/tls_acornssl.c b/libavformat/tls_acornssl.c
+new file mode 100644
+index 0000000..a19cb90
+--- /dev/null
++++ b/libavformat/tls_acornssl.c
+@@ -0,0 +1,340 @@
++/*
++ * TLS/SSL protocol through RISC OS's AcornSSL module
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/*
++ * AcornSSL is the TLS module that comes with RISC OS 5.28 and later
++ * (System:Modules.Network.URL.AcornSSL, mbedTLS inside). It is used through
++ * SWIs that mirror the Internet module's socket SWIs. This backend opens
++ * the TCP connection the usual way (tcp:, or httpproxy:), then hands the
++ * RISC OS socket under UnixLib's file descriptor to AcornSSL_CreateSession
++ * and does all reading and writing through AcornSSL_Recv / AcornSSL_Send.
++ *
++ * What the module does, from its documentation and source (ROOL's
++ * RiscOS/Sources/Networking/Fetchers/AcornSSL, doc/AcornSSL and c/api):
++ *
++ * - The handshake happens inside the first Recv or Send. Each call makes
++ *   one step and, until the handshake is over, fails with ENOTCONN ("call
++ *   again"), whether or not the handle is non-blocking. tls_open drives it
++ *   with 1-byte MSG_PEEK reads (AcornSSL keeps peeked data and hands it out
++ *   on the next Recv), checking FFmpeg's interrupt callback and the
++ *   timeout between steps.
++ * - Certificates are checked against AcornSSL's own list of authorities.
++ *   A chain that doesn't verify is not simply refused: AcornSSL asks the
++ *   desktop user (UpCall_CertificateConfirm, answered by its own task) and
++ *   meanwhile keeps returning ENOTCONN; "Always" remembers the answer
++ *   (Choices:WWW.AcornSSL.CertAccept). Outside the desktop nobody answers
++ *   the UpCall and the connection fails. So this backend always verifies:
++ *   tls_verify can't turn checking off, and ca_file can't add authorities.
++ * - SO_ACORNSSL_HOSTNAME sends the host name (SNI, which most HTTPS
++ *   servers need) and makes AcornSSL check the certificate is for that
++ *   name. Not set for numeric addresses, as the other backends do.
++ * - FIONBIO through AcornSSL_Ioctl makes Recv/Send return EWOULDBLOCK
++ *   instead of waiting inside the SWI, so FFmpeg can wait on the socket
++ *   itself (poll on UnixLib's descriptor), with its timeout and interrupt
++ *   callback. A socket that polls readable may still have no application
++ *   data (TLS records that aren't data): that's EWOULDBLOCK again.
++ * - With a handed-over socket, AcornSSL_Close ends the TLS session (sending
++ *   close_notify) but leaves the socket open: closing it stays with the
++ *   tcp: context, as in every other backend.
++ * - Errors: socket errors come back as Internet module (DCI 4) errors,
++ *   0x20E00 + errno; AcornSSL's own (&813F20-&813F3F) have a message, e.g.
++ *   "Handshake error (state -9984)" = an mbedTLS error number.
++ *
++ * Not supported: listen (server) mode, client certificates.
++ */
++
++#include <string.h>
++#include <kernel.h>
++
++#include "avformat.h"
++#include "internal.h"
++#include "network.h"
++#include "url.h"
++#include "tls.h"
++#include "libavutil/avstring.h"
++#include "libavutil/opt.h"
++#include "libavutil/time.h"
++
++/* UnixLib: the RISC OS socket handle behind a file descriptor
++   (<unixlib/local.h>) */
++extern int __get_ro_socket(int sockfd);
++
++/* The AcornSSL SWIs (X forms) and constants, from doc/AcornSSL */
++#define XAcornSSL_Ioctl          (0x050F81 | 0x20000)
++#define XAcornSSL_Close          (0x050F84 | 0x20000)
++#define XAcornSSL_Recv           (0x050F87 | 0x20000)
++#define XAcornSSL_CreateSession  (0x050F88 | 0x20000)
++#define XAcornSSL_Setsockopt     (0x050F8B | 0x20000)
++#define XAcornSSL_Send           (0x050F8F | 0x20000)
++#define XAcornSSL_Version        (0x050F8D | 0x20000)
++#define CreateSession_New        0
++#define SO_ACORNSSL_HOSTNAME     0x11E0
++#define ACORNSSL_SOL_SOCKET      0xFFFF
++#define ACORNSSL_FIONBIO         0x8004667E   /* _IOW('f', 126, int) */
++#define ACORNSSL_MSG_PEEK        0x2
++
++/* Internet module errors: 0x20E00 + a BSD errno (these numbers) */
++#define DCI4_BASE        0x20E00
++#define DCI4_EINTR       4
++#define DCI4_EPIPE       32
++#define DCI4_EWOULDBLOCK 35
++#define DCI4_EINPROGRESS 36
++#define DCI4_ECONNRESET  54
++#define DCI4_ENOTCONN    57
++#define DCI4_ETIMEDOUT   60
++#define RISCOS_SWI_NOT_KNOWN 0x1E6
++
++typedef struct TLSContext {
++    const AVClass *class;
++    TLSShared tls_shared;
++    int handle;                     /* AcornSSL handle; 0 = none */
++    int fd;                         /* UnixLib descriptor of the socket, for poll */
++} TLSContext;
++
++/* errno of an Internet module error, or -1 for any other error */
++static int dci4_errno(const _kernel_oserror *e)
++{
++    return (e->errnum & ~0xFF) == DCI4_BASE ? (int)(e->errnum & 0xFF) : -1;
++}
++
++static int map_error(URLContext *h, const char *what, const _kernel_oserror *e)
++{
++    switch (dci4_errno(e)) {
++    case DCI4_EWOULDBLOCK: case DCI4_EINPROGRESS: case DCI4_ENOTCONN:
++    case DCI4_EINTR:
++        return AVERROR(EAGAIN);
++    case DCI4_ECONNRESET:
++        av_log(h, AV_LOG_WARNING, "%s: connection reset by the server\n", what);
++        return AVERROR(ECONNRESET);
++    case DCI4_EPIPE:
++        return AVERROR(EPIPE);
++    case DCI4_ETIMEDOUT:
++        return AVERROR(ETIMEDOUT);
++    }
++    av_log(h, AV_LOG_ERROR, "%s: %s (error &%X)\n", what, e->errmess, (unsigned)e->errnum);
++    return AVERROR(EIO);
++}
++
++/* One AcornSSL_Recv or AcornSSL_Send: bytes, or NULL error on success */
++static _kernel_oserror *ssl_io(int swi, int handle, void *buf, int len, int flags, int *done)
++{
++    _kernel_swi_regs r;
++    _kernel_oserror *e;
++    r.r[0] = handle;
++    r.r[1] = (int)(intptr_t)buf;
++    r.r[2] = len;
++    r.r[3] = flags;
++    e = _kernel_swi(swi, &r, &r);
++    *done = e ? -1 : r.r[0];
++    return e;
++}
++
++static int tls_close(URLContext *h)
++{
++    TLSContext *c = h->priv_data;
++    if (c->handle) {
++        _kernel_swi_regs r;
++        r.r[0] = c->handle;
++        _kernel_swi(XAcornSSL_Close, &r, &r);   /* close_notify; the socket stays open */
++        c->handle = 0;
++    }
++    ffurl_closep(&c->tls_shared.tcp);
++    return 0;
++}
++
++/* Waits until the socket can be read (or written), with the timeout and
++   the interrupt callback; 0 when ready */
++static int wait_socket(URLContext *h, int write, int64_t timeout)
++{
++    TLSContext *c = h->priv_data;
++    return ff_network_wait_fd_timeout(c->fd, write, timeout, &h->interrupt_callback);
++}
++
++static int tls_open(URLContext *h, const char *uri, int flags, AVDictionary **options)
++{
++    TLSContext *c = h->priv_data;
++    TLSShared *s = &c->tls_shared;
++    _kernel_swi_regs r;
++    _kernel_oserror *e;
++    int ret, one = 1, steps = 0, got;
++    int64_t start;
++    uint8_t peek;
++
++    if (s->listen) {
++        av_log(h, AV_LOG_ERROR, "AcornSSL: listening for connections isn't supported\n");
++        return AVERROR(ENOSYS);
++    }
++    if (s->ca_file || s->cert_file || s->key_file)
++        av_log(h, AV_LOG_WARNING, "AcornSSL uses its own certificates: "
++               "ca_file, cert_file and key_file are ignored\n");
++
++    /* the module must be there before anything is opened */
++    if ((e = _kernel_swi(XAcornSSL_Version, &r, &r))) {
++        av_log(h, AV_LOG_ERROR, "https and other secure connections need the AcornSSL module "
++               "(RISC OS 5.28 or later: RMLoad System:Modules.Network.URL.AcornSSL)%s%s\n",
++               e->errnum == RISCOS_SWI_NOT_KNOWN ? "" : ": ", e->errnum == RISCOS_SWI_NOT_KNOWN ? "" : e->errmess);
++        return AVERROR(ENOSYS);
++    }
++    av_log(h, AV_LOG_DEBUG, "AcornSSL %d.%02d\n", r.r[0] / 100, r.r[0] % 100);
++
++    if ((ret = ff_tls_open_underlying(s, h, uri, options)) < 0)
++        return ret;
++    c->fd = ffurl_get_file_handle(s->tcp);
++    if (c->fd < 0) {
++        av_log(h, AV_LOG_ERROR, "AcornSSL: the connection has no socket\n");
++        ret = AVERROR(EINVAL);
++        goto fail;
++    }
++
++    r.r[0] = __get_ro_socket(c->fd);
++    r.r[1] = CreateSession_New;
++    r.r[2] = 0;
++    if ((e = _kernel_swi(XAcornSSL_CreateSession, &r, &r))) {
++        ret = map_error(h, "AcornSSL_CreateSession", e);
++        goto fail;
++    }
++    c->handle = r.r[0];
++
++    if (!s->numerichost) {        /* SNI, and the certificate must be for this name */
++        r.r[0] = c->handle;
++        r.r[1] = ACORNSSL_SOL_SOCKET;
++        r.r[2] = SO_ACORNSSL_HOSTNAME;
++        r.r[3] = (int)(intptr_t)s->host;
++        r.r[4] = sizeof(const char *);
++        if ((e = _kernel_swi(XAcornSSL_Setsockopt, &r, &r))) {
++            ret = map_error(h, "AcornSSL: setting the host name", e);
++            goto fail;
++        }
++    }
++
++    r.r[0] = c->handle;              /* EWOULDBLOCK rather than waiting in the SWI */
++    r.r[1] = ACORNSSL_FIONBIO;
++    r.r[2] = (int)(intptr_t)&one;
++    if ((e = _kernel_swi(XAcornSSL_Ioctl, &r, &r))) {
++        ret = map_error(h, "AcornSSL: FIONBIO", e);
++        goto fail;
++    }
++
++    /* The handshake: each Recv takes it a step further (ENOTCONN until it's
++       over; longer while the desktop asks about a certificate). A 1-byte
++       peek leaves any data for the first real read. */
++    start = av_gettime_relative();
++    for (;;) {
++        e = ssl_io(XAcornSSL_Recv, c->handle, &peek, 1, ACORNSSL_MSG_PEEK, &got);
++        if (!e || dci4_errno(e) == DCI4_EWOULDBLOCK)
++            break;                                  /* handshake over */
++        if (dci4_errno(e) != DCI4_ENOTCONN && dci4_errno(e) != DCI4_EINPROGRESS) {
++            ret = map_error(h, "TLS handshake", e);
++            av_log(h, AV_LOG_ERROR, "(a certificate that isn't trusted is refused unless "
++                   "it's accepted in the desktop's prompt)\n");
++            goto fail;
++        }
++        steps++;
++        if (ff_check_interrupt(&h->interrupt_callback)) {
++            ret = AVERROR_EXIT;
++            goto fail;
++        }
++        if (h->rw_timeout > 0 && av_gettime_relative() - start > h->rw_timeout) {
++            av_log(h, AV_LOG_ERROR, "TLS handshake: timed out\n");
++            ret = AVERROR(ETIMEDOUT);
++            goto fail;
++        }
++        /* each step has usually waited in the SWI for what it needed; a
++           short sleep keeps a pending certificate prompt from spinning */
++        av_usleep(1000);
++    }
++    av_log(h, AV_LOG_DEBUG, "AcornSSL: handshake done in %d steps\n", steps + 1);
++    return 0;
++
++fail:
++    tls_close(h);
++    return ret;
++}
++
++static int tls_read(URLContext *h, uint8_t *buf, int size)
++{
++    TLSContext *c = h->priv_data;
++    for (;;) {
++        int got, ret;
++        _kernel_oserror *e = ssl_io(XAcornSSL_Recv, c->handle, buf, size, 0, &got);
++        if (!e)
++            return got > 0 ? got : AVERROR_EOF;     /* 0: the server closed */
++        if ((ret = map_error(h, "AcornSSL_Recv", e)) != AVERROR(EAGAIN))
++            return ret;
++        if (h->flags & AVIO_FLAG_NONBLOCK)
++            return AVERROR(EAGAIN);
++        if ((ret = wait_socket(h, 0, h->rw_timeout)) < 0)
++            return ret;
++    }
++}
++
++static int tls_write(URLContext *h, const uint8_t *buf, int size)
++{
++    TLSContext *c = h->priv_data;
++    for (;;) {
++        int done, ret;
++        _kernel_oserror *e = ssl_io(XAcornSSL_Send, c->handle, (void *)buf, size, 0, &done);
++        if (!e)
++            return done;
++        if ((ret = map_error(h, "AcornSSL_Send", e)) != AVERROR(EAGAIN))
++            return ret;
++        if (h->flags & AVIO_FLAG_NONBLOCK)
++            return AVERROR(EAGAIN);
++        if ((ret = wait_socket(h, 1, h->rw_timeout)) < 0)
++            return ret;
++    }
++}
++
++static int tls_get_file_handle(URLContext *h)
++{
++    TLSContext *c = h->priv_data;
++    return ffurl_get_file_handle(c->tls_shared.tcp);
++}
++
++static int tls_get_short_seek(URLContext *h)
++{
++    TLSContext *c = h->priv_data;
++    return ffurl_get_short_seek(c->tls_shared.tcp);
++}
++
++static const AVOption options[] = {
++    TLS_COMMON_OPTIONS(TLSContext, tls_shared),
++    { NULL }
++};
++
++static const AVClass tls_class = {
++    .class_name = "tls",
++    .item_name  = av_default_item_name,
++    .option     = options,
++    .version    = LIBAVUTIL_VERSION_INT,
++};
++
++const URLProtocol ff_tls_protocol = {
++    .name           = "tls",
++    .url_open2      = tls_open,
++    .url_read       = tls_read,
++    .url_write      = tls_write,
++    .url_close      = tls_close,
++    .url_get_file_handle = tls_get_file_handle,
++    .url_get_short_seek  = tls_get_short_seek,
++    .priv_data_size = sizeof(TLSContext),
++    .flags          = URL_PROTOCOL_FLAG_NETWORK,
++    .priv_data_class = &tls_class,
++};
+-- 
+2.43.0
+

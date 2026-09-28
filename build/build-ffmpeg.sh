@@ -36,11 +36,16 @@ if [ ! -f ffbuild/config.mak ] || [ -n "${RECONFIGURE:-}" ]; then
     # link maps: tests/qemu/ignore-ranges.py finds the C library in them
     # Linked dynamically against glibc: its string functions assume unaligned
     # access works, so tests/qemu traps alignment only inside the program.
-    VARIANT="--disable-sdl2 --disable-ffplay --disable-zlib"
+    # AcornSSL is a RISC OS module: here a pass-through stand-in
+    # (tests/host/fake_acornssl.c) is linked in, so the tests can run the
+    # https code (patch 0018) against a plain HTTP server.
+    ${CROSS}gcc $CPUFLAGS -O1 -I"$TOP/tests/host/fake" -c "$TOP/tests/host/fake_acornssl.c" -o "$SRC/fake_acornssl.o"
+    VARIANT="--disable-sdl2 --disable-ffplay --disable-zlib --enable-riscos-acornssl --extra-libs=$SRC/fake_acornssl.o"
+    EXTRA_TEST_CFLAGS="${EXTRA_TEST_CFLAGS:-} -I$TOP/tests/host/fake"
     OUTDEVS=
     LINK=-no-pie
   else
-    VARIANT="--enable-zlib --enable-sdl2 --enable-ffplay --enable-riscos-egl"
+    VARIANT="--enable-zlib --enable-sdl2 --enable-ffplay --enable-riscos-egl --enable-riscos-acornssl"
     OUTDEVS="--enable-outdev=egl"   # after --disable-outdevs
     LINK=-static
   fi
@@ -63,7 +68,7 @@ if [ ! -f ffbuild/config.mak ] || [ -n "${RECONFIGURE:-}" ]; then
     --disable-v4l2-m2m --disable-libdrm \
     --enable-ffmpeg --enable-ffprobe \
     --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages \
-    --extra-version=riscos10 \
+    --extra-version=riscos11 \
     > "$SRC/ffmpeg-configure.log"
   tail -n +1 "$SRC/ffmpeg-configure.log" | sed -n '1,200p' | grep -E "^(ARCH|big-endian|NEON|runtime|pthreads|External libraries:)" || true
 fi
