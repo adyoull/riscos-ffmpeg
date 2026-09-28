@@ -39,6 +39,12 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
   - A mini player above the icon bar (optionally kept on top), playlists,
     speed 0.5x–2x, picture sizes, sound tracks, A-B repeat, carry on
     where you stopped, vsync full screen, fast decoding, deinterlacing.
+  - **Web addresses** (http, https through AcornSSL, HLS): Open address…
+    on the icon bar menu (type or paste), or a dropped URI/URL/text/M3U
+    file. **yt-dlp's output** plays too: `-g`'s one or two addresses (the
+    best video and best sound apart, played together) or `-j`'s JSON
+    (title, addresses, the site's HTTP headers; a line per video for a
+    playlist). A thread in reelcore reads up to 10 s ahead.
 - **NEON added by this port** (each bit-exact with FFmpeg's C, tested
   under the alignment-trapping qemu): yadif deinterlacing (patch 0015),
   HEVC chroma motion compensation (0016), and swscale's fast bilinear
@@ -159,7 +165,7 @@ build/      env.sh, build-deps.sh, build-ffmpeg.sh, build-apps.sh, package.sh, S
 patches/    ffmpeg/ (git format-patch series), dav1d/, x264/, lame/, sdl2/ (riscos-mesa overlay copy)
 reelcore/   the player core (reelcore.h, reelcore.c): no EGL
 ffegl/      the EGL layer on reelcore (ffegl.h, ffegl.c) and the videowin/videocube examples
-player/     reel.c: !Reel and !ReelEGL
+player/     reel.c: !Reel and !ReelEGL; sources.c: addresses and yt-dlp output in text
 frontend/   fffront.c: !FFmpeg's icon bar front end
 tools/      neon-align.py (+ *.allow lists), mkrozip.py, mksprites.py, elf2aif/, check-stack-probes.py
 app/        !FFmpeg, !Reel, !ReelEGL (the parts that aren't built)

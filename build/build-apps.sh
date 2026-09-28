@@ -33,12 +33,12 @@ $CC -o "$STAGE/bin/videocube" "$TOP/ffegl/examples/videocube.c" -static \
   -L$STAGE/lib -lffegl -lreelcore $FF -lglut -lGLU -lEGL -lOSMesa -lstdc++ -lm
 
 # !Reel, the video player (player/reel.c): reelcore alone, no EGL, no Mesa
-$CC -o "$STAGE/bin/reel" "$TOP/player/reel.c" "$O/reelcore.o" -static \
+$CC -o "$STAGE/bin/reel" "$TOP/player/reel.c" "$TOP/player/sources.c" "$O/reelcore.o" -static \
   -L$STAGE/lib $FF -lm
 
 # !ReelEGL: the same player drawing through riscos-mesa's EGL (ffegl's
 # surfaces, no GL textures)
-$CC -DREEL_EGL -o "$STAGE/bin/reelegl" "$TOP/player/reel.c" "$O/ffegl_notex.o" "$O/reelcore.o" -static \
+$CC -DREEL_EGL -o "$STAGE/bin/reelegl" "$TOP/player/reel.c" "$TOP/player/sources.c" "$O/ffegl_notex.o" "$O/reelcore.o" -static \
   -L$STAGE/lib $FF -lEGL -lOSMesa -lstdc++ -lm
 
 # !FFmpeg's icon bar front end (frontend/fffront.c)

@@ -70,6 +70,30 @@ echo "== halve_test (big reductions halved first: NEON vs C, and the picture)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/halve_test" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
   grep -v "swscaler\|reelcore: " || bad=1
 
+# what Reel finds in text: addresses, playlists, yt-dlp -g and -j output (host gcc, sanitizers)
+echo "== sources_test (web addresses and yt-dlp's output in text)"
+gcc -O1 -g -fsanitize=address,undefined -I"$TOP/player" "$TOP/player/sources.c" "$HERE/sources_test.c" -o "$O/sources_test" &&
+  "$O/sources_test" || bad=1
+
+# reelcore from the network (its reader thread) and from two inputs (video and sound apart)
+NS=$O/netsamples; mkdir -p "$NS"
+cp "$SAMPLES/long_h264_aac_322_184.mp4" "$NS/"
+ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -map 0:v -c copy "$NS/net_video_only.mp4"
+ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -map 0:a -c copy "$NS/net_sound_only.m4a"
+NP=$((20000 + RANDOM % 20000)); : > "$O/net_headers.log"
+python3 "$HERE/httpserve.py" "$NP" "$NS" "$O/net_headers.log" >/dev/null 2>&1 & NS1=$!
+python3 "$HERE/httpserve.py" $((NP + 1)) --silent >/dev/null 2>&1 & NS2=$!
+for i in $(seq 50); do curl -s -o /dev/null "http://127.0.0.1:$NP/" && break; sleep 0.1; done   # (up)
+: > "$O/net_headers.log"
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/net_test.c" -o "$O/net_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/net_test" "$O/reelcore.o" \
+  "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/net_test.o" $LIBS -lm 2>/dev/null
+echo "== net_test (reelcore: addresses read by a thread; video and sound apart)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/net_test" "http://127.0.0.1:$NP" "http://127.0.0.1:$((NP + 1))/x.mp4" "$NS" \
+  "$O/net_headers.log" 2>&1 | grep -v "swscaler\|reelcore: " || bad=1
+echo '<!DOCTYPE html><html><head><title>A video</title></head><body><p>A page about a video.</p></body></html>' > "$NS/page.html"
+export REEL_TEST_URL="http://127.0.0.1:$NP"    # Reel's Open address and yt-dlp output (reel_test)
+
 # https through AcornSSL (patch 0018): a stand-in module in the arm-linux build
 echo "== https (FFmpeg's AcornSSL backend, with a pass-through stand-in for the module)"
 bash "$HERE/https.sh" || bad=1
@@ -138,9 +162,10 @@ echo "== idle_test (sleeping until the next picture is due)"
 
 # Reel (player/reel.c) on reelcore alone (no EGL), fake Wimp, fake SDL audio
 $CC -DREEL_TEST -DREEL_NO_MAIN -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -c "$TOP/player/reel.c" -o "$O/reel.o"
+$CC -c "$TOP/player/sources.c" -o "$O/sources.o"
 $CC -DFAKE_SDL_ONLY -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$HERE -c "$HERE/fake_sdl_gl.c" -o "$O/fake_sdl_only.o"
 $CC -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reel_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reel_test" "$O/reel_test.o" "$O/reel.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reel_test" "$O/reel_test.o" "$O/reel.o" "$O/sources.o" \
   "$O/reelcore.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
 echo "== reel_test (the player, scripted desktop)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/reel_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
@@ -149,7 +174,7 @@ echo "== reel_test (the player, scripted desktop)"
 # Reel again with the sound going straight to (fake) SharedSoundBuffer, as on RISC OS
 $CC -DREELCORE_SSB -I$HERE/fake -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore_ssb.o"
 $CC -DFAKE_SSB -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reel_ssb_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reel_ssb_test" "$O/reel_ssb_test.o" "$O/reel.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reel_ssb_test" "$O/reel_ssb_test.o" "$O/reel.o" "$O/sources.o" \
   "$O/reelcore_ssb.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
 echo "== reel_ssb_test (the player, sound through SharedSoundBuffer)"
 rm -f "$O/reel_ssb.log"
@@ -171,7 +196,7 @@ $CC -DFFEGL_NO_TEXTURE -I$HERE/fake -I$S/include -I$TOP/reelcore -I$TOP/ffegl -c
 $CC -DREEL_EGL -DREEL_TEST -DREEL_NO_MAIN -I$HERE/fake -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -c "$TOP/player/reel.c" -o "$O/reelegl.o"
 $CC -DFAKE_EGL_ONLY -I$HERE/fake -c "$HERE/fake_riscos.c" -o "$O/fake_egl_only.o"
 $CC -DREEL_EGL -I$HERE/fake -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reelegl_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reelegl_test" "$O/reelegl_test.o" "$O/reelegl.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reelegl_test" "$O/reelegl_test.o" "$O/reelegl.o" "$O/sources.o" \
   "$O/reelcore.o" "$O/ffegl_notex.o" "$O/fake_sdl_only.o" "$O/fake_egl_only.o" $LIBS 2>/dev/null
 echo "== reelegl_test (the EGL build of the player, scripted desktop, fake EGL)"
 rm -f "$O/reelegl.log"
@@ -180,6 +205,8 @@ env 'ReelEGL$Log'="$O/reelegl.log" "$TOP/tests/qemu/aligntrap.sh" "$O/reelegl_te
 for want in "ReelEGL log" "EGL surface .*work area" "EGL surface .*screen" "SDL audio driver"; do
   grep -q "$want" "$O/reelegl.log" || { echo "  the log has no \"$want\""; bad=1; }
 done
+kill $NS1 $NS2 2>/dev/null
+unset REEL_TEST_URL
 
 # The Convert window's ffmpeg command lines, built from real ffprobe output (its own
 # query) and run by the ARM ffmpeg 5.1; the results checked with ffprobe

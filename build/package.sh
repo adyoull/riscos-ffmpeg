@@ -97,7 +97,7 @@ rm -f "$DIST/FFmpeg-EGL-examples-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-EGL-examples-$V.zip" EGLExamples )
 
 # --- !Reel and !ReelEGL, the video player (sprite / EGL drawing) ---------
-RV=${REEL_VERSION:-0.1.16}
+RV=${REEL_VERSION:-0.1.17}
 RT=$TMP/Reel
 mkdir -p "$RT"
 for app in Reel ReelEGL; do
@@ -111,6 +111,8 @@ for app in Reel ReelEGL; do
   mkdir -p "$R/docs/source/c" "$R/docs/source/h"
   cp -r "$D/Licences" "$R/docs/Licences"
   cp "$TOP/player/reel.c"  "$R/docs/source/c/reel,fff"
+  cp "$TOP/player/sources.c"  "$R/docs/source/c/sources,fff"
+  cp "$TOP/player/sources.h"  "$R/docs/source/h/sources,fff"
   cp "$TOP/reelcore/reelcore.c"  "$R/docs/source/c/reelcore,fff"
   cp "$TOP/reelcore/reelcore.h"  "$R/docs/source/h/reelcore,fff"
   cp "$TOP/common/version.h"  "$R/docs/source/h/version,fff"
@@ -124,10 +126,12 @@ for app in Reel ReelEGL; do
   cp "$TOP"/patches/ffmpeg/0015-*.patch "$R/docs/source/patches/yadif-neon,fff"
   cp "$TOP"/patches/ffmpeg/0016-*.patch "$R/docs/source/patches/hevc-epel-neon,fff"
   cp "$TOP"/patches/ffmpeg/0017-*.patch "$R/docs/source/patches/sws-rgb-neon,fff"
+  cp "$TOP"/patches/ffmpeg/0018-*.patch "$R/docs/source/patches/tls-acornssl,fff"
   cp "$TOP/build/build-apps.sh" "$R/docs/source/build-apps_sh,fff"
   cat > "$R/docs/source/ReadMe,fff" <<EOF
-$app $RV's own source is here (one source, player/reel.c; ReelEGL is it
-built with -DREEL_EGL), and the player core it runs on (reelcore; ReelEGL
+$app $RV's own source is here (player/reel.c, and sources.c, which finds
+web addresses and yt-dlp's output in text; ReelEGL is the same built with
+-DREEL_EGL), and the player core it runs on (reelcore; ReelEGL
 also has ffegl, which puts reelcore's pictures into EGL). It is part of riscos-ffmpeg ($V), whose full
 source (FFmpeg 5.1.10 plus the RISC OS patches and build scripts) is in
 the FFmpeg package (!FFmpeg.docs.source) and the riscos-ffmpeg git

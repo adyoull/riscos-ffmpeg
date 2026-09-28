@@ -64,11 +64,12 @@ static int fails, step;
 #define INFO 0x300                    /* the media info window */
 #define MINI 0x400                    /* the mini player */
 #define PROGINFO 0x500                /* About this program (Info on the icon bar menu) */
+#define URLW 0x600                    /* the Open address window */
 #define SCR_W 1920                    /* pixels; eig 1 -> 3840 x 2160 OS units */
 #define SCR_H 1080
 
 static int created, opened_w, opened_h, win_x0, win_y1, full_open, win_open, nicons;
-static int state[4][9];               /* window states: [0] WIN, [1] FULL, [2] INFO, [3] MINI */
+static int state[5][9];               /* window states: [0] WIN, [1] FULL, [2] INFO, [3] MINI, [4] URLW */
 static int info_created, info_open, info_updates, info_texts;
 static char info_seen[8192];          /* what Wimp_TextOp drew in the info window */
 static int drawing_info;
@@ -88,7 +89,16 @@ static int *title_ptr;
 static int proginfo_made, proginfo_icons, bar_info_sub = -99;
 static char proginfo_seen[512];     /* "Name:=Reel|Purpose:=..|" from the window's icons */
 
-static int *st(int w) { return state[w == FULL ? 1 : w == INFO ? 2 : w == MINI ? 3 : 0]; }
+static int *st(int w) { return state[w == FULL ? 1 : w == INFO ? 2 : w == MINI ? 3 : w == URLW ? 4 : 0]; }
+
+/* web addresses (REEL_TEST_URL: tests/host/httpserve.py serving the clip and
+   its video-only and sound-only copies) */
+static const char *base_url;
+static int url_created, url_open, url_nicons, msg_refs = 1000;
+static char *url_field;                 /* the address field's text (the icon's buffer) */
+static int sent_action, sent_code, sent_to, sent_my_ref, sent_your_ref, sent_flags, sent_win;
+static char scrap[64];
+static char last_report[256];
 
 /* Choices: what Reel saved */
 static int choices_has(const char *want)
@@ -143,14 +153,16 @@ static int script(int *b)
 enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
        P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL,
        P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
-       P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_CLOSE, P_QUIT };
+       P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
+       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_CLOSE2, P_QUIT };
 static int phase = -1, phase_step;
 /* the phases that play (deliver nulls) */
 static int next_is_null(void)
 {
     return phase == P_PLAY1 || phase == P_PLAY2 || phase == P_PLAY3 || phase == P_PLAYFULL || phase == P_PLAY4 ||
            phase == P_PLAY5 || phase == P_PLAY6 || phase == P_INFOPLAY || phase == P_SPEEDPLAY || phase == P_AB ||
-           phase == P_ABPLAY || phase == P_MINIPLAY || phase == P_ONTOP;
+           phase == P_ABPLAY || phase == P_MINIPLAY || phase == P_ONTOP || phase == P_URLPLAY || phase == P_URLFILEPLAY ||
+           phase == P_URLOPENING || phase == P_URLFILEOPENING;
 }
 
 /* The picture (sprite or surface) holds the current frame as reelcore
@@ -193,7 +205,9 @@ static int next_event(int *b)
         ReelCore *v = reel_test_video();
         switch (phase) {
         case P_PLAY1: case P_PLAY2: case P_PLAY3: case P_PLAYFULL: case P_PLAY4: case P_PLAY5: case P_PLAY6:
-        case P_MINIPLAY:
+        case P_MINIPLAY: case P_URLPLAY: case P_URLFILEPLAY:
+            if (!base_url && (phase == P_URLPLAY || phase == P_URLFILEPLAY))
+                break;
             if (phase_step++ < 40) {
                 fake_time += 0.02;
                 return 0;                                             /* null */
@@ -592,7 +606,122 @@ static int next_event(int *b)
             if (phase_step++ == 0) { message(b, 5, 0, 0, 0xBF8, clip1); return 17; }    /* DataOpen, MPEG */
             CHECK(acks == 5, "video not claimed (%d acks)", acks);
             break;
-        case P_CLOSE:
+        case P_URL:                                                   /* Open address..., Ctrl-V, Return */
+            if (!base_url)
+                break;
+            if (phase_step == 0) { phase_step++; click(b, 1000, 40, 2, -2, 1); return 6; }     /* the icon bar menu */
+            if (phase_step == 1) { phase_step++; b[0] = 1; b[1] = -1; return 9; }             /* Open address... */
+            if (phase_step == 2) {
+                phase_step++;
+                CHECK(url_created == 1 && url_open && url_nicons == 5 && caret_win == URLW && url_field,
+                      "Open address: made %d, open %d, %d icons, caret in %x", url_created, url_open, url_nicons, caret_win);
+                sent_action = 0;
+                key_event(b, URLW, 22);                               /* Ctrl-V */
+                return 8;
+            }
+            if (phase_step == 3) {                                    /* the clipboard's holder answers */
+                phase_step++;
+                CHECK(sent_action == 0x10 && sent_code == 18 && sent_to == 0 && sent_win == URLW && (sent_flags & 4),
+                      "Ctrl-V: sent %x (code %d, to %x, window %x, flags %x): want a DataRequest for the clipboard",
+                      sent_action, sent_code, sent_to, sent_win, sent_flags);
+                message(b, 1, URLW, 1, 0xFFF, "Clipboard");           /* DataSave */
+                b[3] = sent_my_ref;
+                sent_action = 0;
+                return 17;
+            }
+            if (phase_step == 4) {                                    /* it saves to the scrap file we named */
+                FILE *f;
+                phase_step++;
+                CHECK(sent_action == 2 && sent_your_ref == 99 && !strcmp(scrap, "<Wimp$Scrap>"),
+                      "DataSave: answered %x to %d, file '%s' (want DataSaveAck, <Wimp$Scrap>)", sent_action, sent_your_ref, scrap);
+                strcpy(scrap, "/tmp/reel_scrapXXXXXX");
+                close(mkstemp(scrap));
+                f = fopen(scrap, "w");
+                fprintf(f, "%s/long_h264_aac_322_184.mp4\n", base_url);
+                fclose(f);
+                message(b, 3, URLW, 1, 0xFFF, scrap);                 /* DataLoad */
+                b[3] = sent_my_ref;
+                return 17;
+            }
+            if (phase_step == 5) {
+                char want[256];
+                phase_step++;
+                snprintf(want, sizeof(want), "%s/long_h264_aac_322_184.mp4", base_url);
+                CHECK(access(scrap, F_OK) != 0, "the scrap file wasn't deleted");
+                CHECK(url_field && !strcmp(url_field, want), "pasted: '%s'", url_field ? url_field : "");
+                key_event(b, URLW, 13);                               /* Return: play it */
+                return 8;
+            }
+            CHECK(!url_open, "the Open address window stayed open");
+            CHECK(title_ptr && strstr((char *)title_ptr, "Opening"), "while opening, the title is '%s'",
+                  title_ptr ? (char *)title_ptr : "");
+            break;
+        case P_URLOPENING: case P_URLFILEOPENING: {                   /* nulls until it's open */
+            static ReelCore *was;
+            if (!base_url)
+                break;
+            if (phase_step == 0)
+                was = v;
+            if (phase_step++ < 5000 && (reel_test_video() == was || !reel_test_video())) {
+                fake_time += 0.01;
+                usleep(2000);                                         /* the reader thread's time */
+                return 0;
+            }
+            v = reel_test_video();
+            CHECK(v && v != was && reelcore_width(v) == 322, "the address didn't open (%d nulls)", phase_step);
+            CHECK(title_ptr && strstr((char *)title_ptr, phase == P_URLOPENING ? "127.0.0.1:" : "net_video_only.mp4") &&
+                  strstr((char *)title_ptr, phase == P_URLOPENING ? "long_h264_aac_322_184" : "127.0.0.1:") &&
+                  !strstr((char *)title_ptr, "Opening"),
+                  "opened: the title is '%s'", title_ptr ? (char *)title_ptr : "");
+            if (phase == P_URLFILEOPENING)
+                CHECK(v && reelcore_has_audio(v), "video and sound apart: no sound");
+            printf("  %s opened after %d nulls\n", phase == P_URLOPENING ? "the address" : "yt-dlp -g's two addresses", phase_step);
+            break;
+        }
+        case P_URLFILE:                                               /* yt-dlp -g's output dropped, nothing playing */
+            if (!base_url)
+                break;
+            if (phase_step++ == 0) {
+                FILE *f;
+                strcpy(scrap, "/tmp/reel_ytdlpXXXXXX");
+                close(mkstemp(scrap));
+                f = fopen(scrap, "w");
+                fprintf(f, "%s/net_video_only.mp4?mime=video%%2Fmp4\n%s/net_sound_only.m4a?mime=audio%%2Fmp4\n",
+                        base_url, base_url);
+                fclose(f);
+                message(b, 3, -2, 1, 0xFFF, scrap);
+                return 18;
+            }
+            unlink(scrap);
+            CHECK(win_open && title_ptr && strstr((char *)title_ptr, "Opening") && !reel_test_video(),
+                  "nothing playing: the window should say it's opening (open %d, title '%s')", win_open,
+                  title_ptr ? (char *)title_ptr : "");
+            break;
+        case P_URLBAD: {                                              /* a web page: the reason, and the one playing stays */
+            static int reports_before;
+            static ReelCore *was;
+            if (!base_url)
+                break;
+            if (phase_step == 0) {
+                phase_step++;
+                reports_before = reports;
+                was = v;
+                snprintf(url_field, 1024, "%s/page.html", base_url);  /* a web page: HTML */
+                key_event(b, URLW, 13);
+                return 8;
+            }
+            if (phase_step++ < 5000 && reports == reports_before) {
+                fake_time += 0.01;
+                usleep(2000);
+                return 0;
+            }
+            CHECK(reports == reports_before + 1 && reel_test_video() == was && strstr(last_report, "web page, not a video"),
+                  "a web page: %d reports ('%s'), still playing %d", reports - reports_before, last_report,
+                  reel_test_video() == was);
+            printf("  a web page: %s\n", last_report);
+            break;
+        }
+        case P_CLOSE: case P_CLOSE2:
             if (phase_step++ == 0) { memset(b, 0, 4); b[0] = WIN; return 3; }
             CHECK(!reel_test_video() && !win_open, "close didn't close");
 #ifdef REEL_EGL
@@ -735,6 +864,11 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
             out->r[0] = PROGINFO; return NULL;
         }
         if (b[7] == (int)0x80000002) { mini_created++; mini_nicons = b[21]; out->r[0] = MINI; return NULL; }
+        if (b[7] == (int)0x87000002) {                                    /* Open address */
+            url_created++; url_nicons = b[21];
+            url_field = (char *)(intptr_t)b[22 + 8 * 1 + 5];              /* icon 1's text */
+            out->r[0] = URLW; return NULL;
+        }
         if ((b[7] & 0x80000040) == 0x80000040 && !(b[7] & 0x04000000)) { out->r[0] = FULL; return NULL; }
         if (b[7] & 0x10000000) { info_created++; out->r[0] = INFO; return NULL; }      /* v scroll: info */
         created++; nicons = b[21];
@@ -753,6 +887,7 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         if (b[0] == WIN) { win_open = 1; opened_w = b[3] - b[1]; opened_h = b[4] - b[2]; }
         else if (b[0] == INFO) info_open = 1;
         else if (b[0] == MINI) { mini_open = 1; if (phase == P_ONTOP && b[7] == -1) mini_tops++; }
+        else if (b[0] == URLW) url_open = 1;
         else full_open = 1;
         return NULL;
     case 0x400CB:                                                         /* GetWindowState */
@@ -763,7 +898,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         memcpy(b + 1, st(b[0]) + 1, 32);
         return NULL;
     case 0x400C6:                                                         /* CloseWindow */
-        if (b[0] == WIN) win_open = 0; else if (b[0] == INFO) info_open = 0; else if (b[0] == MINI) mini_open = 0; else full_open = 0;
+        if (b[0] == WIN) win_open = 0; else if (b[0] == INFO) info_open = 0; else if (b[0] == MINI) mini_open = 0;
+        else if (b[0] == URLW) url_open = 0; else full_open = 0;
         return NULL;
     case 0x400F9:                                                         /* Wimp_TextOp */
         if (in->r[0] == 2 && drawing_info && strlen(info_seen) + strlen((char *)(intptr_t)in->r[1]) + 2 < sizeof(info_seen)) {
@@ -782,17 +918,33 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x400CF: b[2] = 4; return NULL;                                  /* GetPointerInfo: Select */
     case 0x400DF:                                                         /* ReportError */
         if (((in->r[1] >> 9) & 7) == 4) { asks++; out->r[1] = 3; }        /* our own buttons: "Carry on" */
-        else reports++;
+        else {
+            reports++;
+            snprintf(last_report, sizeof(last_report), "%s", (const char *)(intptr_t)in->r[0] + 4);
+        }
         return NULL;
     case 0x06:                                                            /* OS_Byte */
         if (in->r[0] == 19) vsyncs++;                                     /* wait for the vsync */
         else if (in->r[0] == 129) out->r[1] = 0;                          /* INKEY: Shift isn't held */
         return NULL;
-    case 0x400E7: if (in->r[0] == 17 && b[4] == 4 && b[3] == 99) acks++; return NULL;   /* SendMessage */
+    case 0x400E7:                                                         /* SendMessage */
+        b[2] = ++msg_refs;                                                /* the Wimp fills in my_ref */
+        if (in->r[0] == 17 && b[4] == 4 && b[3] == 99) acks++;
+        sent_action = b[4]; sent_code = in->r[0]; sent_to = in->r[2]; sent_my_ref = b[2]; sent_your_ref = b[3];
+        if (b[4] == 0x10) { sent_win = b[5]; sent_flags = b[9]; }
+        if (b[4] == 2) snprintf(scrap, sizeof(scrap), "%s", (const char *)&b[11]);
+        return NULL;
+    case 0x400D3:                                                         /* GetCaretPosition */
+        b[0] = caret_win; b[1] = caret_win == URLW ? 1 : -1; b[5] = -1;
+        return NULL;
     case 0x400DD: final_checks(); return NULL;                            /* CloseDown */
     case 0x42: out->r[0] = (int)(fake_time * 100); return NULL;           /* OS_ReadMonotonicTime */
     case 0x65: return &err;                                               /* OS_ScreenMode: TBGR anyway */
     case 0x50B00:                                                         /* MimeMap_Translate */
+        if (in->r[0] == 2) {                                              /* MIME type to filetype */
+            out->r[3] = !strcmp((const char *)(intptr_t)in->r[1], "application/json") ? 0xF79 : 0xFFF;
+            return NULL;
+        }
         strcpy((char *)(intptr_t)in->r[3], in->r[1] == 0xBF8 ? "video/mpeg" : "text/plain");
         return NULL;
     case 0x400C9: case 0x400C8: {                                         /* Update/RedrawWindow */
@@ -843,6 +995,7 @@ int main(int argc, char **argv)
     fake_scr_w = SCR_W; fake_scr_h = SCR_H;
 #endif
     clip2 = argv[2];
+    base_url = getenv("REEL_TEST_URL");
     (void)title;
     strcpy(choices_dir, "/tmp/reelchoicesXXXXXX");                        /* a fresh Choices directory */
     if (!mkdtemp(choices_dir))

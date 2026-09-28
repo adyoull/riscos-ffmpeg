@@ -57,6 +57,7 @@
 #include <string.h>
 #include <kernel.h>
 #include "reelcore.h"
+#include "sources.h"                   /* files, and web addresses given in text */
 #include "../common/version.h"
 #include "../common/proginfo.h"   /* Info: the standard About this program window */
 
@@ -96,6 +97,7 @@ int __dynamic_da_max_size = 512 << 20;
 #define Wimp_DragBox           0x400D0
 #define Wimp_ForceRedraw       0x400D1
 #define Wimp_SetCaretPosition  0x400D2
+#define Wimp_GetCaretPosition  0x400D3
 #define Wimp_CreateMenu        0x400D4
 #define Wimp_ProcessKey        0x400DC
 #define Wimp_CloseDown         0x400DD
@@ -109,9 +111,12 @@ int __dynamic_da_max_size = 512 << 20;
 #define TaskManager_EnumerateTasks 0x42681
 
 #define MSG_QUIT        0
+#define MSG_DATASAVE    1
+#define MSG_DATASAVEACK 2
 #define MSG_DATALOAD    3
 #define MSG_DATALOADACK 4
 #define MSG_DATAOPEN    5
+#define MSG_DATAREQUEST 0x10
 #define MSG_PREQUIT     8
 #define MSG_MODECHANGE  0x400C1
 
@@ -205,7 +210,13 @@ static struct {
     int fullscreen;                     /* showing full screen */
     int loop;
     ReelCore *v;
-    char file[256], title[64], time_text[40], play_text[8];
+    ReelCore *opening;                  /* an address being opened (the old video plays on) */
+    source_t opening_src;
+    int opening_cs;                     /* when it started */
+    int opening_win;                    /* the window was opened just to say "Opening" */
+    source_t cur;                       /* what's playing */
+    char file[256], title[160], time_text[40], play_text[8];
+    char name[128];                     /* what's playing, to show: the title, leaf or host */
     int ended;
     /* screen */
     int xeig, yeig, log2bpp, trgb, scr_w, scr_h;   /* scr_* in OS units */
@@ -244,8 +255,15 @@ static struct {
     int ab;                             /* A-B repeat: 0 off, 1 A set, 2 repeating */
     double ab_a, ab_b;
     /* the playlist */
-    char *list[LIST_MAX];
+    source_t list[LIST_MAX];
     int list_n, list_i;
+    /* addresses: the Open address window, and text coming from other programs */
+    int url_win;                        /* 0 = not made yet */
+    char url_text[1024];
+    int paste_ref;                      /* our Message_DataRequest (Ctrl-V), 0 = none */
+    int save_ref;                       /* the DataSaveAck we sent: the DataLoad that follows */
+    int scrap_paste;                    /* ... is for the Open address field, not to play */
+    int text_types[4];                  /* JSON and M3U filetypes, from MimeMap */
     int last_drop_cs;                   /* when the last file arrived (a batch = one drag) */
 } S;
 
@@ -953,6 +971,11 @@ static void update_controls(int force)
         snprintf(text, sizeof(text), "%s / %s", pos, dur);
     else
         snprintf(text, sizeof(text), "%s", pos);
+    {
+        ReelCoreNet ns;
+        if (reelcore_net(S.v, &ns) && ns.buffering && !ns.ended && !reelcore_paused(S.v) && !S.ended)
+            snprintf(text, sizeof(text), "Buffering");
+    }
     if (S.speed_i != 2 || S.ab) {           /* short marks: the icon is narrow */
         size_t n = strlen(text);
         snprintf(text + n, sizeof(text) - n, "%s%s%s", S.speed_i != 2 ? " " : "",
@@ -1102,10 +1125,12 @@ static void resume_note(void);
 static void list_clear(void);
 static void choices_save(void);
 static void mini_show(void);
+static void opening_cancel(void);
 
 static void close_video(void)
 {
     _kernel_swi_regs r;
+    opening_cancel();
     if (S.v) {
         char d[300];
         reelcore_debug(S.v, d, sizeof(d));
@@ -1128,6 +1153,8 @@ static void close_video(void)
     info_close();
     reelcore_close(S.v);
     S.v = NULL;
+    source_free(&S.cur);
+    S.have_frame = 0;
     pic_free();
 }
 
@@ -1301,19 +1328,19 @@ static void options_apply(void)
 static void set_title(void)
 {
     if (S.list_n > 1)
-        snprintf(S.title, sizeof(S.title), "%s (%d/%d)", leaf(S.file), S.list_i + 1, S.list_n);
+        snprintf(S.title, sizeof(S.title), "%s (%d/%d)", S.name, S.list_i + 1, S.list_n);
     else
-        snprintf(S.title, sizeof(S.title), "%s", leaf(S.file));
+        snprintf(S.title, sizeof(S.title), "%s", S.name);
 }
 
 /* ---- the playlist ------------------------------------------------------------ */
 
-static void play_file(const char *file);
+static void play_source(const source_t *src);
 
 static void list_clear(void)
 {
     for (int i = 0; i < S.list_n; i++)
-        free(S.list[i]);
+        source_free(&S.list[i]);
     S.list_n = S.list_i = 0;
 }
 
@@ -1323,24 +1350,26 @@ static void list_play(int i)
         return;
     S.list_i = i;
     lg("playlist: %d of %d", i + 1, S.list_n);
-    play_file(S.list[i]);
+    play_source(&S.list[i]);
 }
 
-/* A file dropped or double-clicked. Files that arrive together (one drag
-   of several) make a playlist; with Shift held, they're added to it;
-   otherwise a new file replaces it. */
-static void list_arrived(const char *file)
+/* Sources that arrived together (one drag of several files, or several
+   addresses in one file) make a playlist; with Shift held, or within half
+   a second of the last, they're added to it; otherwise they replace it. */
+static void list_add(const source_t *src, int n)
 {
     _kernel_swi_regs r;
-    int t = now_cs(), shift;
+    int t = now_cs(), shift, start;
     r.r[0] = 129;                       /* INKEY(-1): Shift */
     r.r[1] = 0xFF;
     r.r[2] = 0xFF;
     shift = !swi(0x06, &r) && r.r[1] == 0xFF;
-    if (S.v && S.list_n > 0 && S.list_n < LIST_MAX && (t - S.last_drop_cs < 50 || shift)) {
-        S.list[S.list_n++] = strdup(file);
+    if ((S.v || S.opening) && S.list_n > 0 && S.list_n < LIST_MAX && (t - S.last_drop_cs < 50 || shift)) {
+        for (int i = 0; i < n && S.list_n < LIST_MAX; i++)
+            if (source_copy(&S.list[S.list_n], &src[i]) == 0)
+                S.list_n++;
         S.last_drop_cs = t;
-        lg("playlist: added %s (%d files)", file, S.list_n);
+        lg("playlist: added %d (%d in all)", n, S.list_n);
         set_title();
         if (S.win) {
             r.r[0] = S.win;             /* the title shows the count */
@@ -1351,26 +1380,198 @@ static void list_arrived(const char *file)
         return;
     }
     list_clear();
-    S.list[S.list_n++] = strdup(file);
+    for (int i = 0; i < n && S.list_n < LIST_MAX; i++)
+        if (source_copy(&S.list[S.list_n], &src[i]) == 0)
+            S.list_n++;
     S.last_drop_cs = t;
-    list_play(0);
+    start = S.list_n ? 0 : -1;
+    if (start >= 0)
+        list_play(start);
 }
 
-static void play_file(const char *file)
+/* A file dropped, double-clicked or given on the command line: a video,
+   or text with web addresses in it (sources.c) */
+static void list_arrived(const char *file)
 {
-    ReelCore *v;
-    int vw, vh, w, h, maxw, maxh, st[9];
-    int was_open = S.v != NULL;
-
-    lg("open %s", file);
-    resume_note();                      /* where the one playing now was */
-    v = reelcore_open(file, S.loop && S.list_n <= 1 ? REELCORE_LOOP : 0);
-    if (!v) {
-        char msg[300];
-        snprintf(msg, sizeof(msg), "%s: %s", leaf(file), reelcore_last_error());
+    static source_t found[LIST_MAX];
+    int n = sources_from_file(file, found, LIST_MAX);
+    char msg[300];
+    if (n == 0) {                       /* a video (or an HLS playlist): the file itself */
+        source_t one;
+        if (source_simple(&one, file) == 0) {
+            list_add(&one, 1);
+            source_free(&one);
+        }
+        return;
+    }
+    if (n < 0) {
+        snprintf(msg, sizeof(msg), n == -2 ? "%s: there's no video, and no web address, in it." :
+                 "%s: can't read it.", leaf(file));
         report(msg);
         return;
     }
+    lg("%s: %d address%s", file, n, n == 1 ? "" : "es");
+    list_add(found, n);
+    for (int i = 0; i < n; i++)
+        source_free(&found[i]);
+}
+
+/* Text given directly (the Open address window): the addresses in it */
+static int text_arrived(const char *text)
+{
+    static source_t found[LIST_MAX];
+    int hls, n = sources_parse(text, strlen(text), found, LIST_MAX, &hls);
+    if (n <= 0)
+        return 0;
+    list_add(found, n);
+    for (int i = 0; i < n; i++)
+        source_free(&found[i]);
+    return n;
+}
+
+static void title_redraw(void)
+{
+    _kernel_swi_regs r;
+    if (!S.win)
+        return;
+    r.r[0] = S.win;
+    r.r[1] = 0x4B534154;
+    r.r[2] = 3;                         /* the title bar */
+    swi(Wimp_ForceRedraw, &r);
+}
+
+/* ---- opening: a file at once, an address in the background ---------------
+
+   An address is opened by reelcore's reader thread (REELCORE_ASYNC): what
+   was playing carries on until it's ready (tick() asks); with nothing
+   playing, the window opens at once to say so. */
+
+static void opened(ReelCore *v, const source_t *src);
+
+static void opening_cancel(void)
+{
+    if (S.opening) {
+        lg("stopped opening %s", S.opening_src.url);
+        reelcore_close(S.opening);
+        S.opening = NULL;
+    }
+    source_free(&S.opening_src);
+    S.opening_win = 0;
+}
+
+static void opening_window(const char *name)
+{
+    int vw, vh;
+    read_screen();
+    if (!S.win && create_window() < 0)
+        return;
+    snprintf(S.title, sizeof(S.title), "Opening %s...", name);
+    snprintf(S.time_text, sizeof(S.time_text), "Opening");
+    S.opening_win = 1;
+    if (S.fullscreen || mini)
+        return;
+    vw = S.scr_w / 2;
+    if (vw < MIN_W)
+        vw = MIN_W;
+    vh = vw * 9 / 16 + CH;
+    open_window_at((S.scr_w - vw) / 2, (S.scr_h + vh) / 2, vw, vh);
+    force_redraw(S.win, 0, -8192, 8192, 0);
+    title_redraw();
+}
+
+static void play_source(const source_t *src)
+{
+    ReelCoreSource cs;
+    ReelCore *v;
+    char name[128];
+    int net = reelcore_is_network(src->url) || (src->audio_url && reelcore_is_network(src->audio_url));
+
+    source_name(src, name, sizeof(name));
+    lg("open %s%s%s", src->url, src->audio_url ? " with the sound from " : "", src->audio_url ? src->audio_url : "");
+    opening_cancel();
+    memset(&cs, 0, sizeof(cs));
+    cs.url = src->url;
+    cs.audio_url = src->audio_url;
+    cs.headers = src->headers;
+    cs.user_agent = src->user_agent;
+    cs.title = src->title;
+    v = reelcore_open_source(&cs, (S.loop && S.list_n <= 1 ? REELCORE_LOOP : 0) | (net ? REELCORE_ASYNC : 0));
+    if (!v) {
+        char msg[300];
+        snprintf(msg, sizeof(msg), "%s: %s", name, reelcore_last_error());
+        report(msg);
+        return;
+    }
+    if (!net) {
+        opened(v, src);
+        return;
+    }
+    S.opening = v;
+    S.opening_cs = now_cs();
+    if (source_copy(&S.opening_src, src) != 0) {
+        opening_cancel();
+        return;
+    }
+    if (S.v) {                          /* the one playing carries on meanwhile */
+        snprintf(S.title, sizeof(S.title), "Opening %s...", name);
+        title_redraw();
+    } else
+        opening_window(name);
+}
+
+/* Called while an address is opening (each null) */
+static void opening_tick(void)
+{
+    ReelCore *v = S.opening;
+    int r = reelcore_update(v);
+    if (r == REELCORE_OPENING) {
+        if (!S.v) {
+            char t[40];
+            int s = (now_cs() - S.opening_cs) / 100;
+            snprintf(t, sizeof(t), s ? "Opening %d s" : "Opening", s);
+            if (S.win && strcmp(t, S.time_text)) {
+                snprintf(S.time_text, sizeof(S.time_text), "%s", t);
+                icon_refresh(I_TIME);
+            }
+            S.idle_cs = 1;              /* the reader thread runs while we're paged in */
+        }
+        return;
+    }
+    S.opening = NULL;
+    if (r == REELCORE_READY) {
+        lg("opened in %.1f s", (now_cs() - S.opening_cs) / 100.0);
+        opened(v, &S.opening_src);
+    } else {
+        char name[128], msg[300];
+        source_name(&S.opening_src, name, sizeof(name));
+        snprintf(msg, sizeof(msg), "%s: %s", name, reelcore_last_error());
+        if (strstr(msg, "nvalid data"))   /* a web page, not a video */
+            snprintf(msg, sizeof(msg), "%s: that's a web page, not a video. yt-dlp gives the video's own "
+                     "address: see " APP "'s Help.", name);
+        lg("couldn't open: %s", msg);
+        reelcore_close(v);
+        if (S.v) {
+            set_title();
+            title_redraw();
+        }
+        report(msg);
+        if (!S.v && S.opening_win) {
+            source_free(&S.opening_src);
+            close_video();
+            return;
+        }
+    }
+    source_free(&S.opening_src);
+    S.opening_win = 0;
+}
+
+/* v is open (and src is what it is): it replaces what was playing */
+static void opened(ReelCore *v, const source_t *src)
+{
+    int vw, vh, w, h, maxw, maxh, st[9];
+    int was_open = S.v != NULL || S.opening_win;
+
+    resume_note();                      /* where the one playing now was */
     if (S.v) {                          /* replace what was playing, keep the window */
         reelcore_close(S.v);
         S.v = NULL;
@@ -1378,6 +1579,12 @@ static void play_file(const char *file)
     S.v = v;
     S.ended = 0;
     S.ab = 0;
+    if (&S.cur != src) {
+        source_free(&S.cur);
+        source_copy(&S.cur, src);
+    }
+    source_name(src, S.name, sizeof(S.name));
+    source_key(src, S.file, sizeof(S.file));
     options_apply();
     {
         char info[256];
@@ -1387,10 +1594,9 @@ static void play_file(const char *file)
         S.log_nulls = S.log_frames = 0;
     }
     info_new_file();
-    snprintf(S.file, sizeof(S.file), "%s", file);
     set_title();
     {
-        int i = resume_find(file);
+        int i = resume_find(S.file);
         if (i >= 0 && resume[i].pos < reelcore_duration(v) && resume_ask(resume[i].pos)) {
             lg("carry on from %.1f s", resume[i].pos);
             reelcore_seek(v, resume[i].pos);
@@ -1428,18 +1634,196 @@ static void play_file(const char *file)
         return;
     }
     if (was_open) {
-        _kernel_swi_regs r;
         window_state(S.win, st);        /* keep its position */
         open_window_at(st[1], st[4], vw, vh);
-        r.r[0] = S.win;                 /* the title changed */
-        r.r[1] = 0x4B534154;
-        r.r[2] = 3;
-        swi(Wimp_ForceRedraw, &r);
+        title_redraw();                 /* the title changed */
     } else
         open_window_at((S.scr_w - vw) / 2, (S.scr_h + vh) / 2, vw, vh);
     force_redraw(S.win, 0, -8192, 8192, 0);
     update_controls(1);
     set_caret(S.win);
+}
+
+/* ---- Open address: a window to type or paste an address in ----------------
+
+   A web address, or what yt-dlp printed (several lines: pasted, they're
+   played at once). Ctrl-V (or Paste) asks whoever has the clipboard for its
+   text: Message_DataRequest; the answer comes as text saved to
+   <Wimp$Scrap> (Message_DataSave, DataSaveAck, DataLoad; see message()). */
+
+enum { U_LABEL, U_FIELD, U_PASTE, U_CANCEL, U_PLAY, U_N };
+#define URL_W 1200
+#define URL_H 216
+
+static char url_title[] = "Open address";
+static char url_label[] = "Web address, or yt-dlp's output (Ctrl-V pastes):";
+static char url_paste[] = "Paste", url_cancel[] = "Cancel", url_play_text[] = "Play";
+
+static int url_create(void)
+{
+    struct {
+        box_t vis;
+        int sx, sy, behind, flags;
+        unsigned char tfg, tbg, wfg, wbg, sofg, sibg, tfocus, xflags;
+        box_t ext;
+        int tflags, wbutton, sprites;
+        short minw, minh;
+        ind_t title;
+        int nicons;
+        icon_t icon[U_N];
+    } w;
+    _kernel_swi_regs r;
+    const int button = IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1);
+
+    memset(&w, 0, sizeof(w));
+    w.vis.x1 = URL_W; w.vis.y1 = URL_H;
+    w.behind = -1;
+    w.flags = (int)0x87000002u;         /* new format, back, close, title, moveable */
+    w.tfg = 7; w.tbg = 2; w.wfg = 7; w.wbg = 1; w.sofg = 3; w.sibg = 1; w.tfocus = 12;
+    w.ext.x0 = 0; w.ext.y0 = -URL_H; w.ext.x1 = URL_W; w.ext.y1 = 0;
+    w.tflags = IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_COL(7, 2);
+    w.sprites = 1;
+    w.title.text = url_title;
+    w.title.valid = (const char *)-1;
+    w.title.len = sizeof(url_title);
+    w.nicons = U_N;
+    icon_def(&w.icon[U_LABEL], IF_TEXT | IF_VCENT | IF_INDIR | IF_COL(7, 1), url_label, (const char *)-1,
+             sizeof(url_label));
+    w.icon[U_LABEL].x0 = 16; w.icon[U_LABEL].x1 = URL_W - 16;
+    w.icon[U_LABEL].y0 = -64; w.icon[U_LABEL].y1 = -16;
+    icon_def(&w.icon[U_FIELD], IF_TEXT | IF_BORDER | IF_VCENT | IF_FILLED | IF_INDIR | (15 << 12) | IF_COL(7, 0),
+             S.url_text, "Pptr_write", sizeof(S.url_text));
+    w.icon[U_FIELD].x0 = 16; w.icon[U_FIELD].x1 = URL_W - 16;
+    w.icon[U_FIELD].y0 = -124; w.icon[U_FIELD].y1 = -72;
+    icon_def(&w.icon[U_PASTE], button, url_paste, "R5,3", sizeof(url_paste));
+    w.icon[U_PASTE].x0 = 16; w.icon[U_PASTE].x1 = 200;
+    icon_def(&w.icon[U_CANCEL], button, url_cancel, "R5,3", sizeof(url_cancel));
+    w.icon[U_CANCEL].x0 = URL_W - 16 - 200 - 16 - 184; w.icon[U_CANCEL].x1 = URL_W - 16 - 200 - 16;
+    icon_def(&w.icon[U_PLAY], button, url_play_text, "R6,3", sizeof(url_play_text));   /* the default */
+    w.icon[U_PLAY].x0 = URL_W - 16 - 200; w.icon[U_PLAY].x1 = URL_W - 16;
+    for (int i = U_PASTE; i <= U_PLAY; i++) {
+        w.icon[i].y0 = -URL_H + 16;
+        w.icon[i].y1 = -URL_H + 16 + 64;
+    }
+    r.r[1] = (intptr_t)&w;
+    if (swi(Wimp_CreateWindow, &r))
+        return -1;
+    S.url_win = r.r[0];
+    return 0;
+}
+
+static void url_caret(void)
+{
+    _kernel_swi_regs r;
+    r.r[0] = S.url_win;
+    r.r[1] = U_FIELD;
+    r.r[2] = r.r[3] = 0;
+    r.r[4] = -1;                        /* from the index */
+    r.r[5] = (int)strlen(S.url_text);
+    swi(Wimp_SetCaretPosition, &r);
+}
+
+static void url_open(void)
+{
+    int b[9];
+    _kernel_swi_regs r;
+    if (!S.url_win && url_create() < 0) {
+        report("Can't create the Open address window.");
+        return;
+    }
+    read_screen();
+    window_state(S.url_win, b);
+    b[3] = (S.scr_w + URL_W) / 2; b[1] = b[3] - URL_W;
+    b[4] = (S.scr_h + URL_H) / 2; b[2] = b[4] - URL_H;
+    b[5] = b[6] = 0;
+    b[7] = -1;                          /* on top */
+    r.r[1] = (intptr_t)b;
+    swi(Wimp_OpenWindow, &r);
+    url_caret();
+}
+
+static void url_close(void)
+{
+    _kernel_swi_regs r;
+    if (!S.url_win)
+        return;
+    r.r[1] = (intptr_t)&S.url_win;
+    swi(Wimp_CloseWindow, &r);
+}
+
+static void url_field_refresh(void)
+{
+    _kernel_swi_regs r;
+    int b[4] = { S.url_win, U_FIELD, 0, 0 };
+    r.r[1] = (intptr_t)b;
+    swi(Wimp_SetIconState, &r);
+}
+
+/* Play (or Return): what's typed */
+static void url_play(void)
+{
+    if (text_arrived(S.url_text) > 0)
+        url_close();
+    else
+        report("That isn't a web address: it should begin http:// or https:// (or give yt-dlp's output).");
+}
+
+/* Ctrl-V, or Paste: asks for the clipboard's text */
+static void paste_request(void)
+{
+    int b[12];
+    _kernel_swi_regs r;
+    b[0] = sizeof(b);
+    b[3] = 0;
+    b[4] = MSG_DATAREQUEST;
+    b[5] = S.url_win;
+    b[6] = U_FIELD;
+    b[7] = b[8] = 0;
+    b[9] = 4;                           /* from the clipboard */
+    b[10] = 0xFFF;                      /* text */
+    b[11] = -1;
+    r.r[0] = 18;                        /* recorded: it comes back if nobody has the clipboard */
+    r.r[1] = (intptr_t)b;
+    r.r[2] = 0;
+    if (!swi(Wimp_SendMessage, &r))
+        S.paste_ref = b[2];
+}
+
+/* The clipboard's text arrived: one line goes in the field (at the caret);
+   several (yt-dlp -g's two addresses, or a playlist) are played at once */
+static void paste_text(char *text)
+{
+    size_t n = strlen(text), len, at;
+    int b[6];
+    _kernel_swi_regs r;
+    while (n && (text[n - 1] == '\n' || text[n - 1] == '\r' || text[n - 1] == ' '))
+        text[--n] = 0;
+    if (strchr(text, '\n')) {
+        if (text_arrived(text) > 0)
+            url_close();
+        else
+            report("There's no web address in what was pasted.");
+        return;
+    }
+    for (char *p = text; *p; p++)       /* control characters can't go in an icon */
+        if ((unsigned char)*p < 32)
+            *p = ' ';
+    len = strlen(S.url_text);
+    at = len;
+    r.r[1] = (intptr_t)b;
+    if (!swi(Wimp_GetCaretPosition, &r) && b[0] == S.url_win && b[1] == U_FIELD && b[5] >= 0 && (size_t)b[5] <= len)
+        at = (size_t)b[5];
+    if (len + n >= sizeof(S.url_text))
+        n = sizeof(S.url_text) - 1 - len;
+    memmove(S.url_text + at + n, S.url_text + at, len - at + 1);
+    memcpy(S.url_text + at, text, n);
+    url_field_refresh();
+    r.r[0] = S.url_win;
+    r.r[1] = U_FIELD;
+    r.r[2] = r.r[3] = 0;
+    r.r[4] = -1;
+    r.r[5] = (int)(at + n);
+    swi(Wimp_SetCaretPosition, &r);
 }
 
 /* ---- the media info window ------------------------------------------------ */
@@ -1583,8 +1967,19 @@ static void info_stats(void)
                  st.sound_queued, st.sound_played / 1048576.0);
     else
         snprintf(r[10].value, sizeof(r[10].value), "SDL: %.2f s queued", st.sound_queued);
-    snprintf(r[11].value, sizeof(r[11].value), "%.2f Mbit/s (%.1f MB so far)",
-             (st.bytes_read - info_prev.bytes_read) * 8 / dt / 1e6, st.bytes_read / 1048576.0);
+    {
+        ReelCoreNet ns;
+        int n = snprintf(r[11].value, sizeof(r[11].value), "%.2f Mbit/s (%.1f MB so far)",
+                         (st.bytes_read - info_prev.bytes_read) * 8 / dt / 1e6, st.bytes_read / 1048576.0);
+        if (reelcore_net(S.v, &ns) && n > 0 && n < (int)sizeof(r[11].value))
+            snprintf(r[11].value + n, sizeof(r[11].value) - n, "; from the network, %.1f s (%u KB) read ahead%s%s%s",
+                     ns.ahead, ns.bytes_ahead >> 10, ns.buffering ? ", waiting for more" : "",
+                     ns.ended ? ", all read" : "", ns.error[0] ? ", stopped: " : "");
+        if (ns.error[0] && n > 0) {
+            size_t m = strlen(r[11].value);
+            snprintf(r[11].value + m, sizeof(r[11].value) - m, "%s", ns.error);
+        }
+    }
     snprintf(r[12].value, sizeof(r[12].value), "%.0f null events a second, %s %.0f%% of the time; screen %dx%d, %d bpp, %s%s",
              (S.st_nulls - info_prev_nulls) / dt, S.nosleep ? "no sleeping (Reel$NoSleep):" : "asleep",
              (S.slept_cs - info_prev_slept) / dt, S.scr_w >> S.xeig, S.scr_h >> S.yeig, 1 << S.log2bpp,
@@ -1798,7 +2193,7 @@ static void info_toggle(void)
 {
     if (S.info_open)
         info_close();
-    else
+    else if (S.v)
         info_open();
 }
 
@@ -1864,6 +2259,7 @@ static void menu_open(int bar, int x, int y)
     if (bar) {
         menu_add(&menu, 0, &n, "Info", 0, NULL, 0);
         menu.item[0].sub = S.proginfo;  /* the About this program window (-1: none) */
+        menu_add(&menu, 0, &n, "Open address...", 0, NULL, 0);
         menu_add(&menu, 0, &n, "Loop", S.loop, NULL, 0);
         menu_add(&menu, 0, &n, "Log", 0, NULL, 0);
         menu_add(&menu, 0, &n, "Quit", 0, NULL, 0);
@@ -1902,7 +2298,11 @@ static void menu_open(int bar, int x, int y)
         menu_start(&m_list, "Playlist");
         k = 0;
         for (int i = 0; i < S.list_n && i < MENU_MAX - 1; i++)
-            menu_add(&m_list, 4, &k, leaf(S.list[i]), S.list_i == i, NULL, 0);
+        {
+            char name[128];
+            source_name(&S.list[i], name, sizeof(name));
+            menu_add(&m_list, 4, &k, name, S.list_i == i, NULL, 0);
+        }
         if (k)
             m_list.item[k - 1].flags |= 2;          /* a dotted line before Clear */
         menu_add(&m_list, 4, &k, "Clear the rest", 0, NULL, S.list_n <= 1);
@@ -2207,9 +2607,10 @@ static void menu_select(const int *sel)
     if (menu_is_bar) {
         switch (sel[0]) {
         case 0: break;                  /* Info: its window is the submenu */
-        case 1: S.loop = !S.loop; break;
-        case 2: log_show(); break;
-        case 3: quit();
+        case 1: url_open(); break;
+        case 2: S.loop = !S.loop; break;
+        case 3: log_show(); break;
+        case 4: quit();
         }
     } else {
         switch (sel[0]) {
@@ -2233,8 +2634,8 @@ static void menu_select(const int *sel)
             if (sel[1] >= 0 && sel[1] < S.list_n && sel[1] < MENU_MAX - 1)
                 list_play(sel[1]);
             else if (sel[1] >= 0 && S.list_n > 1) {     /* Clear the rest: keep the one playing */
-                char *keep = S.list[S.list_i];
-                S.list[S.list_i] = NULL;
+                source_t keep = S.list[S.list_i];
+                memset(&S.list[S.list_i], 0, sizeof(keep));
                 list_clear();
                 S.list[0] = keep;
                 S.list_n = 1;
@@ -2312,6 +2713,16 @@ static void click_track(int mouse_x)
 static void key(int *b)
 {
     _kernel_swi_regs r;
+    if (S.url_win && b[0] == S.url_win) {       /* the Open address window */
+        switch (b[6]) {
+        case 13: url_play(); return;
+        case 27: url_close(); return;
+        case 22: paste_request(); return;       /* Ctrl-V */
+        }
+        r.r[0] = b[6];
+        swi(Wimp_ProcessKey, &r);
+        return;
+    }
     switch (b[6]) {
     case ' ': toggle_pause(); return;
     case 0x18C: seek_by(-10); return;               /* Left */
@@ -2338,12 +2749,19 @@ static void tick(void)
 {
     int r2, t;
     _kernel_swi_regs r;
+    if (S.opening)
+        opening_tick();
     if (!S.v || S.ended)
         return;
     r2 = reelcore_update(S.v);
     S.log_nulls++;
     S.st_nulls++;
-    S.idle_cs = S.nosleep ? 0 : (int)(reelcore_idle_time(S.v) * 100);  /* whole centiseconds: wake no later than due */
+    {
+        int idle = S.nosleep ? 0 : (int)(reelcore_idle_time(S.v) * 100);
+        if (S.opening && idle > 1)
+            idle = 1;                   /* an address opening: its thread needs the time */
+        S.idle_cs = idle;
+    }  /* whole centiseconds: wake no later than due */
     if (r2 == REELCORE_NEW_FRAME) {
         show_frame();
         S.log_frames++;
@@ -2435,6 +2853,68 @@ static void ack(int *b)
     swi(Wimp_SendMessage, &r);
 }
 
+/* Text types another program can give us from memory (Message_DataSave):
+   text, URI and URL files, JSON (yt-dlp -j) and M3U playlists */
+static void text_types_init(void)
+{
+    static const char *const mimes[] = { "application/json", "audio/x-mpegurl" };
+    for (int i = 0; i < 2; i++) {
+        _kernel_swi_regs r;
+        r.r[0] = 2;                     /* from a MIME type */
+        r.r[1] = (intptr_t)mimes[i];
+        r.r[2] = 0;                     /* to a filetype */
+        S.text_types[i] = swi(MimeMap_Translate, &r) || r.r[3] < 0 || r.r[3] >= 0xFFF ? -1 : r.r[3];
+    }
+    S.text_types[2] = S.text_types[3] = -1;
+}
+
+static int is_text_type(int type)
+{
+    if (type == 0xFFF || type == 0xF91 || type == 0xB28)
+        return 1;
+    for (int i = 0; i < 4; i++)
+        if (S.text_types[i] >= 0 && type == S.text_types[i])
+            return 1;
+    return 0;
+}
+
+/* Reads a (small) file into memory, NUL terminated; NULL if it can't */
+static char *read_text(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    char *t = NULL;
+    size_t n = 0, cap = 0;
+    if (!f)
+        return NULL;
+    for (;;) {
+        if (n + 4096 + 1 > cap) {
+            char *nt;
+            if (cap >= (1 << 20))        /* 1 MB: enough for any playlist */
+                break;
+            nt = realloc(t, cap = cap ? cap * 2 : 8192);
+            if (!nt)
+                break;
+            t = nt;
+        }
+        {
+            size_t got = fread(t + n, 1, 4096, f);
+            n += got;
+            if (got < 4096)
+                break;
+        }
+    }
+    fclose(f);
+    if (t)
+        t[n] = 0;
+    return t;
+}
+
+static int to_us(int w, int icon)
+{
+    return (w == -2 && icon == S.bar_icon) || (S.win && w == S.win) || (S.full && w == S.full) ||
+           (S.url_win && w == S.url_win);
+}
+
 static void message(int *b)
 {
     char file[256];
@@ -2442,14 +2922,51 @@ static void message(int *b)
     case MSG_QUIT:
         quit();
         break;
+    case MSG_DATASAVE:                  /* text from another program (a drag, or our paste) */
+        if (to_us(b[5], b[6]) && is_text_type(b[10])) {
+            _kernel_swi_regs r;
+            int to = b[1];
+            S.scrap_paste = S.url_win && b[5] == S.url_win;
+            if (b[3] && b[3] == S.paste_ref)
+                S.paste_ref = 0;
+            b[3] = b[2];
+            b[4] = MSG_DATASAVEACK;
+            b[9] = -1;                  /* not safe: it's a scrap file */
+            strcpy((char *)&b[11], "<Wimp$Scrap>");
+            b[0] = (44 + (int)strlen("<Wimp$Scrap>") + 1 + 3) & ~3;
+            r.r[0] = 17;
+            r.r[1] = (intptr_t)b;
+            r.r[2] = to;
+            if (!swi(Wimp_SendMessage, &r))
+                S.save_ref = b[2];
+        }
+        break;
     case MSG_DATALOAD:
-        if ((b[5] == -2 && b[6] == S.bar_icon) || (S.win && b[5] == S.win) || (S.full && b[5] == S.full)) {
+        if (S.save_ref && b[3] == S.save_ref) {     /* the scrap file we asked for */
+            char *text;
+            S.save_ref = 0;
+            snprintf(file, sizeof(file), "%s", (const char *)&b[11]);
+            text = read_text(file);
+            remove(file);
+            ack(b);
+            if (!text)
+                break;
+            if (S.scrap_paste)
+                paste_text(text);
+            else if (text_arrived(text) <= 0)
+                report("There's no web address in that text.");
+            free(text);
+            break;
+        }
+        if (to_us(b[5], b[6])) {
             if (b[10] == 0x1000 || b[10] == 0x2000) {
                 report("That's a directory: drop a video file.");
                 break;
             }
             snprintf(file, sizeof(file), "%s", (const char *)&b[11]);
             ack(b);
+            if (S.url_win && b[5] == S.url_win)
+                url_close();
             list_arrived(file);
         }
         break;
@@ -2518,7 +3035,7 @@ static void iconbar_icon(void)
 
 int reel_main(int argc, char **argv)
 {
-    static const int messages[] = { MSG_DATALOAD, MSG_DATAOPEN, MSG_PREQUIT, MSG_MODECHANGE, 0 };
+    static const int messages[] = { MSG_DATASAVE, MSG_DATALOAD, MSG_DATAOPEN, MSG_PREQUIT, MSG_MODECHANGE, 0 };
     int block[64];
     _kernel_swi_regs r;
 
@@ -2549,11 +3066,12 @@ int reel_main(int argc, char **argv)
     iconbar_icon();
     S.proginfo = proginfo_create(APP, PURPOSE " (FFmpeg 5.1.10)", APP_AUTHOR,
                                  REEL_VERSION " (" REEL_DATE ")");
+    text_types_init();
     if (argc > 1)
         list_arrived(argv[1]);
 
     for (;;) {
-        int playing = S.v && !S.ended && !reelcore_paused(S.v);
+        int playing = (S.v && !S.ended && !reelcore_paused(S.v)) || S.opening;
         int sleep_cs = playing ? S.idle_cs : 0;
         r.r[0] = (playing ? 0 : 1) | (1 << 4) | (1 << 5);
         r.r[1] = (intptr_t)block;
@@ -2610,6 +3128,8 @@ int reel_main(int argc, char **argv)
                 set_fullscreen(0);
             else if (S.info && block[0] == S.info)
                 info_close();
+            else if (S.url_win && block[0] == S.url_win)
+                url_close();
             break;
         case 6:                                            /* Mouse_Click */
             if (block[3] == -2) {
@@ -2621,12 +3141,21 @@ int reel_main(int argc, char **argv)
                     st[7] = -1;
                     r.r[1] = (intptr_t)st;
                     swi(Wimp_OpenWindow, &r);
-                } else if (!S.v)
-                    report("Drop a video file on the Reel icon to play it.");
+                } else if (!S.v && !S.opening)
+                    report("Drop a video file, or a file of web addresses, on the " APP " icon to play it. "
+                           "Or choose Open address... from its menu.");
                 break;
             }
             if (block[2] & 2) {
                 menu_open(0, block[0], block[1]);
+                break;
+            }
+            if (S.url_win && block[3] == S.url_win) {
+                switch (block[4]) {
+                case U_PASTE: paste_request(); url_caret(); break;
+                case U_CANCEL: url_close(); break;
+                case U_PLAY: url_play(); break;
+                }
                 break;
             }
             if (block[3] == S.full) {
@@ -2682,6 +3211,12 @@ int reel_main(int argc, char **argv)
         case 8:  key(block); break;
         case 9:  menu_select(block); break;
         case 17: case 18: message(block); break;
+        case 19:                                           /* a message came back: nobody answered */
+            if (block[4] == MSG_DATAREQUEST && S.paste_ref && block[2] == S.paste_ref) {
+                S.paste_ref = 0;
+                report("There's nothing on the clipboard to paste.");
+            }
+            break;
         }
     }
 }

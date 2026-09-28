@@ -21,42 +21,9 @@ fail() { echo "FAIL: $1"; bad=1; }
 
 # a plain HTTP server for the samples, and one that never answers
 PORT=$((20000 + RANDOM % 20000)); STALL=$((PORT + 1))
-# (with Range requests, which FFmpeg uses to seek: python's own http.server has none)
-python3 - "$PORT" "$SAMPLES" <<'PY' >/dev/null 2>&1 &
-import http.server, os, re, sys
-root = sys.argv[2]
-class H(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    def do_GET(self):
-        path = os.path.join(root, os.path.basename(self.path))
-        if not os.path.isfile(path):
-            self.send_error(404); return
-        data = open(path, "rb").read()
-        m = re.match(r"bytes=(\d+)-(\d*)", self.headers.get("Range", ""))
-        if m:
-            a = int(m.group(1)); b = int(m.group(2)) if m.group(2) else len(data) - 1
-            part = data[a:b + 1]
-            self.send_response(206)
-            self.send_header("Content-Range", "bytes %d-%d/%d" % (a, a + len(part) - 1, len(data)))
-        else:
-            part = data
-            self.send_response(200)
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Content-Length", str(len(part)))
-        self.end_headers()
-        self.wfile.write(part)
-    def log_message(self, *a): pass
-http.server.ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
-PY
+python3 "$HERE/httpserve.py" "$PORT" "$SAMPLES" >/dev/null 2>&1 &
 S1=$!
-python3 - "$STALL" <<'PY' >/dev/null 2>&1 &
-import socket, sys, time
-s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(4)
-conns = []
-while True:
-    c, _ = s.accept(); conns.append(c)      # read nothing, answer nothing
-PY
+python3 "$HERE/httpserve.py" "$STALL" --silent >/dev/null 2>&1 &
 S2=$!
 trap 'kill $S1 $S2 2>/dev/null; rm -rf "$TMP"' EXIT
 sleep 1

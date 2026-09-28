@@ -1,6 +1,7 @@
 | !Run for !Reel (a video player, from riscos-ffmpeg)
-| Puts Reel on the icon bar. Drop a video on it, or double-click a video
-| in the Filer while Reel is loaded. %*0 = a file to play at once.
+| Puts Reel on the icon bar. Drop a video on it (or a file of web
+| addresses, such as yt-dlp's output), or double-click a video in the
+| Filer while Reel is loaded. %*0 = a file to play at once.
 Set Reel$Dir <Obey$Dir>
 IconSprites <Reel$Dir>.!Sprites
 
@@ -14,6 +15,9 @@ RMEnsure ARMEABISupport 0 Error Reel needs the ARMEABISupport module. Install it
 | the RMA, which also works.
 RMEnsure PThreadTicker 0.01 IfThere System:Modules.PThrTicker Then RMLoad System:Modules.PThrTicker
 RMEnsure PThreadTicker 0.01 IfThere <Reel$Dir>.PThrTicker Then RMLoad <Reel$Dir>.PThrTicker
+| Web addresses (https): RISC OS's AcornSSL module (RISC OS 5.28 or
+| later); quiet if it's missing (then http:// only)
+RMEnsure AcornSSL 0 IfThere System:Modules.Network.URL.AcornSSL Then RMLoad System:Modules.Network.URL.AcornSSL
 | Sound: SharedSoundBuffer and StreamManager (ssb.zip, from
 | https://orac.co.uk/software/rdpclient/rdpclient.html) and SharedSound
 | (part of RISC OS). Merged into !System they still have to be loaded:

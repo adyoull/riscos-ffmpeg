@@ -3,6 +3,48 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel 0.1.17 (2026-09-28): web addresses and yt-dlp's output
+
+- **Web addresses** in !Reel and !ReelEGL: http://, https:// (AcornSSL,
+  loaded by !Run) and HLS. **Open address…** on the icon bar menu: a
+  window to type or paste one (Ctrl-V or Paste asks the clipboard's
+  holder with Message_DataRequest; the text arrives through
+  `<Wimp$Scrap>`, which is deleted after). Several pasted lines play at
+  once. Or drop a file: a URI (&F91) or URL (&B28) file, a text file with
+  one address a line (a playlist), or an M3U (#EXTINF titles used; an HLS
+  playlist is played itself). Text dragged from another program
+  (Message_DataSave) works too.
+- **yt-dlp's output** (`player/sources.c`): `-g`'s address, or its two
+  (best video and best sound apart, recognised by YouTube's mime=video /
+  mime=audio), which play together; and `-j`/`-J`'s JSON: the title
+  (UTF-8 to Latin-1), requested_formats' two addresses, the site's
+  http_headers and user agent, a line (or `entries`) per video for a
+  playlist. Where you stopped is remembered by the page's address
+  (webpage_url). A web page's own address gets "that's a web page, not a
+  video", pointing to yt-dlp in !Help.
+- **reelcore reads addresses in a thread of its own**
+  (`reelcore_open_source`, `ReelCoreSource`): it opens the address(es)
+  and reads packets up to 10 s (or 32MB) ahead, so a slow connection
+  never holds up the desktop; seeks go to the thread. With
+  `REELCORE_ASYNC` the open returns at once and `reelcore_update()` says
+  OPENING, then READY or FAILED: what was playing carries on meanwhile,
+  and with nothing playing the window opens saying "Opening". FFmpeg's
+  reconnect options, a 20 s timeout, and a whitelist of protocols (file,
+  http, https, tcp, tls, crypto, data, httpproxy). Closing while opening
+  returns at once. Two inputs (video and sound apart) work for files too.
+- The time shows "Buffering" when the reading falls behind; Media info's
+  Reading line gives what's read ahead, and Title, Address and Sound from
+  rows. `reelcore_net()` for programs.
+- Tests: `tests/host/httpserve.py` (a local server with Range requests,
+  a header log and a never-answering mode); `net_test` (async open,
+  playing, a seek giving the same picture as the file, video and sound
+  from two addresses and from two files, headers, a missing address,
+  closing while opening); `sources_test` (host gcc with the sanitizers:
+  every kind of text above); reel_test's new phases: Open address with a
+  Ctrl-V paste through the scrap file, playing while the last video
+  carries on, yt-dlp -g's two addresses dropped with nothing playing, and
+  a web page.
+
 ## 5.1.10-riscos11 (2026-09-28): https through AcornSSL
 
 - **https** (and TLS generally: HLS over https, rtmps, tls:) through RISC

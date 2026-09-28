@@ -43,11 +43,15 @@ typedef struct ReelCore ReelCore;
 #define REELCORE_NO_AUDIO   1   /* don't play the sound (pictures follow a timer) */
 #define REELCORE_LOOP       2   /* start again at the end */
 #define REELCORE_PAUSED     4   /* open paused (reelcore_pause(v, 0) starts it) */
+#define REELCORE_ASYNC      8   /* reelcore_open_source: return at once; see below */
 
 /* reelcore_update results */
 #define REELCORE_SAME_FRAME 0   /* nothing new to show */
 #define REELCORE_NEW_FRAME  1   /* a new frame is current: draw it */
 #define REELCORE_END        2   /* played to the end (not with REELCORE_LOOP) */
+#define REELCORE_OPENING    3   /* (REELCORE_ASYNC) still opening: call again later */
+#define REELCORE_READY      4   /* (REELCORE_ASYNC) open now: the size etc. are known */
+#define REELCORE_FAILED     5   /* (REELCORE_ASYNC) couldn't open: reelcore_last_error() */
 
 /* reelcore_draw_pixels flags (also for ffegl_draw_surface) */
 #define REELCORE_STRETCH    1   /* fill the rectangle (default: keep the shape, black bars) */
@@ -58,6 +62,45 @@ typedef struct ReelCore ReelCore;
 /* Opens a file or URL. NULL on failure (the reason is logged through
    av_log; reelcore_last_error() gives it too). */
 ReelCore *reelcore_open(const char *url, int flags);
+
+/* What to play, more fully: a video file or address, and optionally the
+   sound from another (as yt-dlp gives a site's best video and best sound,
+   "bestvideo+bestaudio"), HTTP headers ("Name: value\r\n" lines) and a
+   user agent the site wants (yt-dlp's http_headers), and a title. */
+typedef struct ReelCoreSource {
+    const char *url;
+    const char *audio_url;             /* or NULL: the sound is in url */
+    const char *headers;               /* or NULL */
+    const char *user_agent;            /* or NULL: FFmpeg's */
+    const char *title;                 /* or NULL: from the file */
+} ReelCoreSource;
+
+/* Opens a source. Network addresses (reelcore_is_network) are opened and
+   read by a thread of reelcore's own, reading up to 10 s ahead, so a slow
+   connection doesn't hold up the caller; everything else is still called
+   from the caller's thread. With REELCORE_ASYNC the call returns at once
+   (NULL only if it couldn't even start) and reelcore_update() returns
+   REELCORE_OPENING until the address is open, then REELCORE_READY once
+   (reelcore_width etc. now answer), or REELCORE_FAILED. Without it, the
+   call waits until it's open. Files are always opened at once. */
+ReelCore *reelcore_open_source(const ReelCoreSource *src, int flags);
+/* 1: an address (a "scheme://" other than file:), read over the network */
+int reelcore_is_network(const char *url);
+/* 1 open, 0 still opening (REELCORE_ASYNC), -1 failed */
+int reelcore_ready(const ReelCore *v);
+
+/* Reading from the network, for a "buffering" display and Media info */
+typedef struct ReelCoreNet {
+    int opening;                       /* not open yet */
+    int buffering;                     /* nothing read ahead: the picture and sound wait */
+    int ended;                         /* read to the end */
+    double ahead;                      /* seconds read ahead of the picture shown */
+    unsigned bytes_ahead;              /* ... in bytes */
+    long long bytes_read;              /* in all */
+    char error[200];                   /* why it failed, or reading stopped; "" */
+} ReelCoreNet;
+/* 0 (st cleared) for a file; 1 for an address */
+int reelcore_net(const ReelCore *v, ReelCoreNet *st);
 const char *reelcore_last_error(void);
 void reelcore_close(ReelCore *v);
 

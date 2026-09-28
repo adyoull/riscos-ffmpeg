@@ -1,9 +1,13 @@
 /*
  * reelcore.c - the player core of riscos-ffmpeg: plays a video file with its
- * sound and gives each picture at its time, with FFmpeg. No EGL and no
- * threads. See reelcore.h. Part of riscos-ffmpeg. LGPL 2.1 or later.
+ * sound and gives each picture at its time, with FFmpeg. No EGL. One
+ * thread, except for network addresses, which are opened and read by a
+ * thread of their own (see "Network sources"). See reelcore.h. Part of
+ * riscos-ffmpeg. LGPL 2.1 or later.
  */
 #include <SDL.h>
+#include <pthread.h>
+#include <sched.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -50,10 +54,22 @@
 #define LATE_SKIP     0.3    /* this far behind: skip decoding non-reference frames, */
 #define LATE_KEYS     1.5    /* this far: decode only keyframes, */
 #define LATE_OK       0.05   /* until this close again */
+#define NET_AHEAD     10.0   /* network: seconds read ahead of the picture shown */
+#define NET_MAX_BYTES (32 << 20)  /* ... and at most this much */
+#define NET_LOW       3.0    /* below this, reelcore_update gives the reader time */
+
+struct Net;
 
 struct ReelCore {
     int flags;
     AVFormatContext *fmt;
+    AVFormatContext *afmt;             /* the sound from another address (yt-dlp's
+                                          bestvideo+bestaudio), or NULL: it's in fmt */
+    struct Net *net;                   /* network: the reading thread, or NULL */
+    char *title;                       /* ReelCoreSource.title, or NULL */
+    int ready;                         /* opened and set up (async opening: not yet) */
+    double lpts[2];                    /* local file + separate sound: the last packet */
+    int leof[2];                       /* read from each, and which have ended */
     int vs, as;                        /* stream indexes, -1 = none */
     AVCodecContext *vdec, *adec;
     AVPacket *pkt;
@@ -146,6 +162,9 @@ struct ReelCore {
 };
 
 static char last_error[256];
+
+/* The context the sound comes from */
+static AVFormatContext *actx(const ReelCore *v) { return v->afmt ? v->afmt : v->fmt; }
 
 static void set_error(const char *fmt, const char *arg)
 {
@@ -542,40 +561,139 @@ static int open_audio(ReelCore *v)
     return 0;
 }
 
-ReelCore *reelcore_open(const char *url, int flags)
-{
-    ReelCore *v = av_mallocz(sizeof(*v));
-    AVStream *st;
-    int ret;
+/* ---------------------------------------------------------------- network sources
 
-    if (!v)
-        return NULL;
-    v->flags = flags;
-    v->vs = v->as = -1;
-    v->audio_end = -1;
-    v->seek_target = v->aseek_target = -1;
-    v->need_first = 1;
-    v->volume = SDL_MIX_MAXVOLUME;
-    v->vol = 1;
-    v->speed = 1;
-    v->deint = REELCORE_DEINT_AUTO;
-    v->cs_key[0] = -1;
-    if ((ret = avformat_open_input(&v->fmt, url, NULL, NULL)) < 0 ||
-        (ret = avformat_find_stream_info(v->fmt, NULL)) < 0) {
-        char e[AV_ERROR_MAX_STRING_SIZE];
-        av_strerror(ret, e, sizeof(e));
-        set_error("can't open the file: %s", e);
-        goto fail;
+   An address (http:, https:, and so on) is opened and read by a thread of
+   its own, so that a slow or stalled connection never holds up the caller
+   (on RISC OS: the desktop). The thread opens the input(s), chooses the
+   streams, then reads packets ahead into a queue: up to NET_AHEAD seconds
+   ahead of the picture being shown, or NET_MAX_BYTES. reelcore_update takes
+   packets from the queue instead of calling av_read_frame; when it's empty
+   the decoders simply wait (and, with sound, so does the clock). Seeking
+   asks the thread to seek; a serial number tells old packets from new.
+
+   RISC OS threads (UnixLib) only run while the task is paged in, and share
+   one core: reelcore_update yields to the reader for a few milliseconds when
+   the queue is low, and reelcore_idle_time asks to be woken sooner, so the
+   reader gets time even when the caller would otherwise sleep. UnixLib's
+   select() (which FFmpeg's sockets wait in) yields to the other threads
+   while it waits, so a reader waiting for the network doesn't stop the
+   caller. */
+
+typedef struct NetPkt { AVPacket *pkt; int kind; } NetPkt;   /* kind 0 video, 1 sound */
+
+struct Net {
+    pthread_t th;
+    int started;
+    pthread_mutex_t lock;
+    pthread_cond_t cond;               /* the reader waits here for room, or a seek */
+    int quit;
+    char *url, *audio_url, *headers, *user_agent;
+    int state;                         /* 0 opening, 1 open, -1 failed */
+    char error[200];
+    NetPkt *q;
+    int head, n, cap;
+    size_t bytes;
+    double last[2];                    /* seconds: the newest packet of each kind queued */
+    int eof[2], eof_all;
+    int serial;                        /* bumped by each seek */
+    int seek_req;
+    double seek_to;
+    double play_pos;                   /* the picture shown now (from the caller) */
+    int64_t bytes_read;
+    char read_error[160];              /* the connection failed while reading */
+};
+
+int reelcore_is_network(const char *url)
+{
+    const char *c = url ? strstr(url, "://") : NULL;
+    if (!c || c == url)
+        return 0;
+    for (const char *p = url; p < c; p++)                 /* a scheme: letters, digits, + - . */
+        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') ||
+              *p == '+' || *p == '-' || *p == '.'))
+            return 0;
+    return av_strncasecmp(url, "file:", 5) != 0;
+}
+
+static int net_interrupt(void *opaque)
+{
+    struct Net *n = opaque;
+    return n && n->quit;
+}
+
+/* Waits for up to ms milliseconds, or until signalled; lock held */
+static void net_wait(struct Net *n, int ms)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += (long)ms * 1000000;
+    ts.tv_sec += ts.tv_nsec / 1000000000;
+    ts.tv_nsec %= 1000000000;
+    pthread_cond_timedwait(&n->cond, &n->lock, &ts);
+}
+
+/* Opens one input: a file or an address, with the options network input
+   needs (reconnecting, a timeout, a bigger socket buffer, the caller's HTTP
+   headers), and local playlists (HLS .m3u8) allowed to refer to addresses. */
+static int open_input(ReelCore *v, AVFormatContext **fc, const char *url, const ReelCoreSource *src)
+{
+    AVDictionary *o = NULL;
+    int ret;
+    if (!(*fc = avformat_alloc_context()))
+        return AVERROR(ENOMEM);
+    (*fc)->interrupt_callback.callback = net_interrupt;
+    (*fc)->interrupt_callback.opaque = v->net;
+    av_dict_set(&o, "protocol_whitelist", "file,http,https,tcp,tls,crypto,data,httpproxy", 0);
+    if (reelcore_is_network(url)) {
+        av_dict_set(&o, "reconnect", "1", 0);
+        av_dict_set(&o, "reconnect_on_network_error", "1", 0);
+        av_dict_set(&o, "reconnect_delay_max", "4", 0);
+        av_dict_set(&o, "rw_timeout", "20000000", 0);       /* 20 s without data: give up */
+        av_dict_set(&o, "recv_buffer_size", "262144", 0);
+        if (src && src->headers && *src->headers)
+            av_dict_set(&o, "headers", src->headers, 0);
+        if (src && src->user_agent && *src->user_agent)
+            av_dict_set(&o, "user_agent", src->user_agent, 0);
     }
+    ret = avformat_open_input(fc, url, NULL, &o);
+    av_dict_free(&o);
+    if (ret >= 0)
+        ret = avformat_find_stream_info(*fc, NULL);
+    return ret;
+}
+
+/* The streams to play: the best video, and the best sound (from the second
+   input when there is one); the rest aren't read at all. */
+static int select_streams(ReelCore *v)
+{
+    AVFormatContext *a;
     v->vs = av_find_best_stream(v->fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
     if (v->vs < 0) {
         set_error("%s", "no video in the file");
-        goto fail;
+        return -1;
     }
-    st = v->fmt->streams[v->vs];
+    a = actx(v);
+    v->as = v->flags & REELCORE_NO_AUDIO ? -1
+          : av_find_best_stream(a, AVMEDIA_TYPE_AUDIO, -1, a == v->fmt ? v->vs : -1, NULL, 0);
+    for (unsigned i = 0; i < v->fmt->nb_streams; i++)
+        if ((int)i != v->vs && (v->afmt || (int)i != v->as))
+            v->fmt->streams[i]->discard = AVDISCARD_ALL;
+    if (v->afmt)
+        for (unsigned i = 0; i < v->afmt->nb_streams; i++)
+            if ((int)i != v->as)
+                v->afmt->streams[i]->discard = AVDISCARD_ALL;
+    return 0;
+}
+
+/* After the inputs are open and the streams chosen: the decoders, the
+   picture's size and rate, the sound device. In the caller's thread. */
+static int setup_decoders(ReelCore *v)
+{
+    AVStream *st = v->fmt->streams[v->vs];
     if (!(v->vdec = open_decoder(st))) {
         set_error("no decoder for the video (%s)", avcodec_get_name(st->codecpar->codec_id));
-        goto fail;
+        return -1;
     }
     v->h = v->vdec->height;
     v->w = v->vdec->width;
@@ -588,34 +706,412 @@ ReelCore *reelcore_open(const char *url, int flags)
         AVRational fr = av_guess_frame_rate(v->fmt, st, NULL);
         v->fps = fr.num > 0 && fr.den > 0 ? av_q2d(fr) : 0;
     }
-    v->duration = v->fmt->duration > 0 ? v->fmt->duration / (double)AV_TIME_BASE : 0;
-
-    if (!(flags & REELCORE_NO_AUDIO)) {
-        v->as = av_find_best_stream(v->fmt, AVMEDIA_TYPE_AUDIO, -1, v->vs, NULL, 0);
-        if (v->as >= 0 && (!(v->adec = open_decoder(v->fmt->streams[v->as])) || open_audio(v) < 0)) {
-            avcodec_free_context(&v->adec);
-            v->as = -1;
-        }
+    v->duration = v->fmt->duration > 0 ? v->fmt->duration / (double)AV_TIME_BASE :
+                  v->afmt && v->afmt->duration > 0 ? v->afmt->duration / (double)AV_TIME_BASE : 0;
+    if (v->as >= 0 && (!(v->adec = open_decoder(actx(v)->streams[v->as])) || open_audio(v) < 0)) {
+        avcodec_free_context(&v->adec);
+        v->as = -1;                        /* (its packets are dropped as they come) */
     }
     v->audio_clock = v->dev != 0;
-    for (unsigned i = 0; i < v->fmt->nb_streams; i++)
-        if ((int)i != v->vs && (int)i != v->as)
-            v->fmt->streams[i]->discard = AVDISCARD_ALL;
     v->pkt = av_packet_alloc();
     v->frame = av_frame_alloc();
     if (!v->pkt || !v->frame)
-        goto fail;
-    if (flags & REELCORE_PAUSED) {
+        return -1;
+    if (v->flags & REELCORE_PAUSED) {
         v->paused = 1;
         v->pause_pos = 0;
     } else if (v->dev)
         aud_pause(v, 0);
     timer_set(v, 0);
+    v->ready = 1;
+    return 0;
+}
+
+static void open_error(const char *what, int ret)
+{
+    char e[AV_ERROR_MAX_STRING_SIZE];
+    av_strerror(ret, e, sizeof(e));
+    snprintf(last_error, sizeof(last_error), "can't open %s: %s", what, e);
+    av_log(NULL, AV_LOG_ERROR, "reelcore: %s\n", last_error);
+}
+
+static void net_push(struct Net *n, AVPacket *pkt, int kind, double t)
+{
+    if (n->n == n->cap) {
+        int cap = n->cap ? n->cap * 2 : 256;
+        NetPkt *q = av_malloc_array(cap, sizeof(*q));
+        if (!q)
+            return;
+        for (int i = 0; i < n->n; i++)
+            q[i] = n->q[(n->head + i) % n->cap];
+        av_free(n->q);
+        n->q = q;
+        n->cap = cap;
+        n->head = 0;
+    }
+    NetPkt *e = &n->q[(n->head + n->n) % n->cap];
+    if (!(e->pkt = av_packet_alloc()))
+        return;
+    av_packet_move_ref(e->pkt, pkt);
+    e->kind = kind;
+    n->n++;
+    n->bytes += e->pkt->size;
+    if (t != AV_NOPTS_VALUE && t > n->last[kind])
+        n->last[kind] = t;
+}
+
+static void net_flush(struct Net *n)
+{
+    while (n->n) {
+        av_packet_free(&n->q[n->head].pkt);
+        n->head = (n->head + 1) % n->cap;
+        n->n--;
+    }
+    n->head = 0;
+    n->bytes = 0;
+    n->last[0] = n->last[1] = -1e9;
+}
+
+/* Seconds read ahead of the picture shown (the kind behind); lock held */
+static double net_ahead(const ReelCore *v)
+{
+    const struct Net *n = v->net;
+    double a = n->eof[0] ? 1e9 : n->last[0] - n->play_pos;
+    if (v->as >= 0 && !n->eof[v->afmt ? 1 : 0]) {
+        double b = n->last[1] - n->play_pos;
+        if (b < a)
+            a = b;
+    }
+    return a;
+}
+
+/* Seconds of a packet from the start of its input */
+static double pkt_time(AVFormatContext *fc, const AVPacket *p)
+{
+    AVStream *st = fc->streams[p->stream_index];
+    int64_t t = p->pts != AV_NOPTS_VALUE ? p->pts : p->dts;
+    double s;
+    if (t == AV_NOPTS_VALUE)
+        return AV_NOPTS_VALUE;
+    s = t * av_q2d(st->time_base);
+    if (fc->start_time != AV_NOPTS_VALUE)
+        s -= fc->start_time / (double)AV_TIME_BASE;
+    return s;
+}
+
+/* The kind of a packet read from fc: 0 video, 1 sound, -1 not played */
+static int pkt_kind(const ReelCore *v, AVFormatContext *fc, const AVPacket *p)
+{
+    if (fc == v->fmt && p->stream_index == v->vs)
+        return 0;
+    if (fc == actx(v) && p->stream_index == v->as)
+        return 1;
+    return -1;
+}
+
+static void seek_input(AVFormatContext *fc, double seconds)
+{
+    int64_t ts = (int64_t)(seconds * AV_TIME_BASE);
+    if (fc->start_time != AV_NOPTS_VALUE)
+        ts += fc->start_time;
+    avformat_seek_file(fc, -1, INT64_MIN, ts, ts, 0);
+}
+
+static void *net_thread(void *arg)
+{
+    ReelCore *v = arg;
+    struct Net *n = v->net;
+    ReelCoreSource src = { n->url, n->audio_url, n->headers, n->user_agent, NULL };
+    AVPacket *pkt = av_packet_alloc();
+    int ret;
+
+    ret = open_input(v, &v->fmt, n->url, &src);
+    if (ret < 0)
+        open_error(n->audio_url ? "the video" : "the address", ret);
+    else if (n->audio_url && (ret = open_input(v, &v->afmt, n->audio_url, &src)) < 0)
+        open_error("the sound", ret);
+    else if (select_streams(v) < 0)
+        ret = -1;
+    pthread_mutex_lock(&n->lock);
+    n->state = ret < 0 || !pkt ? -1 : 1;
+    if (n->state < 0)
+        snprintf(n->error, sizeof(n->error), "%s", n->quit ? "stopped" : last_error);
+    pthread_mutex_unlock(&n->lock);
+    if (n->state < 0) {
+        av_packet_free(&pkt);
+        return NULL;
+    }
+
+    pthread_mutex_lock(&n->lock);
+    while (!n->quit) {
+        int serial, full, k;
+        AVFormatContext *fc;
+        if (n->seek_req) {
+            double to = n->seek_to;
+            serial = n->serial;
+            n->seek_req = 0;
+            pthread_mutex_unlock(&n->lock);
+            seek_input(v->fmt, to);
+            if (v->afmt)
+                seek_input(v->afmt, to);
+            pthread_mutex_lock(&n->lock);
+            if (serial == n->serial) {
+                net_flush(n);
+                n->eof[0] = n->eof[1] = n->eof_all = 0;
+            }
+            continue;
+        }
+        full = n->bytes > NET_MAX_BYTES || (n->n && net_ahead(v) >= NET_AHEAD);
+        if (full || n->eof_all) {
+            net_wait(n, 50);                /* room, a seek or the end */
+            continue;
+        }
+        /* from the input that's behind */
+        k = v->afmt && !n->eof[1] && (n->eof[0] || n->last[1] < n->last[0]) ? 1 : 0;
+        fc = k ? v->afmt : v->fmt;
+        serial = n->serial;
+        pthread_mutex_unlock(&n->lock);
+        ret = av_read_frame(fc, pkt);
+        pthread_mutex_lock(&n->lock);
+        if (serial != n->serial) {          /* a seek meanwhile: from before it */
+            av_packet_unref(pkt);
+            continue;
+        }
+        if (ret == AVERROR(EAGAIN)) {
+            net_wait(n, 5);
+            continue;
+        }
+        if (ret < 0) {
+            if (ret != AVERROR_EOF && ret != AVERROR_EXIT && !n->quit) {
+                char e[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(ret, e, sizeof(e));
+                snprintf(n->read_error, sizeof(n->read_error), "reading stopped: %s", e);
+                av_log(NULL, AV_LOG_WARNING, "reelcore: %s\n", n->read_error);
+            }
+            n->eof[k] = 1;
+            n->eof_all = n->eof[0] && (!v->afmt || n->eof[1]);
+            continue;
+        }
+        n->bytes_read += pkt->size;
+        {
+            int kind = pkt_kind(v, fc, pkt);
+            if (kind >= 0)
+                net_push(n, pkt, kind, pkt_time(fc, pkt));
+            av_packet_unref(pkt);
+        }
+    }
+    pthread_mutex_unlock(&n->lock);
+    av_packet_free(&pkt);
+    return NULL;
+}
+
+/* Gives the reader some time (RISC OS: a single core, threads switched by
+   UnixLib only while the task runs) while its queue is low */
+static void net_give_time(ReelCore *v, int ms)
+{
+#ifdef __riscos__
+    int64_t end = av_gettime_relative() + ms * 1000;
+    for (;;) {
+        int enough;
+        pthread_mutex_lock(&v->net->lock);
+        enough = v->net->state && (v->net->eof_all || net_ahead(v) >= NET_LOW);
+        pthread_mutex_unlock(&v->net->lock);
+        if (enough || av_gettime_relative() >= end)
+            break;
+        pthread_yield();
+    }
+#else
+    (void)v; (void)ms;                    /* real threads: it runs anyway */
+#endif
+}
+
+static ReelCore *core_alloc(int flags)
+{
+    ReelCore *v = av_mallocz(sizeof(*v));
+    if (!v)
+        return NULL;
+    v->flags = flags;
+    v->vs = v->as = -1;
+    v->audio_end = -1;
+    v->seek_target = v->aseek_target = -1;
+    v->need_first = 1;
+    v->volume = SDL_MIX_MAXVOLUME;
+    v->vol = 1;
+    v->speed = 1;
+    v->deint = REELCORE_DEINT_AUTO;
+    v->cs_key[0] = -1;
+    return v;
+}
+
+ReelCore *reelcore_open_source(const ReelCoreSource *src, int flags)
+{
+    ReelCore *v;
+    int ret;
+
+    if (!src || !src->url) {
+        set_error("%s", "nothing to open");
+        return NULL;
+    }
+    if (!(v = core_alloc(flags)))
+        return NULL;
+    if (src->title && !(v->title = av_strdup(src->title)))
+        goto fail;
+
+    if (reelcore_is_network(src->url) || (src->audio_url && reelcore_is_network(src->audio_url))) {
+        struct Net *n = av_mallocz(sizeof(*n));
+        if (!(v->net = n))
+            goto fail;
+        pthread_mutex_init(&n->lock, NULL);
+        pthread_cond_init(&n->cond, NULL);
+        n->last[0] = n->last[1] = -1e9;
+        n->url = av_strdup(src->url);
+        n->audio_url = src->audio_url ? av_strdup(src->audio_url) : NULL;
+        n->headers = src->headers ? av_strdup(src->headers) : NULL;
+        n->user_agent = src->user_agent ? av_strdup(src->user_agent) : NULL;
+        if (!n->url || pthread_create(&n->th, NULL, net_thread, v) != 0) {
+            set_error("%s", "can't start reading");
+            goto fail;
+        }
+        n->started = 1;
+        if (flags & REELCORE_ASYNC)
+            return v;                      /* reelcore_update says when it's open */
+        for (;;) {                         /* wait for it here */
+            int state;
+            pthread_mutex_lock(&n->lock);
+            state = n->state;
+            pthread_mutex_unlock(&n->lock);
+            if (state < 0) {
+                snprintf(last_error, sizeof(last_error), "%s", n->error);
+                goto fail;
+            }
+            if (state > 0)
+                break;
+#ifdef __riscos__
+            pthread_yield();
+#else
+            av_usleep(2000);
+#endif
+        }
+        if (setup_decoders(v) < 0)
+            goto fail;
+        return v;
+    }
+
+    /* a file: opened here, read here */
+    if ((ret = open_input(v, &v->fmt, src->url, src)) < 0) {
+        open_error("the file", ret);
+        goto fail;
+    }
+    if (src->audio_url && (ret = open_input(v, &v->afmt, src->audio_url, src)) < 0) {
+        open_error("the sound", ret);
+        goto fail;
+    }
+    if (select_streams(v) < 0 || setup_decoders(v) < 0)
+        goto fail;
     return v;
 
 fail:
     reelcore_close(v);
     return NULL;
+}
+
+ReelCore *reelcore_open(const char *url, int flags)
+{
+    ReelCoreSource src = { url, NULL, NULL, NULL, NULL };
+    return reelcore_open_source(&src, flags & ~REELCORE_ASYNC);
+}
+
+/* The reader's state: 0 opening, 1 open, -1 failed */
+static int net_state(const ReelCore *v)
+{
+    int state;
+    pthread_mutex_lock(&v->net->lock);
+    state = v->net->state;
+    pthread_mutex_unlock(&v->net->lock);
+    return state;
+}
+
+int reelcore_ready(const ReelCore *v)
+{
+    if (v->ready)
+        return 1;
+    return v->net && net_state(v) < 0 ? -1 : 0;
+}
+
+int reelcore_net(const ReelCore *v, ReelCoreNet *st)
+{
+    struct Net *n = v->net;
+    memset(st, 0, sizeof(*st));
+    if (!n)
+        return 0;
+    pthread_mutex_lock(&n->lock);
+    st->opening = n->state == 0;
+    st->ahead = n->state > 0 && v->ready ? net_ahead(v) : 0;
+    if (st->ahead > 1e8)
+        st->ahead = n->eof_all ? 0 : st->ahead;
+    st->bytes_ahead = (unsigned)n->bytes;
+    st->bytes_read = n->bytes_read;
+    st->ended = n->eof_all;
+    st->buffering = v->ready && !n->eof_all && n->n == 0 && !v->paused;
+    snprintf(st->error, sizeof(st->error), "%s", n->state < 0 ? n->error : n->read_error);
+    pthread_mutex_unlock(&n->lock);
+    return 1;
+}
+
+/* The next packet to decode: 0 with *kind (0 video, 1 sound, -1 not
+   played), AVERROR(EAGAIN) when none has arrived yet (network), or the
+   end/an error. */
+static int next_packet(ReelCore *v, AVPacket *pkt, int *kind)
+{
+    if (v->net) {
+        struct Net *n = v->net;
+        int ret;
+        pthread_mutex_lock(&n->lock);
+        n->play_pos = reelcore_position(v);
+        if (n->n) {
+            NetPkt *e = &n->q[n->head];
+            av_packet_move_ref(pkt, e->pkt);
+            av_packet_free(&e->pkt);
+            *kind = e->kind;
+            n->bytes -= pkt->size;
+            n->head = (n->head + 1) % n->cap;
+            n->n--;
+            pthread_cond_signal(&n->cond);  /* room */
+            ret = 0;
+        } else
+            ret = n->eof_all ? AVERROR_EOF : AVERROR(EAGAIN);
+        pthread_mutex_unlock(&n->lock);
+        return ret;
+    }
+    if (v->afmt) {                         /* two files: from the one behind */
+        for (;;) {
+            int k = !v->leof[1] && (v->leof[0] || v->lpts[1] < v->lpts[0]) ? 1 : 0;
+            AVFormatContext *fc = k ? v->afmt : v->fmt;
+            int ret;
+            if (v->leof[0] && v->leof[1])
+                return AVERROR_EOF;
+            ret = av_read_frame(fc, pkt);
+            if (ret == AVERROR(EAGAIN))
+                return ret;
+            if (ret < 0) {
+                v->leof[k] = 1;
+                continue;
+            }
+            {
+                double t = pkt_time(fc, pkt);
+                if (t != AV_NOPTS_VALUE && t > v->lpts[k])
+                    v->lpts[k] = t;
+            }
+            *kind = pkt_kind(v, fc, pkt);
+            return 0;
+        }
+    }
+    {
+        int ret = av_read_frame(v->fmt, pkt);
+        if (ret >= 0)
+            *kind = pkt_kind(v, v->fmt, pkt);
+        return ret;
+    }
 }
 
 static void clear_queue(ReelCore *v)
@@ -634,6 +1130,24 @@ void reelcore_close(ReelCore *v)
 {
     if (!v)
         return;
+    if (v->net) {
+        struct Net *n = v->net;
+        if (n->started) {
+            pthread_mutex_lock(&n->lock);
+            n->quit = 1;                   /* (also interrupts what FFmpeg is waiting for) */
+            pthread_cond_signal(&n->cond);
+            pthread_mutex_unlock(&n->lock);
+            pthread_join(n->th, NULL);
+        }
+        net_flush(n);
+        av_free(n->q);
+        av_free(n->url);
+        av_free(n->audio_url);
+        av_free(n->headers);
+        av_free(n->user_agent);
+        pthread_mutex_destroy(&n->lock);
+        pthread_cond_destroy(&n->cond);
+    }
     if (v->dev)
         aud_close(v);
     clear_queue(v);
@@ -646,6 +1160,9 @@ void reelcore_close(ReelCore *v)
     avcodec_free_context(&v->vdec);
     avcodec_free_context(&v->adec);
     avformat_close_input(&v->fmt);
+    avformat_close_input(&v->afmt);
+    av_free(v->net);
+    av_free(v->title);
     swr_free(&v->swr);
     tempo_close(v);
     sws_freeContext(v->sws);
@@ -682,6 +1199,18 @@ int reelcore_debug(const ReelCore *v, char *buf, int size)
                      v->skip_spells);
     if (n >= size)
         return n;
+    if (v->net) {
+        ReelCoreNet ns;
+        reelcore_net(v, &ns);
+        n += snprintf(buf + n, size - n, "; net %s%.1f s ahead (%u KB), %lld KB read%s%s",
+                      ns.opening ? "opening, " : ns.buffering ? "BUFFERING, " : "", ns.ahead,
+                      ns.bytes_ahead >> 10, ns.bytes_read >> 10, ns.ended ? ", all read" : "",
+                      ns.error[0] ? ", " : "");
+        if (ns.error[0] && n < size)
+            n += snprintf(buf + n, size - n, "%s", ns.error);
+        if (n >= size)
+            return n;
+    }
     if (!v->dev)
         return n + snprintf(buf + n, size - n, "; no sound%s%s", v->audio_note[0] ? ": " : "", v->audio_note);
 #ifdef USE_SSB
@@ -729,7 +1258,13 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
         st->sound_played = v->ssb_stat_played;
     }
 #endif
-    st->bytes_read = v->fmt && v->fmt->pb ? v->fmt->pb->bytes_read : 0;
+    if (v->net) {
+        pthread_mutex_lock(&v->net->lock);
+        st->bytes_read = v->net->bytes_read;
+        pthread_mutex_unlock(&v->net->lock);
+    } else
+        st->bytes_read = (v->fmt && v->fmt->pb ? v->fmt->pb->bytes_read : 0) +
+                         (v->afmt && v->afmt->pb ? v->afmt->pb->bytes_read : 0);
     st->speed = v->speed;
     st->fast = v->fast;
     st->deinterlace = v->deint;
@@ -763,12 +1298,22 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
 
     if (size > 0)
         buf[0] = 0;
+    if (!v->ready)
+        return 0;
     ADD("#File\n");
-    if (fc->url) {
+    if (v->title)
+        ADD("Title\t%s\n", v->title);
+    if (fc->url && v->net) {
+        ADD("Address\t%.150s%s\n", fc->url, strlen(fc->url) > 150 ? "..." : "");
+        if (v->afmt && v->afmt->url)
+            ADD("Sound from\t%.150s%s\n", v->afmt->url, strlen(v->afmt->url) > 150 ? "..." : "");
+    } else if (fc->url) {
         const char *leaf = strrchr(fc->url, fc->url[0] == '/' ? '/' : '.');
         ADD("Name\t%s\n", leaf ? leaf + 1 : fc->url);
+        if (v->afmt && v->afmt->url)
+            ADD("Sound from\t%s\n", v->afmt->url);
     }
-    if ((t = av_dict_get(fc->metadata, "title", NULL, 0)))
+    if (!v->title && (t = av_dict_get(fc->metadata, "title", NULL, 0)))
         ADD("Title\t%s\n", t->value);
     ADD("Container\t%s (%s)\n", or_q(fc->iformat->long_name), fc->iformat->name);
     if (fc->duration > 0) {
@@ -820,7 +1365,7 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
             ADD("Reordering\t%d frame%s (B-frames)\n", v->vdec->has_b_frames, v->vdec->has_b_frames == 1 ? "" : "s");
     }
     if (v->as >= 0) {
-        const AVStream *st = fc->streams[v->as];
+        const AVStream *st = actx(v)->streams[v->as];
         const AVCodecParameters *p = st->codecpar;
         const AVCodecDescriptor *d = avcodec_descriptor_get(p->codec_id);
         const char *prof = avcodec_profile_name(p->codec_id, p->profile);
@@ -901,12 +1446,14 @@ void reelcore_set_log(void (*fn)(int level, const char *line), int verbose)
 
 int reelcore_info(const ReelCore *v, char *buf, int size)
 {
+    if (!v->ready)
+        return snprintf(buf, size, "opening");
     const AVCodecParameters *vp = v->fmt->streams[v->vs]->codecpar;
     int n = snprintf(buf, size, "%s %dx%d", avcodec_get_name(vp->codec_id), vp->width, vp->height);
     if (v->fps > 0 && n < size)
         n += snprintf(buf + n, size - n, ", %.3g fps", v->fps);
     if (v->as >= 0 && n < size) {
-        const AVCodecParameters *ap = v->fmt->streams[v->as]->codecpar;
+        const AVCodecParameters *ap = actx(v)->streams[v->as]->codecpar;
         n += snprintf(buf + n, size - n, "; %s %d Hz, %d channel%s%s", avcodec_get_name(ap->codec_id),
                       ap->sample_rate, ap->ch_layout.nb_channels, ap->ch_layout.nb_channels == 1 ? "" : "s",
                       !v->dev ? " (no sound device" : v->stalled ? " (the sound device isn't playing: no sound)" : "");
@@ -923,7 +1470,10 @@ int reelcore_info(const ReelCore *v, char *buf, int size)
 
 double reelcore_position(const ReelCore *v)
 {
-    double start = v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time / (double)AV_TIME_BASE : 0;
+    double start;
+    if (!v->ready)
+        return 0;
+    start = v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time / (double)AV_TIME_BASE : 0;
     return v->cur ? v->cur_pts - start : 0;
 }
 int reelcore_paused(const ReelCore *v)       { return v->paused; }
@@ -1150,7 +1700,7 @@ static void got_audio(ReelCore *v, AVFrame *f)
 {
     int out_max = swr_get_out_samples(v->swr, f->nb_samples);
     int n, bytes;
-    double pts = frame_pts(f, v->fmt->streams[v->as], v->audio_end >= 0 ? v->audio_end : 0);
+    double pts = frame_pts(f, actx(v)->streams[v->as], v->audio_end >= 0 ? v->audio_end : 0);
 
     if (v->aseek_target >= 0) {
         if (pts + f->nb_samples / (double)f->sample_rate < v->aseek_target)
@@ -1294,22 +1844,22 @@ static void fill(ReelCore *v)
     for (int budget = READ_BUDGET; budget > 0 && !v->eof_demux; budget--) {
         int need_a = v->dev && !v->stalled && queued_audio(v) < v->ahead;
         int need_v = v->qn < 3 && v->vpk_n == 0;
-        int ret;
+        int ret, kind;
         if (!need_a && !need_v)
             break;
         if (!need_v && v->vpk_bytes > VPK_MAX_BYTES)
             break;                         /* a strange file: don't eat all the memory */
-        ret = av_read_frame(v->fmt, v->pkt);
+        ret = next_packet(v, v->pkt, &kind);
         if (ret == AVERROR(EAGAIN))
-            break;
+            break;                         /* (the network: not here yet) */
         if (ret < 0) {                     /* the end: flush the sound decoder now, */
             v->eof_demux = 1;              /* the video's once its packets are done */
             if (v->adec) decode(v, v->adec, NULL, 0); else v->eof_audio = 1;
             break;
         }
-        if (v->pkt->stream_index == v->vs)
+        if (kind == 0)
             vpk_push(v, v->pkt);
-        else if (v->pkt->stream_index == v->as)
+        else if (kind == 1 && v->adec)
             decode(v, v->adec, v->pkt, 0);
         av_packet_unref(v->pkt);
     }
@@ -1318,14 +1868,14 @@ static void fill(ReelCore *v)
     for (int n = 0; n < budget && v->qn < 3; n++) {
         if (!v->vpk_n && !v->eof_demux && v->need_first) {
             /* more packets on the way to the seek point */
-            int ret = av_read_frame(v->fmt, v->pkt);
+            int kind, ret = next_packet(v, v->pkt, &kind);
             if (ret < 0 && ret != AVERROR(EAGAIN)) {
                 v->eof_demux = 1;
                 if (v->adec) decode(v, v->adec, NULL, 0); else v->eof_audio = 1;
             } else if (ret >= 0) {
-                if (v->pkt->stream_index == v->vs)
+                if (kind == 0)
                     vpk_push(v, v->pkt);
-                else if (v->pkt->stream_index == v->as)
+                else if (kind == 1 && v->adec)
                     decode(v, v->adec, v->pkt, 0);
                 av_packet_unref(v->pkt);
                 continue;
@@ -1360,6 +1910,34 @@ int reelcore_update(ReelCore *v)
 {
     double now;
 
+    if (!v->ready) {                       /* opening (REELCORE_ASYNC) */
+        int state = v->net ? net_state(v) : -1;
+        if (state < 0) {
+            pthread_mutex_lock(&v->net->lock);
+            snprintf(last_error, sizeof(last_error), "%s", v->net->error);
+            pthread_mutex_unlock(&v->net->lock);
+            return REELCORE_FAILED;
+        }
+        if (state == 0) {
+            net_give_time(v, 10);
+            return REELCORE_OPENING;
+        }
+        if (setup_decoders(v) < 0) {
+            if (!last_error[0])
+                set_error("%s", "can't play it");
+            return REELCORE_FAILED;
+        }
+        return REELCORE_READY;
+    }
+    if (v->net) {
+        int low;
+        pthread_mutex_lock(&v->net->lock);
+        v->net->play_pos = reelcore_position(v);
+        low = !v->net->eof_all && net_ahead(v) < NET_LOW;
+        pthread_mutex_unlock(&v->net->lock);
+        if (low)
+            net_give_time(v, 8);
+    }
     fill(v);
     if (v->need_first) {
         if (!v->qn)
@@ -1403,7 +1981,26 @@ end_check:
 
 #define IDLE_MAX 0.1
 
+static double reelcore_idle_time_play(ReelCore *v);
+
 double reelcore_idle_time(ReelCore *v)
+{
+    if (!v->ready)
+        return 0.02;                       /* opening: the reader needs time */
+    if (v->net) {                          /* reading ahead: come back soon */
+        int low;
+        pthread_mutex_lock(&v->net->lock);
+        low = !v->net->eof_all && (v->net->n == 0 || net_ahead(v) < NET_AHEAD - 1);
+        pthread_mutex_unlock(&v->net->lock);
+        if (low) {
+            double d = reelcore_idle_time_play(v);
+            return d > 0.02 ? 0.02 : d;
+        }
+    }
+    return reelcore_idle_time_play(v);
+}
+
+static double reelcore_idle_time_play(ReelCore *v)
 {
     double due;
     if (v->paused)
@@ -1448,11 +2045,30 @@ int reelcore_seek(ReelCore *v, double seconds)
 {
     int64_t ts = (int64_t)(seconds * AV_TIME_BASE);
     int ret;
+    if (!v->ready)
+        return AVERROR(EAGAIN);
     if (v->fmt->start_time != AV_NOPTS_VALUE)
         ts += v->fmt->start_time;
-    ret = avformat_seek_file(v->fmt, -1, INT64_MIN, ts, ts, 0);
-    if (ret < 0)
-        return ret;
+    if (v->net) {                          /* the reader seeks; its queue is from before */
+        pthread_mutex_lock(&v->net->lock);
+        v->net->serial++;
+        v->net->seek_req = 1;
+        v->net->seek_to = seconds;
+        net_flush(v->net);
+        v->net->eof[0] = v->net->eof[1] = v->net->eof_all = 0;
+        v->net->play_pos = seconds;
+        pthread_cond_signal(&v->net->cond);
+        pthread_mutex_unlock(&v->net->lock);
+    } else {
+        ret = avformat_seek_file(v->fmt, -1, INT64_MIN, ts, ts, 0);
+        if (ret < 0)
+            return ret;
+        if (v->afmt) {
+            seek_input(v->afmt, seconds);
+            v->lpts[0] = v->lpts[1] = -1e9;
+            v->leof[0] = v->leof[1] = 0;
+        }
+    }
     avcodec_flush_buffers(v->vdec);
     if (v->adec)
         avcodec_flush_buffers(v->adec);
@@ -1699,6 +2315,8 @@ int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int
 int reelcore_set_speed(ReelCore *v, double speed)
 {
     double pos;
+    if (!v->ready)
+        return AVERROR(EAGAIN);
     speed = av_clipd(speed, 0.5, 2.0);
     if (speed == v->speed)
         return 0;
@@ -1720,6 +2338,8 @@ double reelcore_speed(const ReelCore *v) { return v->speed; }
 
 void reelcore_set_fast(ReelCore *v, int mode)
 {
+    if (!v->ready)
+        return;
     if (mode != REELCORE_FAST_ON && mode != REELCORE_FAST_LIGHT)
         mode = REELCORE_FAST_OFF;
     if (mode == v->fast)
@@ -1754,8 +2374,9 @@ int reelcore_deinterlace(const ReelCore *v) { return v->deint; }
 /* The file's i-th sound stream (0 = the first), its index, or -1 */
 static int audio_stream(const ReelCore *v, int i)
 {
-    for (unsigned s = 0; s < v->fmt->nb_streams; s++)
-        if (v->fmt->streams[s]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && i-- == 0)
+    AVFormatContext *a = v->ready ? actx(v) : NULL;
+    for (unsigned s = 0; a && s < a->nb_streams; s++)
+        if (a->streams[s]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO && i-- == 0)
             return (int)s;
     return -1;
 }
@@ -1783,7 +2404,7 @@ int reelcore_audio_track_name(const ReelCore *v, int i, char *buf, int size)
     const AVDictionaryEntry *lang, *title;
     if (s < 0)
         return snprintf(buf, size, "?");
-    st = v->fmt->streams[s];
+    st = actx(v)->streams[s];
     lang = av_dict_get(st->metadata, "language", NULL, 0);
     title = av_dict_get(st->metadata, "title", NULL, 0);
     n = snprintf(buf, size, "%s, %d ch", avcodec_get_name(st->codecpar->codec_id), st->codecpar->ch_layout.nb_channels);
@@ -1806,7 +2427,9 @@ int reelcore_set_audio_track(ReelCore *v, int i)
         return 0;
     if (!v->dev)
         return AVERROR(ENODEV);                /* no sound output to play it on */
-    if (!(dec = open_decoder(v->fmt->streams[s])))
+    if (v->net)
+        return AVERROR(ENOSYS);                /* (the reader chose the streams) */
+    if (!(dec = open_decoder(actx(v)->streams[s])))
         return AVERROR_DECODER_NOT_FOUND;
     if (swr_alloc_set_opts2(&swr, &stereo, AV_SAMPLE_FMT_S16, v->rate,
                             &dec->ch_layout, dec->sample_fmt, dec->sample_rate, 0, NULL) < 0 ||
@@ -1816,8 +2439,8 @@ int reelcore_set_audio_track(ReelCore *v, int i)
         return AVERROR(EINVAL);
     }
     if (v->as >= 0)
-        v->fmt->streams[v->as]->discard = AVDISCARD_ALL;
-    v->fmt->streams[s]->discard = AVDISCARD_DEFAULT;
+        actx(v)->streams[v->as]->discard = AVDISCARD_ALL;
+    actx(v)->streams[s]->discard = AVDISCARD_DEFAULT;
     avcodec_free_context(&v->adec);
     swr_free(&v->swr);
     v->adec = dec;

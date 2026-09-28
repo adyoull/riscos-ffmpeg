@@ -63,7 +63,8 @@ Both are in the devkit, and each header documents its calls:
   core. It opens a file or stream, decodes inside `reelcore_update()`,
   plays the sound (the clock the pictures follow) and says when a new
   picture is due; `reelcore_draw_pixels()` puts it into any 32bpp memory.
-  No EGL, no threads.
+  No EGL. Files are read in your thread; a web address (http/https/HLS)
+  is read by a thread of reelcore's own, up to 10 s ahead.
 - **ffegl** (`include/ffegl.h`, `lib/libffegl.a`): the EGL side, on top
   of reelcore. `ffegl_draw_surface()` puts the current picture into an EGL
   surface and `ffegl_texture()` into an OpenGL texture.
@@ -103,6 +104,14 @@ reelcore_close(v);
     `reelcore_close` with the context still current (it gives the texture
     one black texel, then frees the sprite) or after destroying the
     context.
+- **Web addresses:** `reelcore_open_source()` takes a `ReelCoreSource`:
+  the address, optionally a second one for the sound (yt-dlp's
+  "bestvideo+bestaudio"), HTTP headers, a user agent and a title. With
+  `REELCORE_ASYNC` it returns at once and `reelcore_update()` answers
+  `REELCORE_OPENING` until it's `REELCORE_READY` (or `REELCORE_FAILED`,
+  with `reelcore_last_error()`), so a desktop program never waits on the
+  network. `reelcore_net()` gives how much is read ahead, for a
+  "Buffering" display.
 - **Into your own memory** (a sprite, a work area): `reelcore_draw_pixels(v,
   pixels, pitch, w, h, bgr, flags)`: no EGL needed.
 - **Controls:** `reelcore_pause`, `reelcore_seek`, `reelcore_set_volume`,

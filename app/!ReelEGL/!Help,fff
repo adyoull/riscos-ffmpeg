@@ -1,4 +1,4 @@
-!ReelEGL - Reel, drawing through EGL (an example)       0.1.16
+!ReelEGL - Reel, drawing through EGL (an example)       0.1.17
 ===================================================================
 
 ReelEGL is the Reel video player built a second way: the picture goes
@@ -6,7 +6,8 @@ through riscos-mesa's EGL instead of Reel's own sprite plotting. It is
 here as a working example of an EGL program (riscos-ffmpeg's ffegl
 library, ffegl_draw_surface, on the reelcore player core that Reel uses
 too), and to compare the two. Everything else - the
-controls, keys, menus, sound - is the same as Reel: see !Reel's !Help.
+controls, keys, menus, sound, web addresses and yt-dlp's output - is the
+same as Reel: see !Reel's !Help.
 Both can run at once (they have different icon bar icons: ReelEGL's
 reel has a green hub).
 

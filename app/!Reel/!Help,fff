@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.16
+!Reel - a video player for RISC OS                        0.1.17
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -12,7 +12,9 @@ Using it
 Double-click !Reel: its icon (a film reel) appears on the icon bar. Then:
 
   - drop a video file on the icon, or on Reel's window; or
-  - double-click a video file in the Filer (while Reel is loaded).
+  - double-click a video file in the Filer (while Reel is loaded); or
+  - choose Open address... on the icon's menu, for a web address (see
+    Web addresses, below).
 
 Drop several files at once (one drag from the Filer) and they play one
 after another: a playlist. Hold Shift as you drop to add files to the
@@ -25,7 +27,8 @@ The window shows the picture with a row of controls under it:
   the bar       click anywhere on it to go there
   the time      where you are / how long the video is; then the speed
                 if it isn't normal (e.g. 1.5x), and A or AB while
-                A-B repeat is set
+                A-B repeat is set. "Buffering" when a web address
+                can't be read fast enough; "Opening" while it opens
   the volume    the green bar: click along it to set the volume.
                 Reel remembers it for next time
   Full          full screen (Escape or F to come back)
@@ -79,8 +82,60 @@ Menu on the window:
                       *Set Reel$NoVsync 1 starts with it off
   Close               close the video
 
-Menu on the icon: Info (the program's name, author and version), Loop,
-Log, Quit. The video's own details are Media info, on the window's menu.
+Menu on the icon: Info (the program's name, author and version), Open
+address... (below), Loop, Log, Quit. The video's own details are Media
+info, on the window's menu.
+
+Web addresses
+-------------
+Reel plays from the internet too: http:// and https:// addresses of
+video files (MP4, WebM, MKV, ...) and of HLS streams (.m3u8). https uses
+RISC OS's AcornSSL module (RISC OS 5.28 or later), which !Run loads.
+Give Reel an address by:
+
+  - Open address... on the icon's menu: type it, or paste it with
+    Ctrl-V (or the Paste button), then press Return or click Play;
+  - dropping a file with addresses in it on the icon or the window: a
+    URI or URL file, a text file with one address a line (several make
+    a playlist), an M3U playlist, or yt-dlp's output (below).
+
+Reel reads ahead in the background (up to 10 seconds, or 32MB), so a
+slow connection doesn't hold up the desktop. While an address opens,
+what was playing carries on (with nothing playing, the window opens and
+says "Opening"). If the connection can't keep up, the time says
+"Buffering" and the picture and sound wait. Seeking works whenever the
+server allows it (most do). Media info's Reading line shows how much has
+been read ahead, and the Address and Sound from rows say where from.
+
+YouTube and other sites: yt-dlp
+-------------------------------
+The address of a web page (a YouTube page, say) isn't a video: Reel says
+"that's a web page, not a video". yt-dlp (https://github.com/yt-dlp/yt-dlp),
+run on another computer, finds the video's own address(es), and Reel
+plays what it prints. For example (all on one line):
+
+  yt-dlp -g -f "bv*[height<=720][vcodec^=avc1]+ba[ext=m4a]/b[height<=720]"
+         "<the page's address>" > clip.txt
+
+-g prints the address to play or, as here, two: the best video and the
+best sound, which sites keep apart. Reel plays them together. Or:
+
+  yt-dlp -j -f "bv*[height<=720][vcodec^=avc1]+ba[ext=m4a]/b[height<=720]"
+         "<the page's address>" > clip.json
+
+-j (--dump-json) prints everything: Reel uses the video's title, its
+addresses, and the HTTP headers the site asks for. For a playlist page
+-j gives a line per video, and Reel plays them in turn.
+
+Copy the file to RISC OS (as Text, or JSON) and drop it on Reel. Or copy
+yt-dlp's output as text and paste it into Open address: several lines
+are played at once.
+
+The -f choice asks for H.264 (avc1) at 720 lines or fewer, which a
+Raspberry Pi 4 plays smoothly; VP9 and AV1 play too, but cost more.
+YouTube's addresses work only from the internet connection that ran
+yt-dlp (a computer on the same home network is fine) and only for a few
+hours: after that, run yt-dlp again.
 
 Mini player
 -----------
@@ -168,7 +223,8 @@ at the top, "stats for nerds", updated every second while playing:
   Drawing           the time to put each picture on the screen
   Waiting           pictures decoded and packets read but not yet used
   Sound             the sound output and how much is queued
-  Reading           how fast the file is being read
+  Reading           how fast the file is being read; for a web address,
+                    how much is read ahead
   Desktop           null events a second, how much of the time Reel
                     was asleep, and the screen mode
 
@@ -220,10 +276,11 @@ Needs
 -----
 Included: PThreadTicker 0.01, a small module from UnixLib 5.0.1 (the C
 library Reel is built with) for its thread timer; !Run loads it (a copy
-merged into !System first). Reel itself plays on one thread, so it's
-there for the cases that start one (SDL's sound). Licence:
-docs.Licences.PThreadTicker (BSD).
-SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan). For sound:
+merged into !System first). Reel plays files on one thread; a web
+address is read by a second one, and SDL's sound starts one too.
+Licence: docs.Licences.PThreadTicker (BSD).
+SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan). For https
+addresses, AcornSSL (part of RISC OS 5.28 and later). For sound:
 SharedSoundBuffer and StreamManager, John Duffell's modules (SharedSound,
 which they use, is part of RISC OS). Download ssb.zip from Andrew
 Sellors' RDPClient page:
@@ -249,6 +306,8 @@ Known limits
 ------------
 - One video at a time (a playlist plays them in turn). No subtitles yet.
 - Files with no video (sound only) aren't played.
+- Web addresses: not DASH (.mpd) manifests; the Sound track menu is for
+  files only. Reel doesn't run yt-dlp itself.
 
 Licence
 -------
