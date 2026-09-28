@@ -3,6 +3,20 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## 5.1.10-riscos8 (2026-09-28): Convert saves next to the original
+
+- **Convert works straight away.** The new file goes next to the
+  original by default (holiday_720/mp4 beside holiday/mkv): the name
+  field is filled with the full path, so clicking Convert is enough.
+  Dragging the file icon to a directory display, or typing another full
+  path, still puts it elsewhere. A bare name (no directory) is refused
+  with a message saying what to do.
+- **The file icon always shows.** It used the sprite `file_<type>` for
+  the new file's type (MP4, via MimeMap); on a machine with no sprite for
+  that type the icon was blank and there was nothing to drag. It now
+  falls back to `file_xxx`, the Filer's "?" icon.
+- Status line and interactive help say where the file will go.
+
 ## 5.1.10-riscos7 (2026-09-28): the Convert window
 
 - **!FFmpeg converts files from the desktop.** Click the FFmpeg icon (or

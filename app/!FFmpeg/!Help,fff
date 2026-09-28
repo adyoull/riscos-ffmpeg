@@ -1,4 +1,4 @@
-!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos7
+!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos8
 ===================================================================
 
 FFmpeg converts, plays and inspects audio and video. This is FFmpeg
@@ -49,10 +49,13 @@ Convert window. It works from the top down:
        Quick to decode         simpler video that plays smoothly here
        From ... to             only part of the file (e.g. 1:30 to 2:45)
      Options that don't apply are greyed out.
-  3. Drag the file icon to a directory display to save the new file
-     there, as with any RISC OS save box. Or type a full path in the name
-     field and press Return (or click Convert). The name is filled in
-     from the source's (e.g. holiday_720/mp4).
+  3. Click Convert. The new file goes next to the original, named after
+     it (e.g. holiday_720/mp4 beside holiday/mkv); the name field shows
+     the full path. To put it somewhere else, drag the file icon to a
+     directory display, as with any RISC OS save box, or type another
+     full path and press Return. (If your machine has no icon for the
+     new file's type, the file icon shows the Filer's usual "?" icon: it
+     still drags.)
   4. A bar shows how far it has got, with how fast it's going (times real
      time) and about how long is left. Stop ends it and deletes the
      unfinished file. When it's done, Play plays the new file and Show
@@ -62,8 +65,8 @@ Convert window. It works from the top down:
 Converting takes a while on one core: expect HD video to take longer
 than it lasts (the window shows the real speed, e.g. "0.4x real time",
 and the time left). Fastest is quickest; Sound only is quick. The desktop
-carries on meanwhile: ffmpeg runs in a task window of its own. An existing file is only replaced after
-asking. Interactive help (!Help) explains every part of the window.
+carries on meanwhile: ffmpeg runs in a task window of its own. An
+existing file is only replaced after asking. Interactive help (!Help) explains every part of the window.
 
 For everything else, use the commands.
 Let the Filer see !FFmpeg (open the directory it is in), or double-click

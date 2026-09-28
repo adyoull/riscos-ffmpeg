@@ -481,9 +481,10 @@ static const char *const help[N_ICONS] = {
                "the file is a little bigger.",
     [I_FROM] = "Convert only part of the file: start from this time (h:mm:ss, m:ss or seconds). Empty: from the start.",
     [I_TO] = "Stop at this time. Empty: to the end.",
-    [I_FILE] = "Drag this to a directory display to convert the file into it.",
-    [I_NAME] = "The new file's name. Drag the icon to a directory, or type a full path and press Return.",
-    [I_CONVERT] = "Click to convert, when the name above is a full path; or drag the file icon to a directory.",
+    [I_FILE] = "Drag this to a directory display to put the new file there instead.",
+    [I_NAME] = "Where the new file goes: next to the original to start with. Edit it, or drag the icon to "
+               "another directory; Return converts.",
+    [I_CONVERT] = "Click to convert into the file named on the left.",
     [I_BAR] = "How far the conversion has got.",
     [I_STOP] = "Click to stop converting. The unfinished file is deleted.",
     [I_STATUS] = "Where the conversion has got, how fast it goes, and about how long is left.",
@@ -696,6 +697,15 @@ static int format_filetype(int format)
     return r.r[3];
 }
 
+/* Is there a sprite of this name in the Wimp's pool? (Wimp_SpriteOp 40) */
+static int wimp_sprite(const char *name)
+{
+    _kernel_swi_regs r;
+    r.r[0] = 40;
+    r.r[2] = (intptr_t)name;
+    return !swi(0x400E9 /* Wimp_SpriteOp */, &r);
+}
+
 /* Everything that shows the settings, and what can be used now */
 static void show_settings(void)
 {
@@ -705,6 +715,8 @@ static void show_settings(void)
     int video_opts = have && !busy && !sound_only && C.in.has_video;
     char leaf[256];
     snprintf(leaf, sizeof(leaf), "file_%03x", format_filetype(C.set.format));
+    if (!wimp_sprite(leaf))             /* a type with no icon: the Filer's "?" */
+        snprintf(leaf, sizeof(leaf), "file_xxx");
     if (strcmp(v_file + 1, leaf)) {
         snprintf(v_file, sizeof(v_file), "S%s", leaf);
         refresh(I_FILE);
@@ -739,18 +751,19 @@ static void show_settings(void)
     shade(I_BAR, C.state != CONV_RUNNING && C.state != CONV_DONE);
 }
 
-/* The output name from the source and the settings; once it's a full
-   path (saved before, or typed), the directory stays and only the leaf
-   changes */
+/* The output's full path, from the source and the settings: at first in
+   the source's own directory (so Convert works at once), then wherever it
+   was saved or typed. Only the leaf follows the settings. */
 static void suggest_name(void)
 {
     char leaf[200], name[256];
-    const char *dot = strrchr(C.t_name, '.');
+    const char *base = C.t_name[0] ? C.t_name : C.src;
+    const char *dot = strrchr(base, base[0] == '/' ? '/' : '.');
     if (!C.src[0])
         return;
     conv_output_leaf(leaf, sizeof(leaf), C.src, &C.set, &C.in);
     if (dot)
-        snprintf(name, sizeof(name), "%.*s.%s", (int)(dot - C.t_name), C.t_name, leaf);
+        snprintf(name, sizeof(name), "%.*s%c%s", (int)(dot - base), base, *dot, leaf);
     else
         snprintf(name, sizeof(name), "%s", leaf);
     SET(I_NAME, C.t_name, name);
@@ -766,7 +779,7 @@ void conv_init(int task, const char *ffdir)
     conv_apply_preset(&C.set, 0);
     C.set.deinterlace = 1;
     snprintf(C.t_src, sizeof(C.t_src), "Drop a video or sound file here");
-    snprintf(C.t_status, sizeof(C.t_status), "Drop a file on this window, choose what to make, then drag the icon to a directory.");
+    snprintf(C.t_status, sizeof(C.t_status), "Drop a video or sound file on this window to convert it.");
 }
 
 int conv_window(void) { return C.win; }
@@ -879,6 +892,7 @@ static void set_source(const char *file)
         return;
     }
     snprintf(C.src, sizeof(C.src), "%s", file);
+    C.t_name[0] = 0;                    /* the new file goes next to it, until saved elsewhere */
     {                                   /* its name; the line under it says what's in it */
         const char *leaf = strrchr(file, file[0] == '/' ? '/' : '.');
         SET(I_SRC, C.t_src, leaf ? leaf + 1 : file);
@@ -914,7 +928,7 @@ static void probed(void)
         if (!C.in.has_video && !conv_sound_only(C.set.format))
             conv_apply_preset(&C.set, 3);            /* sound only: MP3 */
         suggest_name();
-        status("Choose what to make, then drag the file icon to a directory.");
+        status("Choose what to make, then click Convert: the new file goes next to the original.");
     }
     show_settings();
 }
@@ -1201,8 +1215,8 @@ void conv_drag_end(void)
 static void convert_named(void)
 {
     if (!strchr(C.t_name, '.') && !strchr(C.t_name, ':')) {
-        report("To save, drag the file icon to a directory display (or type a full path, "
-               "e.g. SDFS::Pi.$.Films.new/mp4).", 1 | 16);
+        report("The name needs a directory: drag the file icon to a directory display, "
+               "or type a full path (e.g. SDFS::Pi.$.Films.new/mp4).", 1 | 16);
         return;
     }
     start(C.t_name);

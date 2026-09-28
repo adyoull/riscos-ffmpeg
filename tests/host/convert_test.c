@@ -118,7 +118,7 @@ static int script(int *b)
     case 5: msg(b, 0x808C3, 0x999, 20); return 17;                               /* TaskWindow_Morio */
     case 6:
         CHECK(!strcmp(conv_test_text(0), "H.264, 1920x1080, 25 fps, interlaced; AC-3 5.1; 2:00 long"), "info: '%s'", conv_test_text(0));
-        CHECK(!strcmp(conv_test_text(2), "trailer_720/mp4") && !strcmp(conv_test_text(3), "For playing here"),
+        CHECK(!strcmp(conv_test_text(2), "SDFS::Pi.$.Films.trailer_720/mp4") && !strcmp(conv_test_text(3), "For playing here"),
               "name '%s', preset '%s'", conv_test_text(2), conv_test_text(3));
         CHECK(!shaded(I_CONVERT) && !shaded(I_SIZE) && is_selected(I_DEINT) && is_selected(I_EASY) && is_selected(I_SOUND) &&
               shaded(I_STOP) && shaded(I_PLAY), "shading with a video");
@@ -138,13 +138,14 @@ static int script(int *b)
         b[0] = 4; b[1] = -1; return 9;                                           /* 480 lines */
     case 8:
         CHECK(!strcmp(conv_test_text(4), "480 lines") && !strcmp(conv_test_text(3), "Custom") &&
-              !strcmp(conv_test_text(2), "trailer_480/mp4"), "after 480: size '%s', preset '%s', name '%s'",
+              !strcmp(conv_test_text(2), "SDFS::Pi.$.Films.trailer_480/mp4"), "after 480: size '%s', preset '%s', name '%s'",
               conv_test_text(4), conv_test_text(3), conv_test_text(2));
+        strcpy(conv_test_buffer(0), "trailer_480/mp4");                          /* the user types a bare name */
         strcpy(conv_test_buffer(1), "0:10");                                     /* trim, as typed */
         strcpy(conv_test_buffer(2), "1:40");
         memset(b, 0, 28); b[0] = WINH; b[1] = I_NAME; b[6] = 13; return 8;      /* Return: not a full path */
     case 9:
-        CHECK(nreports == 1 && strstr(reported[0], "drag the file icon to a directory"), "refused name: %s", reported[0]);
+        CHECK(nreports == 1 && strstr(reported[0], "needs a directory"), "refused name: %s", reported[0]);
         CHECK(nstarted == 1, "started anyway");
         click(b, I_FILE, 64); return 6;                                          /* drag the file icon */
     case 10:
@@ -208,7 +209,8 @@ static int script(int *b)
     case 27: b[0] = 2; b[1] = -1; return 9;                                      /* MP3 */
     case 28:
         CHECK(!strcmp(conv_test_text(5), "MP3 sound") && shaded(I_SIZE) && shaded(I_DEINT) && shaded(I_SOUND) && is_selected(I_SOUND) &&
-              !strcmp(conv_test_text(6), "Sfile_1ad"), "MP3: format '%s', shading, icon '%s'", conv_test_text(5), conv_test_text(6));
+              !strcmp(conv_test_text(6), "Sfile_xxx"), "MP3: format '%s', shading, icon '%s' (no file_1ad sprite: the unknown one)",
+              conv_test_text(5), conv_test_text(6));
         CHECK(!strcmp(conv_test_text(2), "SDFS::Pi.$.Out.trailer/mp3"), "MP3 name keeps the directory: '%s'", conv_test_text(2));
         click(b, I_CONVERT, 4); return 6;                                        /* converting, then quit */
     case 29: msg(b, 0x808C2, 0x995, 24); b[5] = 0x434F4E56; return 17;
@@ -296,6 +298,9 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         return NULL;
     }
     case 0x42: out->r[0] = fake_cs; return NULL;                                 /* OS_ReadMonotonicTime */
+    case 0x400E9:                                                                /* Wimp_SpriteOp 40: only these exist */
+        return in->r[0] == 40 && (!strcmp((const char *)(intptr_t)in->r[2], "file_bf8") ||
+                                  !strcmp((const char *)(intptr_t)in->r[2], "file_xxx")) ? NULL : &err;
     case 0x35: out->r[2] = in->r[1] == 11 ? 1919 : in->r[1] == 12 ? 1079 : 1; return NULL;
     case 0x400DD: return NULL;                                                   /* CloseDown */
     case 0x400C7: out->r[0] = script(b); return NULL;                            /* Wimp_Poll */
