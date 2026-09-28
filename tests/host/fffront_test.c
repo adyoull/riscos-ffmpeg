@@ -16,6 +16,7 @@ static const char *canon = "SDFS::Pi.$.Apps.!FFmpeg";   /* what OS_FSControl 37 
 static int fails, step, icon_made, acks, reports, closed, windows, opened;
 static char started[4][1024]; static int nstarted;
 static char icon_name[13]; static int icon_flags;
+static int proginfo_made, proginfo_icons, info_sub = -99; static char proginfo_labels[64];
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
 
 static void dataload(int *b, const char *name, int type)
@@ -53,8 +54,21 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     }
     case 0x400DF: reports++; return NULL;                          /* Wimp_ReportError */
     case 0x400CF: { int *b = (int *)(intptr_t)in->r[1]; b[2] = 4; return NULL; }  /* pointer: Select */
-    case 0x400D4: return NULL;                                     /* Wimp_CreateMenu */
-    case 0x400C1: windows++; out->r[0] = 0x6000; return NULL;      /* Wimp_CreateWindow (Convert) */
+    case 0x400D4: {                                                /* Wimp_CreateMenu */
+        int *b = (int *)(intptr_t)in->r[1];
+        if (b && !strncmp((const char *)&b[7 + 3], "Info", 12)) info_sub = b[7 + 1];
+        return NULL;
+    }
+    case 0x400C1: {                                                /* Wimp_CreateWindow */
+        int *b = (int *)(intptr_t)in->r[1];
+        if (b[7] == (int)0x84000012) {                             /* About this program */
+            proginfo_made++; proginfo_icons = b[21];
+            snprintf(proginfo_labels, sizeof(proginfo_labels), "%.12s|%.12s|%.12s|%.12s",
+                     (char *)(b + 22 + 5), (char *)(b + 22 + 16 + 5), (char *)(b + 22 + 32 + 5), (char *)(b + 22 + 48 + 5));
+            out->r[0] = 0x7000; return NULL;
+        }
+        windows++; out->r[0] = 0x6000; return NULL;                /* the Convert window */
+    }
     case 0x400C5: opened++; return NULL;                           /* Wimp_OpenWindow */
     case 0x400CB: case 0x400CD: case 0x35: return NULL;
     case 0x400DD: closed++; return NULL;                           /* Wimp_CloseDown */
@@ -93,9 +107,13 @@ int main(void)
     CHECK(reports == 1, "%d reports (want 1: the directory)", reports);
     CHECK(windows == 1 && opened == 1, "Select on the icon: %d windows made, %d opened", windows, opened);
     CHECK(closed == 1, "Wimp_CloseDown %d times", closed);
+    CHECK(proginfo_made == 1 && proginfo_icons == 8 && !strcmp(proginfo_labels, "Name:|Purpose:|Author:|Version:"),
+          "Info window: made %d, %d icons, labels %s", proginfo_made, proginfo_icons, proginfo_labels);
+    CHECK(info_sub == 0x7000, "icon bar menu: Info's submenu is %x (want the Info window)", info_sub);
     CHECK(fffront_command(cmd, sizeof(cmd), "D", "f", 0, NULL) == 0 &&
           !strcmp(cmd, "Obey D.Task ffplay -nostats -hide_banner -loglevel quiet f"), "no scrap: %s", cmd);
     /* OS_FSControl fails: the program's own directory from OS_GetEnv */
+    proginfo_made = 0;
     canon = NULL; step = 0; nstarted = 0; closed = 0; acks = 0; reports = 0; icon_made = 0; windows = opened = 0;
     CHECK(fffront_main() == 0 && nstarted == 2 &&
           !strncmp(started[0], "Obey SDFS::Pi.$.Other.!FFmpeg.Task ffplay ", 42), "OS_GetEnv fallback: %s", started[0]);

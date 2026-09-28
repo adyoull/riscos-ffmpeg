@@ -38,6 +38,8 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/ffegl_test
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/ffegl_test.o" $LIBS 2>/dev/null
 
 bad=0
+echo "== versions agree (common/version.h, Makefile, package.sh, build-ffmpeg.sh, !Help)"
+"$TOP/tools/check-versions.sh" || bad=1
 for clip in h264_aac_640_360.mp4 h264_aac_322_182.mp4 vp9_640_360.webm hevc_322_182.mkv; do
   echo "== egl_outdev_test $clip"
   "$TOP/tests/qemu/aligntrap.sh" "$O/egl_outdev_test" "$SAMPLES/$clip" 2>&1 | grep -v "swscaler\|egl @" || bad=1

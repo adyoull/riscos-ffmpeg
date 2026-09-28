@@ -3,6 +3,18 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## 5.1.10-riscos9 and Reel 0.1.14 (2026-09-28): the standard Info window
+
+- **Info on the icon bar menu is the usual RISC OS "About this program"
+  window** in !FFmpeg, !Reel and !ReelEGL: a submenu showing Name,
+  Purpose, Author (Andrew Youll) and Version with its date. Reel's Info
+  used to open the media info window while a video was playing; that
+  stays on the window's menu (and the I key). The window is built in code
+  (`common/proginfo.h`, shared by all three).
+- **One place for the version numbers:** `common/version.h`.
+  `tools/check-versions.sh` (run by the host tests) checks that the
+  Makefile, package.sh, build-ffmpeg.sh and the !Help headers agree with it.
+
 ## 5.1.10-riscos8 (2026-09-28): Convert saves next to the original
 
 - **Convert works straight away.** The new file goes next to the

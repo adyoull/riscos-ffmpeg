@@ -20,6 +20,8 @@
 #include <string.h>
 #include <kernel.h>
 #include "convert.h"
+#include "../common/version.h"
+#include "../common/proginfo.h"   /* Info: the standard About this program window */
 
 #define OS_WriteC                0x00
 #define Wimp_Initialise          0x400C0
@@ -41,11 +43,7 @@
 #define TASK_WORD 0x4B534154          /* "TASK" */
 #define APP_NAME  "FFmpeg"
 #define TASK_NAME "FFmpeg player"      /* ffplay's own tasks are called "FFmpeg" (SDL uses the app name) */
-#ifndef FFFRONT_VERSION
-#define FFFRONT_VERSION "5.1.10"
-#endif
-
-static int task, icon, fullscreen;
+static int task, icon, fullscreen, proginfo = -1;
 static char ffdir[256];
 
 static _kernel_oserror *swi(int n, _kernel_swi_regs *r) { return _kernel_swi(n, r, r); }
@@ -141,7 +139,7 @@ static void menu_build(void)
     menu.gap = 0;
     for (int i = 0; i < 5; i++) {
         menu.item[i].flags = (i == 2 && fullscreen ? 1 : 0) | (i == 2 ? 2 : 0) | (i == 4 ? 0x80 : 0);
-        menu.item[i].sub = -1;
+        menu.item[i].sub = i == 0 ? proginfo : -1;   /* Info: About this program (-1: none) */
         menu.item[i].iflags = 0x07000021;     /* text, filled, black on white */
         strncpy(menu.item[i].text, names[i], 12);
     }
@@ -180,9 +178,7 @@ static void menu_select(const int *sel)
     int block[5];
     _kernel_swi_regs r;
     switch (sel[0]) {
-    case 0:
-        report("FFmpeg " FFFRONT_VERSION " for RISC OS: drop a video or sound file on this icon "
-               "to play it with ffplay; click the icon to convert files. riscos-ffmpeg, GPL v2 or later.", 1 | 16);
+    case 0:                                   /* Info: its window is the submenu */
         break;
     case 1:
         conv_open();
@@ -314,6 +310,8 @@ int fffront_main(void)
         return 0;
     }
     iconbar_icon();
+    proginfo = proginfo_create("FFmpeg", "Converts and plays video", APP_AUTHOR,
+                               FFMPEG_APP_VERSION " (" FFMPEG_APP_DATE ")");
     conv_init(task, ffdir);
 
     for (;;) {

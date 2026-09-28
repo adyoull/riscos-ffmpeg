@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../common/version.h"
 #include <unistd.h>
 #include <math.h>
 #include "kernel.h"
@@ -62,6 +63,7 @@ static int fails, step;
 #define FULL 0x200
 #define INFO 0x300                    /* the media info window */
 #define MINI 0x400                    /* the mini player */
+#define PROGINFO 0x500                /* About this program (Info on the icon bar menu) */
 #define SCR_W 1920                    /* pixels; eig 1 -> 3840 x 2160 OS units */
 #define SCR_H 1080
 
@@ -82,6 +84,8 @@ static char choices_dir[64];
 enum { M_INFO, M_FULL, M_MINI, M_ONTOP, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_CLOSE };
 static char title[64];
 static int *title_ptr;
+static int proginfo_made, proginfo_icons, bar_info_sub = -99;
+static char proginfo_seen[512];     /* "Name:=Reel|Purpose:=..|" from the window's icons */
 
 static int *st(int w) { return state[w == FULL ? 1 : w == INFO ? 2 : w == MINI ? 3 : 0]; }
 
@@ -125,8 +129,10 @@ static int script(int *b)
 {
     /* each case returns the event code, having filled b */
     switch (step++) {
-    case 0:  message(b, 3, -2, 1, 0xBF8, clip1); return 18;           /* drop on the icon bar */
-    case 1:  nulls = 60; /* fallthrough */
+    case 0:  click(b, 1000, 40, 2, -2, 1); return 6;                   /* Menu on the icon bar icon */
+    case 1:  b[0] = 0; b[1] = -1; return 9;                           /* Info (its window is the submenu) */
+    case 2:  message(b, 3, -2, 1, 0xBF8, clip1); return 18;           /* drop on the icon bar */
+    case 3:  nulls = 60; /* fallthrough */
     default: break;
     }
     return -1;
@@ -546,6 +552,19 @@ static void final_checks(void)
     int w, h, rows;
     (void)w; (void)h; (void)rows;
     CHECK(created == 1 && nicons == 9, "window: created %d, %d icons", created, nicons);
+    {   /* Info on the icon bar menu: the standard About this program window, as its submenu */
+#ifdef REEL_EGL
+        const char *want = "Name:=ReelEGL|Purpose:=Video player, EGL (FFmpeg 5.1.10)|Author:=Andrew Youll|"
+                           "Version:=" REEL_VERSION " (" REEL_DATE ")|";
+#else
+        const char *want = "Name:=Reel|Purpose:=Video player (FFmpeg 5.1.10)|Author:=Andrew Youll|"
+                           "Version:=" REEL_VERSION " (" REEL_DATE ")|";
+#endif
+        CHECK(proginfo_made == 1 && proginfo_icons == 8, "Info window: made %d, %d icons", proginfo_made, proginfo_icons);
+        CHECK(!strcmp(proginfo_seen, want), "Info window says %s", proginfo_seen);
+        CHECK(bar_info_sub == PROGINFO, "icon bar menu: Info's submenu is %x (want the Info window)", bar_info_sub);
+        printf("  Info: %s\n", proginfo_seen);
+    }
     CHECK(asks >= 1, "never asked to carry on");
     CHECK(idle_polls > 20, "Wimp_PollIdle used only %d times while playing", idle_polls);
     printf("  %d Wimp_PollIdle calls\n", idle_polls);
@@ -633,6 +652,18 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         return NULL;
     case 0x400C2: out->r[0] = 1; return NULL;                             /* CreateIcon */
     case 0x400C1:                                                         /* CreateWindow */
+        if (b[7] == (int)0x84000012) {                                    /* About this program */
+            proginfo_made++; proginfo_icons = b[21];
+            proginfo_seen[0] = 0;
+            for (int i = 0; i + 1 < b[21]; i += 2) {
+                const int *label = b + 22 + 8 * i, *value = label + 8;
+                char row[128];
+                snprintf(row, sizeof(row), "%.12s=%s|", (const char *)(label + 5),
+                         (value[4] & 0x100) ? (const char *)(intptr_t)value[5] : "?");
+                strncat(proginfo_seen, row, sizeof(proginfo_seen) - strlen(proginfo_seen) - 1);
+            }
+            out->r[0] = PROGINFO; return NULL;
+        }
         if (b[7] == (int)0x80000002) { mini_created++; mini_nicons = b[21]; out->r[0] = MINI; return NULL; }
         if ((b[7] & 0x80000040) == 0x80000040 && !(b[7] & 0x04000000)) { out->r[0] = FULL; return NULL; }
         if (b[7] & 0x10000000) { info_created++; out->r[0] = INFO; return NULL; }      /* v scroll: info */
@@ -671,7 +702,11 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
             info_texts++;
         }
         return NULL;
-    case 0x400D1: case 0x400CD: case 0x400DC: case 0x400D4: return NULL;
+    case 0x400D4:                                                         /* CreateMenu */
+        if (b && b[7 + 3] && !strcmp((const char *)(intptr_t)b[7 + 3], "Info"))   /* the icon bar menu */
+            bar_info_sub = b[7 + 1];
+        return NULL;
+    case 0x400D1: case 0x400CD: case 0x400DC: return NULL;
     case 0x400D2: caret_win = in->r[0]; return NULL;                      /* SetCaretPosition */
     case 0x400CF: b[2] = 4; return NULL;                                  /* GetPointerInfo: Select */
     case 0x400DF:                                                         /* ReportError */

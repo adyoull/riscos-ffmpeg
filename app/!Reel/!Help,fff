@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.13
+!Reel - a video player for RISC OS                        0.1.14
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -73,7 +73,8 @@ Menu on the window:
                       *Set Reel$NoVsync 1 starts with it off
   Close               close the video
 
-Menu on the icon: Info, Loop, Log, Quit.
+Menu on the icon: Info (the program's name, author and version), Loop,
+Log, Quit. The video's own details are Media info, on the window's menu.
 
 Mini player
 -----------

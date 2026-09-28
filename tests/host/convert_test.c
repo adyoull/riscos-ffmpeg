@@ -241,6 +241,7 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x42681: out->r[0] = -1; return NULL;
     case 0x400C2: out->r[0] = 1; return NULL;                                    /* the icon bar icon */
     case 0x400C1:                                                                /* Wimp_CreateWindow */
+        if (b[7] == (int)0x84000012) { out->r[0] = WINH + 0x100; return NULL; } /* Info: About this program (fffront_test checks it) */
         win_made++;
         nicons = b[21];
         memcpy(icons, b + 22, (size_t)(nicons < 64 ? nicons : 64) * 32);

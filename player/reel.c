@@ -40,6 +40,9 @@
  * Reel$Log (ReelEGL$Log) names another file, or "off". "Log" on the icon
  * bar menu opens it.
  *
+ * Info on the icon bar menu: the standard About this program window (name,
+ * purpose, author, version from common/version.h), as a submenu.
+ *
  * Part of riscos-ffmpeg. GPL v2 or later.
  */
 #include <stdarg.h>
@@ -49,6 +52,8 @@
 #include <string.h>
 #include <kernel.h>
 #include "reelcore.h"
+#include "../common/version.h"
+#include "../common/proginfo.h"   /* Info: the standard About this program window */
 
 /* Big heap in a dynamic area (the default would share the WimpSlot) */
 #ifdef REEL_EGL
@@ -108,9 +113,11 @@ int __dynamic_da_max_size = 512 << 20;
 #ifdef REEL_EGL
 #define APP     "ReelEGL"
 #define ICON    "!reelegl"
+#define PURPOSE "Video player, EGL"
 #else
 #define APP     "Reel"
 #define ICON    "!reel"
+#define PURPOSE "Video player"
 #endif
 #define CH      64          /* height of the controls row, OS units */
 #define GAP     4
@@ -197,6 +204,7 @@ static struct {
     int log_cs, log_nulls, log_frames;  /* for the once-a-second log line */
     unsigned log_slept;
     int info, info_open;                /* the media info window */
+    int proginfo;                       /* Info on the icon bar menu: About this program */
     char info_title[80];
     unsigned st_nulls, draw_n;          /* for its stats: null events, pictures drawn ... */
     unsigned draw_cs;                   /* ... and the time drawing them took */
@@ -1824,6 +1832,7 @@ static void menu_open(int bar, int x, int y)
     menu_start(&menu, APP);
     if (bar) {
         menu_add(&menu, 0, &n, "Info", 0, NULL, 0);
+        menu.item[0].sub = S.proginfo;  /* the About this program window (-1: none) */
         menu_add(&menu, 0, &n, "Loop", S.loop, NULL, 0);
         menu_add(&menu, 0, &n, "Log", 0, NULL, 0);
         menu_add(&menu, 0, &n, "Quit", 0, NULL, 0);
@@ -2084,37 +2093,13 @@ static void quit(void)
     exit(0);
 }
 
-static void show_info(void)
-{
-    char info[256], msg[400], dur[16];
-    if (!S.v) {
-#ifdef REEL_EGL
-        report("ReelEGL: Reel drawing through riscos-mesa's EGL (a work area surface in the window, "
-               "the screen surface full screen). riscos-ffmpeg (FFmpeg 5.1), GPL v2 or later.");
-#else
-        report("Reel plays videos: drop one on its icon bar icon, or double-click it in the Filer "
-               "while Reel is loaded. riscos-ffmpeg (FFmpeg 5.1), GPL v2 or later.");
-#endif
-        return;
-    }
-    if (S.v) {                          /* the video's details: the media info window */
-        info_open();
-        return;
-    }
-    reelcore_info(S.v, info, sizeof(info));
-    format_time(dur, sizeof(dur), reelcore_duration(S.v));
-    snprintf(msg, sizeof(msg), "%s: %s; %s long; %u late frames skipped so far.",
-             leaf(S.file), info, dur, reelcore_dropped_frames(S.v));
-    report(msg);
-}
-
 static void menu_select(const int *sel)
 {
     int b[5];
     _kernel_swi_regs r;
     if (menu_is_bar) {
         switch (sel[0]) {
-        case 0: show_info(); break;
+        case 0: break;                  /* Info: its window is the submenu */
         case 1: S.loop = !S.loop; break;
         case 2: log_show(); break;
         case 3: quit();
@@ -2453,6 +2438,8 @@ int reel_main(int argc, char **argv)
     choices_load();
     read_screen();
     iconbar_icon();
+    S.proginfo = proginfo_create(APP, PURPOSE " (FFmpeg 5.1.10)", APP_AUTHOR,
+                                 REEL_VERSION " (" REEL_DATE ")");
     if (argc > 1)
         list_arrived(argv[1]);
 
