@@ -84,6 +84,15 @@ int main(int argc, char **argv)
         reelcore_stats(v, &st);
         CHECK(st.fast == 1 && n > 15, "fast decoding: %d pictures, fast %d", n, st.fast);
     }
+    reelcore_set_fast(v, REELCORE_FAST_LIGHT);       /* the mini player's: non-reference pictures only */
+    {
+        int n = play(v, 1.0);
+        CHECK(reelcore_fast(v) == REELCORE_FAST_LIGHT && n > 15, "light fast decoding: %d pictures, fast %d",
+              n, reelcore_fast(v));
+    }
+    reelcore_set_fast(v, 7);                         /* not a mode: off */
+    CHECK(!reelcore_fast(v), "fast decoding mode 7 isn't off");
+    reelcore_set_fast(v, 1);
     reelcore_set_fast(v, 0);
     CHECK(!reelcore_fast(v), "fast decoding still on");
 

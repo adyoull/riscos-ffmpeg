@@ -10,10 +10,15 @@
  * player is another, small one above the icon bar (Play/Pause, the position
  * bar, Normal), optionally kept on top while playing.
  *
- * Playback options (window menu): picture size, speed (atempo in
- * reelcore), sound track, A-B repeat, loop, fast decoding, vsync full
- * screen. The volume, keep on top, the mini player's place and where each
- * file was stopped are kept in Choices:Reel (ReelEGL).
+ * Playback options (window menu): window size, picture size, speed
+ * (atempo in reelcore), sound track, A-B repeat, loop, fast decoding,
+ * vsync full screen. Both windows have a resize grip in the bottom right
+ * corner (the Wimp's own size drag, Wimp_DragBox type 2; the windows have
+ * no scroll bars, so no size icon); the mini player keeps the video's
+ * shape. The mini player decodes with REELCORE_FAST_LIGHT (no deblocking
+ * of pictures nothing is predicted from). The volume, keep on top, the
+ * mini player's place and size and where each file was stopped are kept
+ * in Choices:Reel (ReelEGL).
  *
  * reelcore (reelcore/) is the player core: it reads, decodes, plays the
  * sound (SharedSoundBuffer, the clock) and says when a picture is due.
@@ -121,41 +126,46 @@ int __dynamic_da_max_size = 512 << 20;
 #endif
 #define CH      64          /* height of the controls row, OS units */
 #define GAP     4
-#define MIN_W   1096        /* narrowest window: the position bar still has room */
+#define MIN_W   1132        /* narrowest window: the position bar still has room */
 #define W_PLAY  104         /* control widths, OS units */
 #define W_SKIP  96
 #define W_TIME  264         /* room for "12:34 / 1:45:00" or "1:23 / 3:45 1.5x AB" */
 #define W_FULL  88
 #define W_VOL   128         /* the volume bar */
+#define W_GRIP  32          /* the resize grip, bottom right (both windows) */
+#define RIGHT(vw) ((vw) - GAP - W_GRIP - GAP)   /* where the controls end: the grip is after them */
 /* the mini player: a small window with no furniture above the icon bar */
-#define MINI_W  640         /* its width, OS units (320 pixels on most screens) */
+#define MINI_W  640         /* its width at first, OS units (320 pixels on most screens) */
+#define MINI_MIN_W 480      /* narrowest when resized (the grip) */
 #define W_NORM  120         /* its "Normal" button: back to the full window */
 #define MINI_EDGE 32        /* its default gap from the screen's right edge */
 #define MINI_LIFT 16        /* ... and above the icon bar */
 
 static int mini;            /* the mini player is showing (the controls lay out for it) */
 
+static void apply_fast(void);
+
 /* The position bar's track, in work area x, for the window's width */
 static void track_x(int vw, int *x0, int *x1)
 {
     if (mini) {                         /* Play, the bar, Normal */
         *x0 = GAP + W_PLAY + GAP * 2;
-        *x1 = vw - GAP - W_NORM - GAP * 2;
+        *x1 = RIGHT(vw) - W_NORM - GAP * 2;
     } else {
         *x0 = GAP + W_PLAY + GAP + W_SKIP + GAP + W_SKIP + GAP * 2;
-        *x1 = vw - GAP - W_FULL - GAP - W_VOL - GAP - W_TIME - GAP;
+        *x1 = RIGHT(vw) - W_FULL - GAP - W_VOL - GAP - W_TIME - GAP;
     }
     if (*x1 < *x0 + 16)
         *x1 = *x0 + 16;
 }
 
-enum { I_PLAY, I_BACK, I_FWD, I_TRACK, I_FILL, I_TIME, I_FULL, I_VOL, I_VOLFILL, N_ICONS };
+enum { I_PLAY, I_BACK, I_FWD, I_TRACK, I_FILL, I_TIME, I_FULL, I_VOL, I_VOLFILL, I_GRIP, N_ICONS };
 #define I_NORMAL N_ICONS            /* the mini player's own extra icon */
 
 /* the volume bar, in work area x, for the window's width */
 static void vol_x(int vw, int *x0, int *x1)
 {
-    *x1 = vw - GAP - W_FULL - GAP;
+    *x1 = RIGHT(vw) - W_FULL - GAP;
     *x0 = *x1 - W_VOL;
 }
 
@@ -163,6 +173,10 @@ static void vol_x(int vw, int *x0, int *x1)
 enum { PIC_FIT, PIC_FILL, PIC_ORIGINAL, PIC_STRETCH, N_PIC };
 static const char *const pic_names[N_PIC] = { "Fit", "Fill (crop)", "Original size", "Stretch" };
 static const int pic_flags_of[N_PIC] = { 0, REELCORE_FILL, REELCORE_ORIGINAL, REELCORE_STRETCH };
+
+/* Window sizes (window menu, Window size): the video's size times these, or as big as fits */
+enum { SIZE_HALF, SIZE_ACTUAL, SIZE_DOUBLE, SIZE_SCREEN, N_SIZE };
+static const char *const size_names[N_SIZE] = { "Half (50%)", "Actual size (100%)", "Double (200%)", "Fit the screen" };
 
 /* Deinterlacing (window menu, Deinterlace): in the menu's order */
 static const char *const deint_names[3] = { "Auto", "On", "Off" };
@@ -185,6 +199,7 @@ static struct {
     int main_st[9];                     /* where the normal window was, while the mini player shows */
     int ontop;                          /* the mini player keeps itself on top while playing */
     int ontop_cs;                       /* when it last looked */
+    int mini_w;                         /* the mini player's width, OS units (the grip changes it) */
     int mini_right, mini_bottom;        /* its place: gap from the screen's right edge; bottom
                                            (-1 = just above the icon bar) */
     int fullscreen;                     /* showing full screen */
@@ -673,6 +688,8 @@ static void icon_def(icon_t *ic, int flags, char *text, const char *valid, int l
 #define IF_FILLED 0x20
 #define IF_INDIR  0x100
 #define IF_CLICK  (3 << 12)
+#define IF_SPRITE 0x2
+#define IF_DRAG   (6 << 12)             /* click/drag: a drag reports buttons x16 */
 #define IF_COL(fg, bg) (((fg) << 24) | ((bg) << 28))
 
 static char back_text[] = "\x8b 10s", fwd_text[] = "10s \x8a", full_text[] = "Full", normal_text[] = "Normal";
@@ -701,6 +718,10 @@ static void icons_def(icon_t *icon)
              empty_text, (const char *)-1, 1);
     icon_def(&icon[I_FULL], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
              full_text, "R5,3", sizeof(full_text));
+    /* the resize grip: the sprite reelgrip (in !Sprites), click or drag to resize */
+    memset(&icon[I_GRIP], 0, sizeof(icon[I_GRIP]));
+    icon[I_GRIP].flags = IF_SPRITE | IF_HCENT | IF_VCENT | IF_DRAG | IF_COL(7, 1);
+    memcpy(icon[I_GRIP].d.name, "reelgrip", 8);
 }
 
 static int create_window(void)
@@ -767,6 +788,7 @@ static int create_mini_window(void)
     w.ext.x0 = 0; w.ext.y0 = -8192; w.ext.x1 = 8192; w.ext.y1 = 0;
     w.wbutton = 10 << 12;               /* click/drag/double: drag moves it, double-click: normal window */
     w.sprites = 1;
+    w.minw = MINI_MIN_W; w.minh = CH + 80;
     w.nicons = N_ICONS + 1;
     icons_def(w.icon);
     icon_def(&w.icon[I_NORMAL], IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_CLICK | IF_COL(7, 1),
@@ -840,7 +862,8 @@ static void layout(int vw, int vh)
         resize_icon(I_TRACK, track_x0, y0 + 12, track_x1, y1 - 12);
         S.fill_x1 = track_x0 + 4;
         resize_icon(I_FILL, track_x0 + 4, y0 + 16, S.fill_x1, y1 - 16);
-        resize_icon(I_NORMAL, vw - GAP - W_NORM, y0, vw - GAP, y1);
+        resize_icon(I_NORMAL, RIGHT(vw) - W_NORM, y0, RIGHT(vw), y1);
+        resize_icon(I_GRIP, vw - W_GRIP, -vh, vw, -vh + W_GRIP);   /* the very corner */
         if (!S.fullscreen)
             pic_make(vw >> S.xeig, (vh - CH) >> S.yeig, 0);
         return;
@@ -860,7 +883,8 @@ static void layout(int vw, int vh)
         S.vol_fill_x1 = vx0 + 4 + (int)((W_VOL - 8) * S.vol);
         resize_icon(I_VOLFILL, vx0 + 4, y0 + 16, S.vol_fill_x1, y1 - 16);
     }
-    resize_icon(I_FULL, vw - GAP - W_FULL, y0, vw - GAP, y1);
+    resize_icon(I_FULL, RIGHT(vw) - W_FULL, y0, RIGHT(vw), y1);
+    resize_icon(I_GRIP, vw - W_GRIP, -vh, vw, -vh + W_GRIP);   /* the very corner */
     if (!S.fullscreen)
         pic_make(vw >> S.xeig, (vh - CH) >> S.yeig, 0);
 }
@@ -1097,6 +1121,7 @@ static void close_video(void)
     if (mini) {                         /* the next video opens in the normal window */
         mini = 0;
         S.win = S.main_win;
+        apply_fast();
         choices_save();
     }
     info_close();
@@ -1152,8 +1177,8 @@ static void choices_save(void)
     FILE *f = choices_open("Choices", 1);
     if (!f)
         return;
-    fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_right %d\nmini_bottom %d\ndeinterlace %s\n", APP, S.vol,
-            S.ontop, S.mini_right, S.mini_bottom, deint_names[S.deint_i]);
+    fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_width %d\nmini_right %d\nmini_bottom %d\ndeinterlace %s\n",
+            APP, S.vol, S.ontop, S.mini_w, S.mini_right, S.mini_bottom, deint_names[S.deint_i]);
     fclose(f);
 }
 
@@ -1179,6 +1204,8 @@ static void choices_load(void)
                 S.vol = vol;
             else if (sscanf(line, "keep_on_top %d", &n) == 1)
                 S.ontop = n != 0;
+            else if (sscanf(line, "mini_width %d", &n) == 1 && n >= MINI_MIN_W && n <= 4096)
+                S.mini_w = n;
             else if (sscanf(line, "mini_right %d", &n) == 1 && n >= 0)
                 S.mini_right = n;
             else if (sscanf(line, "mini_bottom %d", &n) == 1 && n >= -1)
@@ -1264,7 +1291,7 @@ static int resume_ask(double pos)
 static void options_apply(void)
 {
     reelcore_set_volume(S.v, S.vol * S.vol);
-    reelcore_set_fast(S.v, S.fast);
+    apply_fast();
     reelcore_set_deinterlace(S.v, deint_modes[S.deint_i]);
     if (S.speed_i != 2)
         reelcore_set_speed(S.v, speeds[S.speed_i]);
@@ -1517,8 +1544,10 @@ static void info_stats(void)
              st.skip_spells, st.skip_spells == 1 ? "" : "s");
     if (dec || shown) {
         unsigned conv = shown ? shown : dec;
-        snprintf(r[6].value, sizeof(r[6].value), "%.1f ms a picture, to %dx%d (swscale)",
-                 (st.convert_time - info_prev.convert_time) * 1000 / conv, st.convert_w, st.convert_h);
+        snprintf(r[6].value, sizeof(r[6].value), "%.1f ms a picture, to %dx%d (%sswscale)",
+                 (st.convert_time - info_prev.convert_time) * 1000 / conv, st.convert_w, st.convert_h,
+                 st.halvings == 1 ? "halved, then " : st.halvings == 2 ? "halved twice, then " :
+                 st.halvings > 2 ? "halved 3 times, then " : "");
     }
     {
         unsigned dn = st.deinterlaced - info_prev.deinterlaced;
@@ -1569,7 +1598,8 @@ static void info_stats(void)
         }
         snprintf(r[13].value, sizeof(r[13].value), "%s speed, picture %s%s; volume %.0f%%; sound track %d of %d; "
                  "playlist %d of %d%s%s",
-                 speed_names[S.speed_i], pic_names[S.pic_mode], st.fast ? ", fast decode" : "", S.vol * 100,
+                 speed_names[S.speed_i], pic_names[S.pic_mode], st.fast == REELCORE_FAST_ON ? ", fast decode" :
+                 st.fast == REELCORE_FAST_LIGHT ? ", light fast decode (mini player)" : "", S.vol * 100,
                  st.audio_track + 1, st.audio_tracks, S.list_n ? S.list_i + 1 : 0, S.list_n, ab,
                  S.vsync ? "; vsync" : "");
     }
@@ -1782,13 +1812,13 @@ typedef struct {
     int width, height, gap;
     item_t item[MENU_MAX];
 } menu_t;
-static menu_t menu, m_pic, m_speed, m_track, m_list, m_deint;
-static char menu_text[6][MENU_MAX][72];
+static menu_t menu, m_pic, m_speed, m_track, m_list, m_deint, m_size;
+static char menu_text[7][MENU_MAX][72];
 static int menu_is_bar;                 /* the open menu: 1 icon bar, 0 window */
 static int menu_x, menu_y;
 
 /* The window menu */
-enum { WM_INFO, WM_FULL, WM_MINI, WM_ONTOP, WM_PIC, WM_DEINT, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_CLOSE, WM_N };
+enum { WM_INFO, WM_FULL, WM_MINI, WM_ONTOP, WM_SIZE, WM_PIC, WM_DEINT, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_CLOSE, WM_N };
 
 static void menu_start(menu_t *m, const char *title)
 {
@@ -1840,6 +1870,11 @@ static void menu_open(int bar, int x, int y)
         x -= 64;
     } else {
         int k = 0, tracks = S.v ? reelcore_audio_tracks(S.v) : 0;
+        menu_start(&m_size, "Window size");
+        k = 0;
+        for (int i = 0; i < N_SIZE; i++)
+            menu_add(&m_size, 6, &k, size_names[i], 0, NULL, 0);
+        menu_end(&m_size, k);
         menu_start(&m_pic, "Picture");
         for (int i = 0; i < N_PIC; i++)
             menu_add(&m_pic, 1, &k, pic_names[i], S.pic_mode == i, NULL, 0);
@@ -1876,6 +1911,7 @@ static void menu_open(int bar, int x, int y)
         menu_add(&menu, 0, &n, "Full screen", S.fullscreen, NULL, 0);
         menu_add(&menu, 0, &n, "Mini player", mini, NULL, !S.v);
         menu_add(&menu, 0, &n, "Keep on top", S.ontop, NULL, 0);
+        menu_add(&menu, 0, &n, "Window size", 0, mini ? NULL : &m_size, mini);   /* the mini player: its grip */
         menu_add(&menu, 0, &n, "Picture", 0, &m_pic, 0);
         snprintf(t, sizeof(t), "Deinterlace (%s)", deint_names[S.deint_i]);
         menu_add(&menu, 0, &n, t, 0, &m_deint, 0);
@@ -1944,11 +1980,25 @@ static void set_deint_i(int i)
     choices_save();
 }
 
+/* Fast decode (the window menu) skips the deblocking filter on every
+   picture. The mini player, with it off, skips it only on the pictures no
+   other is predicted from (REELCORE_FAST_LIGHT): about 15% less decoding
+   for typical H.264, invisible at that size, and nothing carries over
+   when the window goes back to normal. */
+static void apply_fast(void)
+{
+    int mode = S.fast ? REELCORE_FAST_ON : mini ? REELCORE_FAST_LIGHT : REELCORE_FAST_OFF;
+    if (S.v && reelcore_fast(S.v) != mode) {
+        reelcore_set_fast(S.v, mode);
+        lg("decoding: %s", mode == REELCORE_FAST_ON ? "fast (no deblocking)" :
+                           mode == REELCORE_FAST_LIGHT ? "light fast (the mini player)" : "normal");
+    }
+}
+
 static void set_fast(int on)
 {
     S.fast = on;
-    if (S.v)
-        reelcore_set_fast(S.v, on);
+    apply_fast();
 }
 
 /* A-B repeat: the first press marks A, the second B (and repeats), the
@@ -2003,18 +2053,72 @@ static int iconbar_top(void)
     return 134;                         /* the usual height */
 }
 
-/* Opens (or moves and resizes) the mini player for the current video: 320
-   pixels wide on most screens, as tall as the video's shape needs, in the
+/* Window size (the window menu): the picture at half, the same or double
+   the video's size in screen pixels, or as big as fits above the icon bar;
+   never narrower than the controls need (the picture is then letterboxed).
+   The window keeps its top left corner, moved in if it would go off the
+   screen. The grip (bottom right) resizes it freely. */
+static void set_size(int k)
+{
+    int st[9], vw, vh, pw, ph, x0, y1, top, ibar;
+    double f;
+    if (!S.v || mini || S.fullscreen)
+        return;
+    read_screen();
+    ibar = iconbar_top();
+    top = S.scr_h - 44;                 /* below the title bar */
+    pw = reelcore_width(S.v) << S.xeig;
+    ph = reelcore_height(S.v) << S.yeig;
+    if (pw <= 0 || ph <= 0)
+        return;
+    f = k == SIZE_HALF ? 0.5 : k == SIZE_DOUBLE ? 2 : 1;
+    if (k == SIZE_SCREEN || pw * f > S.scr_w - 16 || ph * f + CH > top - ibar - 16) {
+        double fw = (S.scr_w - 16) / (double)pw, fh = (top - ibar - 16 - CH) / (double)ph;
+        double fit = fw < fh ? fw : fh;
+        if (k == SIZE_SCREEN || fit < f)
+            f = fit;                    /* as big as fits (Double on a big video: this too) */
+    }
+    vw = (int)(pw * f);
+    vh = (int)(ph * f);
+    vw -= vw % (1 << S.xeig);
+    vh -= vh % (1 << S.yeig);
+    if (vw < MIN_W) vw = MIN_W;
+    vh += CH;
+    window_state(S.win, st);
+    x0 = st[1];
+    y1 = st[4];
+    if (x0 + vw > S.scr_w) x0 = S.scr_w - vw;
+    if (x0 < 0) x0 = 0;
+    if (y1 > top) y1 = top;
+    if (y1 - vh < ibar) y1 = ibar + vh;
+    lg("window size: %s, %dx%d OS units", size_names[k], vw, vh);
+    open_window_at(x0, y1, vw, vh);
+    pic_refresh();
+    force_redraw(S.win, 0, -8192, 8192, 0);
+    update_controls(1);
+}
+
+/* The mini player's picture height for a width: the video's shape */
+static int mini_pic_h(int vw)
+{
+    int ph = S.v && reelcore_width(S.v) > 0 ? (int)((long long)vw * reelcore_height(S.v) / reelcore_width(S.v))
+                                            : vw * 9 / 16;
+    int most = S.scr_h - CH - 160;
+    if (ph < vw / 4) ph = vw / 4;       /* very wide, or tall: the picture is letterboxed */
+    if (ph > vw * 3 / 4) ph = vw * 3 / 4;
+    if (ph > most) ph = most;
+    return ph - ph % (1 << S.yeig);
+}
+
+/* Opens (or moves and resizes) the mini player for the current video: the width it
+   was last given (at first 320 pixels on most screens), as tall as the video's shape needs, in the
    bottom right just above the icon bar, or where it was dragged to. */
 static void mini_show(void)
 {
-    int vw = MINI_W, ph, vh, x1, y0, ystep;
+    int vw = S.mini_w, ph, vh, x1, y0;
     read_screen();
-    ystep = 1 << S.yeig;
-    ph = reelcore_width(S.v) > 0 ? (int)((long long)vw * reelcore_height(S.v) / reelcore_width(S.v)) : vw * 9 / 16;
-    if (ph < 160) ph = 160;             /* very wide, or tall: the picture is letterboxed */
-    if (ph > 480) ph = 480;
-    ph -= ph % ystep;
+    if (vw > S.scr_w) vw = S.scr_w;
+    ph = mini_pic_h(vw);
     vh = ph + CH;
     x1 = S.scr_w - S.mini_right;
     y0 = S.mini_bottom >= 0 ? S.mini_bottom : iconbar_top() + MINI_LIFT;
@@ -2049,6 +2153,7 @@ static void set_mini(int on)
         swi(Wimp_CloseWindow, &r);
         mini = 1;
         S.win = S.mini_win;
+        apply_fast();
         S.ontop_cs = now_cs();
         mini_show();
     } else {
@@ -2056,6 +2161,7 @@ static void set_mini(int on)
         swi(Wimp_CloseWindow, &r);
         mini = 0;
         S.win = S.main_win;
+        apply_fast();
         open_window_at(S.main_st[1], S.main_st[4], S.main_st[3] - S.main_st[1], S.main_st[4] - S.main_st[2]);
         pic_refresh();
         force_redraw(S.win, 0, -8192, 8192, 0);
@@ -2114,6 +2220,7 @@ static void menu_select(const int *sel)
             lg("keep on top %s", S.ontop ? "on" : "off");
             choices_save();
             break;
+        case WM_SIZE: if (sel[1] >= 0 && sel[1] < N_SIZE) set_size(sel[1]); break;
         case WM_PIC: if (sel[1] >= 0 && sel[1] < N_PIC) set_pic_mode(sel[1]); break;
         case WM_DEINT: if (sel[1] >= 0 && sel[1] < 3) set_deint_i(sel[1]); break;
         case WM_SPEED: if (sel[1] >= 0 && sel[1] < N_SPEED) set_speed_i(sel[1]); break;
@@ -2418,6 +2525,7 @@ int reel_main(int argc, char **argv)
     snprintf(S.play_text, sizeof(S.play_text), "Pause");
     S.speed_i = 2;                      /* normal */
     S.mini_right = MINI_EDGE;           /* the mini player: bottom right, above the icon bar */
+    S.mini_w = MINI_W;
     S.mini_bottom = -1;
     S.nosleep = getenv(APP "$NoSleep") != NULL;
     S.vsync = getenv(APP "$NoVsync") == NULL;
@@ -2468,8 +2576,16 @@ int reel_main(int argc, char **argv)
                 redraw(block);
             break;
         case 2: {                                          /* Open_Window_Request */
-            int resized = block[0] == S.win && !mini &&
+            int resized = block[0] == S.win &&
                           (block[3] - block[1] != S.vis_w || block[4] - block[2] != S.vis_h);
+            if (resized && mini) {                     /* the grip: keep the video's shape, top left put */
+                int vw = block[3] - block[1];
+                if (vw < MINI_MIN_W)
+                    block[3] = block[1] + (vw = MINI_MIN_W);
+                block[2] = block[4] - (mini_pic_h(vw) + CH);
+                S.mini_w = vw;
+                resized = block[3] - block[1] != S.vis_w || block[4] - block[2] != S.vis_h;
+            }
             if (mini && block[0] == S.win) {           /* the mini player dragged: remember where */
                 S.mini_right = S.scr_w - block[3];
                 S.mini_bottom = block[2];
@@ -2546,6 +2662,12 @@ int reel_main(int argc, char **argv)
             }
             case I_FULL: set_fullscreen(1); break;
             case I_NORMAL: if (mini) set_mini(0); break;
+            case I_GRIP: {                              /* the Wimp resizes it: Open_Window_Requests follow */
+                int d[10] = { S.win, 2 };               /* drag type 2: the window's size */
+                r.r[1] = (intptr_t)d;
+                swi(Wimp_DragBox, &r);
+                break;
+            }
             case -1:
                 if (S.v) {                     /* a click on the picture pauses */
                     int st[9];

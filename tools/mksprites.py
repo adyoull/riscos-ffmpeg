@@ -83,6 +83,26 @@ def draw_reel(size):
     return rows
 
 
+def draw_grip(size):
+    """Reel's resize grip (bottom right of its windows): three diagonal
+    ridges in the corner, dark with a light edge, like the desktop's own
+    size icon. Transparent elsewhere."""
+    rows = []
+    for y in range(size):
+        row = []
+        for x in range(size):
+            k = x + y
+            px = None
+            for ridge in (size + 3, size + 7, size + 11):
+                if k == ridge:
+                    px = (68, 68, 68)
+                elif k == ridge + 1:
+                    px = (255, 255, 255)
+            row.append(px)
+        rows.append(row)
+    return rows
+
+
 def sprite(name, size, drawer=None):
     rows = (drawer or draw)(size)
     w, h = size, size
@@ -118,10 +138,12 @@ def sprite(name, size, drawer=None):
 def main():
     if len(sys.argv) > 2 and sys.argv[1] == "--reel":
         sys.argv.pop(1)
-        sprites = [sprite("!reel", 34, draw_reel), sprite("sm!reel", 17, draw_reel)]
+        sprites = [sprite("!reel", 34, draw_reel), sprite("sm!reel", 17, draw_reel),
+                   sprite("reelgrip", 16, draw_grip)]
     elif len(sys.argv) > 2 and sys.argv[1] == "--reelegl":
         sys.argv.pop(1)
-        sprites = [sprite("!reelegl", 34, draw_reel_egl), sprite("sm!reelegl", 17, draw_reel_egl)]
+        sprites = [sprite("!reelegl", 34, draw_reel_egl), sprite("sm!reelegl", 17, draw_reel_egl),
+                   sprite("reelgrip", 16, draw_grip)]
     else:
         sprites = [sprite("!ffmpeg", 34), sprite("sm!ffmpeg", 17)]
     body = b"".join(sprites)

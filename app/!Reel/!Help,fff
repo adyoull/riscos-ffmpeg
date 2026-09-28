@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.14
+!Reel - a video player for RISC OS                        0.1.15
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -43,14 +43,20 @@ Keys (click in the window first):
   Q             close the video
   I             the media info window on and off
 
-The window can be resized: the picture keeps its shape. When a playlist
-is playing, the title shows which file it is, e.g. "(2/5)".
+Resize the window by dragging the grip in its bottom right corner (the
+three diagonal lines), or choose a size from Window size on its menu; the
+picture keeps its shape. When a playlist is playing, the title shows
+which file it is, e.g. "(2/5)".
 
 Menu on the window:
   Media info          the media info window (below)
   Full screen         the whole screen (Escape to come back)
   Mini player         a small player above the icon bar (below)
   Keep on top         the mini player comes back to the front
+  Window size >       Half (50%), Actual size (100%), Double (200%) of
+                      the video's size, or Fit the screen (as big as
+                      fits above the icon bar). Never narrower than the
+                      controls. The grip resizes it to any size
   Picture >           Fit: the whole picture, with black bars
                       Fill (crop): fill the window, cutting off the edges
                       Original size: pixel for pixel, centred
@@ -81,10 +87,24 @@ Mini player
 M, or Mini player on the window menu, swaps the window for a small one
 with no title bar in the bottom right of the screen, just above the icon
 bar: the picture (320 pixels wide on most screens), Play/Pause, the
-position bar and Normal. Drag the picture to move it; it opens there
-next time. Double-click the picture, click Normal or press M for the
-normal window again. The menu, keys and everything else work as in the
-window. A small picture is also cheaper to draw than a big one.
+position bar and Normal. Drag the picture to move it, and the grip in
+its bottom right corner to make it bigger or smaller (it keeps the
+video's shape); it opens there, at that size, next time. Double-click
+the picture, click Normal or press M for the normal window again. The
+menu, keys and everything else work as in the window.
+
+The mini player is made to be watched while you do other things:
+  - the picture is shrunk properly: a big reduction (a 1280-pixel video
+    in a 320-pixel mini player is a quarter of its size) first halves
+    the picture, averaging each 2x2 block of pixels, then scales what's
+    left, so fine detail stays smooth instead of breaking up into jagged
+    edges, for about the same work;
+  - it decodes a little less: the deblocking filter is skipped on the
+    pictures no other picture is predicted from (about 15% less work for
+    typical H.264, and nothing you can see at that size). Going back to
+    the normal window turns it off again, with nothing left over. (Fast
+    decode on the menu skips it on every picture, in either window.)
+Media info's Converting line says when the picture was halved.
 
 Keep on top: RISC OS has no "always on top" for ordinary windows, so
 another window can cover the mini player. With Keep on top ticked, the

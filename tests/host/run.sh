@@ -20,7 +20,7 @@ mkdir -p "$O" "$HERE/fake/EGL" "$HERE/fake/KHR"
 # riscos-mesa's EGL headers (RISC OS additions and lock_surface)
 cp "$DEVKIT"/include/EGL/*.h "$HERE/fake/EGL/"
 cp "$DEVKIT"/include/KHR/*.h "$HERE/fake/KHR/"
-CC="arm-linux-gnueabihf-gcc -O1 -g -marm -mno-unaligned-access -DEGL_NO_X11 -I$HERE/fake -I$HERE"
+CC="arm-linux-gnueabihf-gcc -O1 -g -marm -mno-unaligned-access -mfpu=neon-vfpv3 -DEGL_NO_X11 -I$HERE/fake -I$HERE"
 LIBS="-L$S/lib -lavfilter -lpostproc -lavformat -lavcodec -lswscale -lswresample -lavutil -ldav1d -lx264 -lmp3lame \
   -lopus -lvorbisenc -lvorbis -logg -lm -lpthread"
 
@@ -61,6 +61,13 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/options_te
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/options_test.o" $LIBS -lm 2>/dev/null
 echo "== options_test (speed, fast decoding, sound tracks, picture modes)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/options_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/twoaudio_h264_aac_322_184.mp4" 2>&1 |
+  grep -v "swscaler\|reelcore: " || bad=1
+# halving for big reductions (the mini player): NEON = C byte for byte, and the picture it makes
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/halve_test.c" -o "$O/halve_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/halve_test" "$O/reelcore.o" \
+  "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/halve_test.o" $LIBS -lm 2>/dev/null
+echo "== halve_test (big reductions halved first: NEON vs C, and the picture)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/halve_test" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
   grep -v "swscaler\|reelcore: " || bad=1
 
 # the patches reproduce the tested code, and the port's NEON is alignment-safe as written

@@ -139,6 +139,24 @@ and a map of the registers. A summary:
   (`SwsContext.yuv2rgb_arith`) and says where they fit 32 bits (`_ok`);
   saturating narrows (`vqshrun`, `vqmovn`) are the clip.
 
+### Outside FFmpeg: reelcore's halving
+
+reelcore (the player core under Reel) has one small piece of NEON of its
+own, written with GCC's `arm_neon.h` intrinsics rather than assembly:
+`reelcore_halve_plane`, which halves a picture plane by averaging each
+2x2 block, `(a + b + c + d + 2) >> 2`. It is used for big reductions (a
+1280-pixel video in Reel's 320-pixel mini player): while the picture is
+at least twice the size wanted both ways it is halved first, and swscale
+does what's left. The fast bilinear scaler alone would skip three pixels
+in four at a quarter size, which looks jagged; halving twice is a 4x4 box
+filter (as good as swscale's area filter) and, by instruction count, costs
+about what the scaling it replaces did. Eight output pixels are two `vld1.8` loads, `vpaddl.u8`,
+`vpadal.u8`, `vrshrn.i16 #2` and a `vst1.8`; the C loop does the rest of
+a row, and without NEON all of it. Byte loads and stores never fault on
+RISC OS whatever the address, and the compiler adds no alignment
+qualifiers here (checked with objdump). `tests/host/halve_test.c`
+checks it is byte for byte the C, and what it does to whole pictures.
+
 ### Performance
 
 Measured under qemu nothing is meaningful: qemu emulates each NEON
@@ -212,6 +230,7 @@ since riscos2).
 | `tests/host/hevc_epel_test.c` | every epel function (h/v/hv x plain/uni/bi x 10 widths x 7 fractions x random heights and alignments, typical and extreme src2) = the C; the whole destination buffer compared |
 | run.sh "HEVC decodes" | HEVC files decode to the same pictures with NEON, with `-cpuflags 0` and on x86 |
 | `tests/host/swscale_rgb_test.c` | the scalers and yuv2rgbx32 = the C over 15 scales x 8 colour settings (BT.601/709, both ranges, brightness, contrast, saturation), and whole pictures in the same context with and without the NEON; it also fails if the NEON isn't actually in use |
+| `tests/host/halve_test.c` | reelcore_halve_plane = `(a + b + c + d + 2) >> 2` for widths 1-80 at every alignment and with a negative pitch (2,600 cases, nothing written outside); reductions of 4x and 3x halve twice and once; a quarter-size picture's brightness is within 42 dB of the 4x4 average of the full-size one (fast bilinear alone: 32 dB) |
 | `tools/check-fresh-tree.sh` | the patches, applied to a fresh FFmpeg, reproduce exactly the tested code, and the port's NEON is alignment-safe as written |
 
 **Each test was shown to catch mistakes** (mutation testing): a deliberate

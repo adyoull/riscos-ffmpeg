@@ -3,6 +3,35 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel 0.1.15 (2026-09-28): resizing, and a better, lighter mini player
+
+- **Resize grip** in the bottom right corner of the window and the mini
+  player (the windows have no scroll bars, so the Wimp gave them no size
+  icon): dragging it is the Wimp's own size drag. The mini player keeps
+  the video's shape and remembers its width (`mini_width` in Choices).
+- **Window size** on the window menu: Half, Actual size, Double (of the
+  video's size in screen pixels) or Fit the screen; never narrower than
+  the controls, kept on the screen.
+- **The mini player looks better:** big reductions are halved first in
+  reelcore (2x2 averages, NEON; `reelcore_halve_plane`), then swscale
+  does the rest. At a quarter size (1280 -> 320) fast bilinear alone
+  skipped three pixels in four (jagged, "blocky" detail): on the Simpsons
+  trailer 23.7 dB from a Lanczos reference, against 35 dB for a box
+  filter, which is what halving twice is. By instruction count it should
+  cost about what it replaces (it reads the whole picture, but in NEON,
+  and the colour conversion is then 1:1); the log's convert ms will show. Media info's Converting line says "halved twice,
+  then swscale".
+- **The mini player decodes a little less:** `REELCORE_FAST_LIGHT`, the
+  deblocking filter skipped on pictures nothing is predicted from (most
+  B-frames): about 14% less decoding on Big Buck Bunny 720p (x86, C),
+  51.7 dB from normal decoding once shown at mini size, and nothing
+  carries over to the normal window. `reelcore_set_fast` takes
+  `REELCORE_FAST_OFF/ON/LIGHT` (0 and 1 as before).
+- Tests: `halve_test` (NEON = C over 2,600 cases, whole pictures),
+  options_test (light mode), reel_test (grip, Window size, the mini
+  player's grip and saved width, light decoding in the mini player only).
+  The host tests' reelcore is now built with NEON, as on RISC OS.
+
 ## 5.1.10-riscos9 and Reel 0.1.14 (2026-09-28): the standard Info window
 
 - **Info on the icon bar menu is the usual RISC OS "About this program"

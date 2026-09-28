@@ -74,14 +74,15 @@ static char info_seen[8192];          /* what Wimp_TextOp drew in the info windo
 static int drawing_info;
 static int plots, plots_full, clip_ok = 1, updates, acks, reports, keys_passed, last_mask;
 static int caret_win;
-static int icon_box[10][4], mini_box[10][4];
+static int icon_box[12][4], mini_box[12][4];
+static int drag_win, drag_type;         /* the last Wimp_DragBox */
 static int mini_created, mini_open, mini_nicons, mini_tops, main_w, main_h;
 static int vsyncs, asks;
 static double ab_lo, ab_hi;
 static char choices_dir[64];
 
 /* the window menu (reel.c's WM_*) */
-enum { M_INFO, M_FULL, M_MINI, M_ONTOP, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_CLOSE };
+enum { M_INFO, M_FULL, M_MINI, M_ONTOP, M_SIZE, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_CLOSE };
 static char title[64];
 static int *title_ptr;
 static int proginfo_made, proginfo_icons, bar_info_sub = -99;
@@ -141,8 +142,8 @@ static int script(int *b)
 /* the phases after the first drop */
 enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
        P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL,
-       P_VSYNCOFF, P_UNFULL, P_RESIZE, P_PLAY4, P_DROP2, P_PLAY5, P_LIST, P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE,
-       P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_CLOSE, P_QUIT };
+       P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
+       P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_CLOSE, P_QUIT };
 static int phase = -1, phase_step;
 /* the phases that play (deliver nulls) */
 static int next_is_null(void)
@@ -412,6 +413,50 @@ static int next_event(int *b)
 #endif
             }
             break;
+        case P_GRIP:                                                  /* the grip: the Wimp's size drag */
+            if (phase_step == 0) {
+                int vh = st(WIN)[4] - st(WIN)[2], vw = st(WIN)[3] - st(WIN)[1];
+                phase_step++;
+                CHECK(icon_box[9][0] == vw - 32 && icon_box[9][1] == -vh && icon_box[9][2] == vw && icon_box[9][3] == -vh + 32,
+                      "grip at %d,%d-%d,%d (want the bottom right corner of %dx%d)",
+                      icon_box[9][0], icon_box[9][1], icon_box[9][2], icon_box[9][3], vw, vh);
+                drag_win = drag_type = 0;
+                click(b, sx(WIN, vw - 16), st(WIN)[2] + 16, 64, WIN, 9);   /* a Select drag on it */
+                return 6;
+            }
+            if (phase_step++ == 1) {
+                CHECK(drag_win == WIN && drag_type == 2, "grip: Wimp_DragBox window %x type %d (want the window, 2)",
+                      drag_win, drag_type);
+                memcpy(b, st(WIN), 36);                               /* what the Wimp sends as it's dragged */
+                b[3] = b[1] + 1400;
+                b[2] = b[4] - 800;
+                return 2;
+            }
+            {
+                int w, h, rows;
+                reel_test_sprite(&w, &h, &rows);
+                CHECK(w == 700 && h == (800 - 64) / 2 && icon_box[9][0] == 1400 - 32,
+                      "after the grip: picture %dx%d, grip at %d", w, h, icon_box[9][0]);
+            }
+            break;
+        case P_SIZEHALF:                                              /* Window size > Half: never narrower than the controls */
+            MENU_PICK(WIN, M_SIZE, 0);
+            CHECK(opened_w == 1132 && opened_h == 184 + 64, "half size: %dx%d (want 1132x248)", opened_w, opened_h);
+            break;
+        case P_SIZEFIT:                                               /* Fit the screen: as big as fits, the video's shape */
+            MENU_PICK(WIN, M_SIZE, 3);
+            {
+                int *w = st(WIN), ph = opened_h - 64;
+                CHECK(opened_w > 1400 && w[1] >= 0 && w[3] <= SCR_W * 2 && w[2] >= 134 && w[4] <= SCR_H * 2 - 44 &&
+                      abs(ph * 322 - opened_w * 184) < opened_w * 184 / 50,
+                      "fit the screen: %dx%d at %d,%d-%d,%d", opened_w, opened_h, w[1], w[2], w[3], w[4]);
+            }
+            break;
+        case P_SIZEACTUAL:                                            /* Actual size: 322x184 pixels (the controls' width) */
+            MENU_PICK(WIN, M_SIZE, 1);
+            CHECK(opened_w == 1132 && opened_h == 368 + 64, "actual size: %dx%d (want 1132x432)", opened_w, opened_h);
+            check_picture("actual size");
+            break;
         case P_DROP2:                                                 /* from the middle: remembered */
             if (phase_step == 0) {
                 phase_step++;
@@ -452,7 +497,7 @@ static int next_event(int *b)
             if (phase_step++ == 1) {
                 int *m = st(MINI), vw = m[3] - m[1], vh = m[4] - m[2], w, h, rows, on;
                 reel_test_sprite(&w, &h, &rows);
-                CHECK(reel_test_mini(&on) && mini_created == 1 && mini_open && !win_open && mini_nicons == 10,
+                CHECK(reel_test_mini(&on) && mini_created == 1 && mini_open && !win_open && mini_nicons == 11,
                       "mini player: made %d, open %d, window open %d, %d icons", mini_created, mini_open, win_open, mini_nicons);
                 CHECK(vw == 640 && vh == 364 + 64, "mini player %dx%d (want 640x428)", vw, vh);
                 CHECK(m[3] == SCR_W * 2 - 32 && m[2] == 134 + 16, "mini player at %d,%d-%d,%d (want the bottom right, above the icon bar)",
@@ -462,8 +507,12 @@ static int next_event(int *b)
                 CHECK(fake_surfaces == 1 && fake_wa[2] == 320 && fake_wa[3] == 182, "mini player surface %dx%d, %d surfaces",
                       fake_wa[2], fake_wa[3], fake_surfaces);
 #endif
-                CHECK(mini_box[9][2] == 640 - 4 && mini_box[5][2] < 0 && mini_box[3][2] < mini_box[9][0],
-                      "mini player controls: Normal to %d, time to %d, bar to %d", mini_box[9][2], mini_box[5][2], mini_box[3][2]);
+                CHECK(mini_box[10][2] == 640 - 4 - 32 - 4 && mini_box[5][2] < 0 && mini_box[3][2] < mini_box[10][0],
+                      "mini player controls: Normal to %d, time to %d, bar to %d", mini_box[10][2], mini_box[5][2], mini_box[3][2]);
+                CHECK(mini_box[9][0] == 640 - 32 && mini_box[9][1] == -vh && mini_box[9][2] == 640 && mini_box[9][3] == -vh + 32,
+                      "mini player grip at %d,%d-%d,%d (want the bottom right corner)",
+                      mini_box[9][0], mini_box[9][1], mini_box[9][2], mini_box[9][3]);
+                CHECK(reelcore_fast(v) == REELCORE_FAST_LIGHT, "mini player: fast decoding %d (want light)", reelcore_fast(v));
                 key_event(b, MINI, 0x18C);                            /* Left: back to the start, time to play */
                 return 8;
             }
@@ -502,6 +551,21 @@ static int next_event(int *b)
                 CHECK(choices_has(want) && choices_has("mini_bottom 600"), "the mini player's place wasn't saved");
             }
             break;
+        case P_MINIGRIP:                                              /* the mini player's grip: wider, the video's shape */
+            if (phase_step++ == 0) {
+                memcpy(b, st(MINI), 36);
+                b[3] = b[1] + 960;
+                b[2] = b[4] - 300;                                    /* any height: it follows the width */
+                return 2;
+            }
+            {
+                int *m = st(MINI), w, h, rows;
+                reel_test_sprite(&w, &h, &rows);
+                CHECK(m[3] - m[1] == 960 && m[4] - m[2] == 548 + 64 && m[4] == 600 + 428,
+                      "mini player resized to %dx%d, top %d (want 960x612, top 1028)", m[3] - m[1], m[4] - m[2], m[4]);
+                CHECK(w == 480 && h == 274, "mini player picture %dx%d (want 480x274)", w, h);
+            }
+            break;
         case P_MINIBACK:                                              /* double-click: the window as it was */
             if (phase_step++ == 0) { click(b, sx(MINI, 100), st(MINI)[2] + 200, 4, MINI, -1); return 6; }
             {
@@ -512,6 +576,8 @@ static int next_event(int *b)
                 CHECK(fake_surfaces == 1 && fake_wa[2] == main_w / 2, "window surface %dx%d", fake_wa[2], fake_wa[3]);
 #endif
                 check_picture("back from the mini player");
+                CHECK(reelcore_fast(v) == REELCORE_FAST_OFF, "normal window: fast decoding %d (want off)", reelcore_fast(v));
+                CHECK(choices_has("mini_width 960"), "the mini player's width wasn't saved");
             }
             break;
         case P_DIR:
@@ -551,7 +617,7 @@ static void final_checks(void)
 {
     int w, h, rows;
     (void)w; (void)h; (void)rows;
-    CHECK(created == 1 && nicons == 9, "window: created %d, %d icons", created, nicons);
+    CHECK(created == 1 && nicons == 10, "window: created %d, %d icons", created, nicons);
     {   /* Info on the icon bar menu: the standard About this program window, as its submenu */
 #ifdef REEL_EGL
         const char *want = "Name:=ReelEGL|Purpose:=Video player, EGL (FFmpeg 5.1.10)|Author:=Andrew Youll|"
@@ -672,9 +738,9 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         out->r[0] = WIN;
         return NULL;
     case 0x400FC:                                                         /* ResizeIcon */
-        if (in->r[0] == WIN && in->r[1] >= 0 && in->r[1] < 9)
+        if (in->r[0] == WIN && in->r[1] >= 0 && in->r[1] < 12)
             for (int i = 0; i < 4; i++) icon_box[in->r[1]][i] = in->r[2 + i];
-        if (in->r[0] == MINI && in->r[1] >= 0 && in->r[1] < 10)
+        if (in->r[0] == MINI && in->r[1] >= 0 && in->r[1] < 12)
             for (int i = 0; i < 4; i++) mini_box[in->r[1]][i] = in->r[2 + i];
         return NULL;
     case 0x400C5:                                                         /* OpenWindow */
@@ -707,7 +773,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
             bar_info_sub = b[7 + 1];
         return NULL;
     case 0x400D1: case 0x400CD: case 0x400DC: return NULL;
-    case 0x400D2: caret_win = in->r[0]; return NULL;                      /* SetCaretPosition */
+    case 0x400D2: caret_win = in->r[0]; return NULL;
+    case 0x400D0: drag_win = b[0]; drag_type = b[1]; return NULL;       /* Wimp_DragBox */                      /* SetCaretPosition */
     case 0x400CF: b[2] = 4; return NULL;                                  /* GetPointerInfo: Select */
     case 0x400DF:                                                         /* ReportError */
         if (((in->r[1] >> 9) & 7) == 4) { asks++; out->r[1] = 3; }        /* our own buttons: "Carry on" */

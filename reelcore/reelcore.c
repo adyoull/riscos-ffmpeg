@@ -23,6 +23,10 @@
 #include "libswresample/swresample.h"
 #include "libswscale/swscale.h"
 #include "reelcore.h"
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>                 /* reelcore_halve: 2x2 averages, 8 at a time */
+#define REELCORE_NEON 1
+#endif
 
 /* On RISC OS the sound goes straight to SharedSoundBuffer/StreamManager
    from this (the caller's) thread: StreamManager plays it from interrupts,
@@ -132,6 +136,9 @@ struct ReelCore {
     /* conversion */
     struct SwsContext *sws;
     int cs_key[8];
+    uint8_t *half[REELCORE_HALVINGS];  /* big reductions: the picture halved, once per level */
+    size_t half_size[REELCORE_HALVINGS];
+    int halvings;                      /* how many the last conversion did (reelcore_stats) */
 
     /* a layer's own state (reelcore's textures), released on close */
     void *attach;
@@ -642,6 +649,8 @@ void reelcore_close(ReelCore *v)
     swr_free(&v->swr);
     tempo_close(v);
     sws_freeContext(v->sws);
+    for (int i = 0; i < REELCORE_HALVINGS; i++)
+        av_free(v->half[i]);
     av_free(v->abuf);
     av_free(v->mixbuf);
     if (v->attach_release)
@@ -705,6 +714,7 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     st->convert_time = v->t_convert / 1e6;
     st->convert_w = v->conv_w;
     st->convert_h = v->conv_h;
+    st->halvings = v->halvings;
     st->pictures_waiting = v->qn;
     st->packets_waiting = v->vpk_n;
     st->packet_bytes = (unsigned)v->vpk_bytes;
@@ -1467,6 +1477,103 @@ int reelcore_seek(ReelCore *v, double seconds)
 
 /* ---------------------------------------------------------------- draw */
 
+/* Halving, for big reductions (the mini player: a 1280-pixel video in a
+   320-pixel window is a quarter of its size).
+
+   swscale's fast bilinear scaler, which Reel uses because it is quick,
+   takes two source pixels for each output pixel whatever the reduction,
+   so at a quarter size it skips three pixels in four: fine detail breaks
+   up into jagged, blocky edges. Its better filters (area, bilinear) look
+   at every pixel but cost three to six times as much.
+
+   So while the picture is still at least twice the size wanted both ways,
+   it is first halved: each output pixel the rounded average of a 2x2
+   block, (a + b + c + d + 2) >> 2, for each plane. Halving twice is a 4x4
+   box filter, as good as swscale's area filter, and cheap: in NEON, eight
+   output pixels from two 16-byte loads, a pairwise add, an accumulate and
+   a rounding narrow. swscale then does what's left (less than 2x), or,
+   when the halving lands exactly on the size wanted (1280 -> 320), only
+   the colour conversion.
+
+   Only for 8-bit planar YUV (what nearly every video decodes to); other
+   formats go straight to swscale as before. The NEON and C loops give
+   the same bytes (tests/host/halve_test.c). vld1.8/vst1.8 never fault on
+   RISC OS's alignment checking, whatever the addresses (docs/NEON.md). */
+
+/* One plane: w x h output pixels at dst from 2w x 2h at src */
+void reelcore_halve_plane(uint8_t *dst, int dpitch, const uint8_t *src, int spitch, int w, int h)
+{
+    for (int y = 0; y < h; y++) {
+        const uint8_t *a = src + (ptrdiff_t)2 * y * spitch, *b = a + spitch;
+        uint8_t *d = dst + (ptrdiff_t)y * dpitch;
+        int x = 0;
+#ifdef REELCORE_NEON
+        for (; x + 8 <= w; x += 8) {
+            uint16x8_t sum = vpaddlq_u8(vld1q_u8(a + 2 * x));    /* a0+a1, a2+a3, ... */
+            sum = vpadalq_u8(sum, vld1q_u8(b + 2 * x));          /* + b0+b1, ... */
+            vst1_u8(d + x, vrshrn_n_u16(sum, 2));               /* (sum + 2) >> 2 */
+        }
+#endif
+        for (; x < w; x++)
+            d[x] = (uint8_t)((a[2 * x] + a[2 * x + 1] + b[2 * x] + b[2 * x + 1] + 2) >> 2);
+    }
+}
+
+/* 8-bit planar YUV without alpha: what halving handles */
+static int can_halve(const AVPixFmtDescriptor *d)
+{
+    if (!d || d->nb_components != 3 ||
+        (d->flags & (AV_PIX_FMT_FLAG_BITSTREAM | AV_PIX_FMT_FLAG_PAL | AV_PIX_FMT_FLAG_HWACCEL |
+                     AV_PIX_FMT_FLAG_RGB | AV_PIX_FMT_FLAG_ALPHA | AV_PIX_FMT_FLAG_BE)))
+        return 0;
+    for (int i = 0; i < 3; i++)
+        if (d->comp[i].plane != i || d->comp[i].step != 1 || d->comp[i].depth != 8 || d->comp[i].shift)
+            return 0;
+    return 1;
+}
+
+/* Halves src (cw x ch) into v->half[] while it is still at least twice
+   w x h both ways. Updates src, pitch, cw and ch; returns the levels done. */
+static int halve(ReelCore *v, const AVPixFmtDescriptor *d, const uint8_t *src[4], int pitch[4],
+                 int *cw, int *ch, int w, int h)
+{
+    int n = 0, lw = d->log2_chroma_w, lh = d->log2_chroma_h;
+    while (n < REELCORE_HALVINGS && *cw >= 2 * w && *ch >= 2 * h &&
+           *cw >= (4 << lw) && *ch >= (4 << lh)) {
+        /* whole chroma samples on both sides: trim to a multiple of 2 chroma samples */
+        int iw = *cw & ~((2 << lw) - 1), ih = *ch & ~((2 << lh) - 1);
+        int ow = iw / 2, oh = ih / 2;
+        int op[3], ow_p[3], oh_p[3];
+        size_t size = 0;
+        uint8_t *out[3];
+        for (int p = 0; p < 3; p++) {
+            ow_p[p] = p ? ow >> lw : ow;
+            oh_p[p] = p ? oh >> lh : oh;
+            op[p] = FFALIGN(ow_p[p], 16);
+            size += (size_t)op[p] * oh_p[p];
+        }
+        if (size > v->half_size[n]) {
+            av_free(v->half[n]);
+            v->half[n] = av_malloc(size);
+            v->half_size[n] = v->half[n] ? size : 0;
+            if (!v->half[n])
+                break;                            /* no memory: swscale does it all */
+        }
+        out[0] = v->half[n];
+        out[1] = out[0] + (size_t)op[0] * oh_p[0];
+        out[2] = out[1] + (size_t)op[1] * oh_p[1];
+        for (int p = 0; p < 3; p++) {
+            reelcore_halve_plane(out[p], op[p], src[p], pitch[p], ow_p[p], oh_p[p]);
+            src[p] = out[p];
+            pitch[p] = op[p];
+        }
+        *cw = ow;
+        *ch = oh;
+        n++;
+    }
+    return n;
+}
+
 /* Converts the part cw x ch at cx, cy of the current frame into w x h
    pixels at dst (fmt), with the frame's colour space and range. */
 static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPixelFormat fmt,
@@ -1477,6 +1584,7 @@ static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPi
     const uint8_t *src[4] = { f->data[0], f->data[1], f->data[2], f->data[3] };
     uint8_t *d[4] = { dst };
     int ds[4] = { pitch };
+    int sp[4] = { f->linesize[0], f->linesize[1], f->linesize[2], f->linesize[3] };
     int cs = f->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 : SWS_CS_ITU601;
     int full = f->color_range == AVCOL_RANGE_JPEG;
     int key[8];
@@ -1506,6 +1614,8 @@ static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPi
             }
         }
     }
+    int64_t t0 = av_gettime_relative();         /* the conversion's time, halving included */
+    v->halvings = can_halve(desc) ? halve(v, desc, src, sp, &cw, &ch, w, h) : 0;
     key[0] = cs; key[1] = full; key[2] = cw; key[3] = ch; key[4] = f->format;
     key[5] = w; key[6] = h; key[7] = fmt;
     v->sws = sws_getCachedContext(v->sws, cw, ch, f->format, w, h, fmt,
@@ -1521,8 +1631,7 @@ static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPi
     }
     /* (swscale's arm NEON converters used to return 0 lines; only < 0 is an error) */
     {
-        int64_t t0 = av_gettime_relative();
-        int ret = sws_scale(v->sws, src, f->linesize, 0, ch, d, ds);
+        int ret = sws_scale(v->sws, src, sp, 0, ch, d, ds);
         v->t_convert += av_gettime_relative() - t0;
         v->conv_w = w;
         v->conv_h = h;
@@ -1609,15 +1718,22 @@ int reelcore_set_speed(ReelCore *v, double speed)
 
 double reelcore_speed(const ReelCore *v) { return v->speed; }
 
-void reelcore_set_fast(ReelCore *v, int on)
+void reelcore_set_fast(ReelCore *v, int mode)
 {
-    v->fast = !!on;
-    v->vdec->skip_loop_filter = on ? AVDISCARD_ALL : AVDISCARD_DEFAULT;
-    if (on)
+    if (mode != REELCORE_FAST_ON && mode != REELCORE_FAST_LIGHT)
+        mode = REELCORE_FAST_OFF;
+    if (mode == v->fast)
+        return;
+    v->fast = mode;
+    v->vdec->skip_loop_filter = mode == REELCORE_FAST_ON ? AVDISCARD_ALL :
+                                mode == REELCORE_FAST_LIGHT ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+    if (mode == REELCORE_FAST_ON)       /* (the "fast" shortcuts change pictures others are predicted from) */
         v->vdec->flags2 |= AV_CODEC_FLAG2_FAST;
     else
         v->vdec->flags2 &= ~AV_CODEC_FLAG2_FAST;
-    av_log(NULL, AV_LOG_VERBOSE, "reelcore: fast decoding %s\n", on ? "on (no deblocking)" : "off");
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: fast decoding %s\n",
+           mode == REELCORE_FAST_ON ? "on (no deblocking)" :
+           mode == REELCORE_FAST_LIGHT ? "light (no deblocking of pictures nothing is predicted from)" : "off");
 }
 
 int reelcore_fast(const ReelCore *v) { return v->fast; }

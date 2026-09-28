@@ -30,6 +30,7 @@
  */
 #ifndef REELCORE_H
 #define REELCORE_H
+#include <stdint.h>
 
 
 #ifdef __cplusplus
@@ -119,6 +120,7 @@ typedef struct ReelCoreStats {
     unsigned interlaced;              /* pictures decoded that were interlaced */
     unsigned deinterlaced;            /* pictures that came out of the deinterlacer */
     double deinterlace_time;          /* seconds spent deinterlacing */
+    int halvings;                     /* the last conversion halved the picture this many times first */
 } ReelCoreStats;
 void reelcore_stats(const ReelCore *v, ReelCoreStats *st);
 
@@ -169,11 +171,25 @@ double reelcore_speed(const ReelCore *v);
 void reelcore_set_deinterlace(ReelCore *v, int mode);
 int reelcore_deinterlace(const ReelCore *v);
 
-/* Fast decoding: skips the deblocking filter (H.264, HEVC and others): about
-   20-30% less decoding time, a slightly softer and blockier picture. Can be
-   changed at any time. */
-void reelcore_set_fast(ReelCore *v, int on);
+/* Fast decoding: skips the deblocking filter (H.264, HEVC and others).
+   REELCORE_FAST_ON (1, as "on" always was): on every picture, about 20% less
+   decoding time, a slightly softer and blockier picture; the errors carry
+   on into the pictures predicted from them until the next keyframe.
+   REELCORE_FAST_LIGHT: only on pictures no other picture is predicted from
+   (most B-frames), so nothing carries over: about 15% less for typical
+   H.264 with B-frames, and invisible once the picture is shown smaller
+   (Reel's mini player). Can be changed at any time. */
+#define REELCORE_FAST_OFF   0
+#define REELCORE_FAST_ON    1
+#define REELCORE_FAST_LIGHT 2
+void reelcore_set_fast(ReelCore *v, int mode);
 int reelcore_fast(const ReelCore *v);
+
+/* Big reductions are halved first (2x2 averages, NEON on ARM) while the
+   picture is at least twice the size wanted both ways, up to this many
+   times; see reelcore.c. reelcore_halve_plane is exported for the tests. */
+#define REELCORE_HALVINGS 3
+void reelcore_halve_plane(uint8_t *dst, int dpitch, const uint8_t *src, int spitch, int w, int h);
 
 /* The file's sound tracks: how many, which one plays (0 = the first; -1 =
    none), a short description ("aac, 2 ch, eng, Commentary"), and changing

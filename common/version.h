@@ -17,7 +17,7 @@
 #define FFMPEG_APP_VERSION  "5.1.10-riscos9"
 #define FFMPEG_APP_DATE     "28-Sep-2026"
 
-#define REEL_VERSION        "0.1.14"
+#define REEL_VERSION        "0.1.15"
 #define REEL_DATE           "28-Sep-2026"
 
 #define APP_AUTHOR          "Andrew Youll"
