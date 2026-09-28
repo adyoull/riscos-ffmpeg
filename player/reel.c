@@ -362,6 +362,7 @@ static void log_open(void)
     log_module("StreamManager");
     log_module("SharedSoundBuffer");
     log_module("SharedUnixLibrary");
+    log_module("PThreadTicker");
     log_module("VFPSupport");
     log_env("REELCORE_AUDIO");
     log_env("SDL_AUDIODRIVER");

@@ -1,4 +1,4 @@
-!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                    riscos9
+!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                   riscos10
 ===================================================================
 
 FFmpeg converts, plays and inspects audio and video. This is FFmpeg
@@ -159,6 +159,15 @@ include riscos-mesa's EGL and OpenGL for the egl output device. Memory for pictu
 Needs
 -----
 SharedUnixLibrary 1.16 or later and ARMEABISupport (both in PackMan).
+
+Included: PThreadTicker 0.01, a small module from UnixLib 5.0.1 (the C
+library the programs are built with). UnixLib switches a program's
+threads (ffplay has several) with a timer, and this module holds the
+timer's code, so it's always there even while other tasks run. !Run
+loads it (a copy merged into !System is used first); without it UnixLib
+uses its own copy in the module area, which also works. *Help
+PThreadTicker shows it's loaded. It refuses to be killed while a program
+uses it. Licence: docs.Licences.PThreadTicker (BSD).
 
 Known limits
 ------------

@@ -21,5 +21,8 @@ head -1 "$TOP/app/!FFmpeg/!Help,fff" | grep -q " $N\$" || { echo "  !FFmpeg's !H
 for a in Reel ReelEGL; do
   head -1 "$TOP/app/!$a/!Help,fff" | grep -q " $R\$" || { echo "  !$a's !Help header isn't $R"; bad=1; }
 done
+# the PThreadTicker module the apps carry is the one released with UnixLib 5.0.1
+( cd "$TOP/third_party/pthreadticker" && sha256sum -c --quiet PThrTicker.sha256 ) ||
+  { echo "  third_party/pthreadticker/PThrTicker isn't the released module"; bad=1; }
 [ $bad = 0 ] && echo "  FFmpeg $V, Reel $R: all agree"
 exit $bad

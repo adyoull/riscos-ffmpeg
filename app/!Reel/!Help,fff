@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.15
+!Reel - a video player for RISC OS                        0.1.16
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -218,6 +218,11 @@ instead, as before 0.1.9, to compare.
 
 Needs
 -----
+Included: PThreadTicker 0.01, a small module from UnixLib 5.0.1 (the C
+library Reel is built with) for its thread timer; !Run loads it (a copy
+merged into !System first). Reel itself plays on one thread, so it's
+there for the cases that start one (SDL's sound). Licence:
+docs.Licences.PThreadTicker (BSD).
 SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan). For sound:
 SharedSoundBuffer and StreamManager (ssb.zip, from the RDPClient page at
 orac.co.uk), merged into !System: Reel's !Run loads them. Without them

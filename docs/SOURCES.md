@@ -25,8 +25,15 @@ Test-only (not in any release):
 - **QEMU 8.2.2**: archive.ubuntu.com `qemu_8.2.2+ds.orig.tar.xz`.
 
 Toolchain: GCCSDK GCC 10.2.0 Release 2 (riscos-warzone2100), built from
-GCCSDK 64c6f81 with the riscos-openttd UnixLib patch and the Warzone 2100
-port's pthread ticker fix (the ticker code runs from the RMA)
-(`Warzone2100/dist/gccsdk-gcc10.2-x86_64-linux-env.tgz`, md5
-caea90c3cc14abb4387f2c8d2e009355, from riscos3; riscos1 and riscos2 used
-the earlier build without the ticker fix).
+GCCSDK 64c6f81 (`Warzone2100/dist/gccsdk-gcc10.2-x86_64-linux-env.tgz`, md5
+caea90c3cc14abb4387f2c8d2e009355), with its UnixLib replaced by
+**UnixLib 5.0.1** from github.com/adyoull/riscos-unixlib (release v5.0.1:
+`libunixlib.a` sha256 bf0e9709…a7a6 into
+`arm-riscos-gnueabihf/lib/`, and its two changed headers, `sched.h` and
+`unistd.h`, into `arm-riscos-gnueabihf/include/`), from riscos10 and Reel
+0.1.16. `tools/check-unixlib.sh` (run by package.sh) checks every program
+was linked with it. Its module PThreadTicker 0.01 is in
+`third_party/pthreadticker` and goes into each app. riscos3 to riscos9
+used the Warzone toolchain's own UnixLib (the ticker code copied to the
+RMA, a 248-byte block); riscos1 and riscos2 an earlier one without the
+ticker fix.

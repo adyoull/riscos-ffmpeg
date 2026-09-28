@@ -3,6 +3,25 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## 5.1.10-riscos10 and Reel 0.1.16 (2026-09-28): UnixLib 5.0.1 and PThreadTicker
+
+- **Relinked with UnixLib 5.0.1** (github.com/adyoull/riscos-unixlib,
+  release v5.0.1): the thread timer's code runs from the new PThreadTicker
+  module when it's loaded (else from a copy in the RMA, as before), and
+  its Wimp filters are now registered even for threads started before
+  Wimp_Initialise (SDL's), the cause of other tasks crashing while a
+  threaded program ran (confirmed on a Pi with Warzone 2100). ffplay is
+  the program here with several threads; the rest mostly run one.
+- **PThreadTicker 0.01 is in each app** (!FFmpeg, !Reel, !ReelEGL, the EGL
+  examples), from `third_party/pthreadticker` (BSD licence, in
+  docs.Licences); each `!Run` (the examples' SetUp) loads a copy merged
+  into !System first, else its own. Reel's log lists its version.
+- `tools/check-unixlib.sh`: package.sh refuses a program not linked with
+  UnixLib 5.0.1 (the 472-byte pthread block). `tools/check-versions.sh`
+  also checks the module is the released one (sha256).
+- Toolchain: the Warzone GCCSDK environment with UnixLib 5.0.1's
+  `libunixlib.a`, `sched.h` and `unistd.h` (docs/SOURCES.md).
+
 ## Reel 0.1.15 (2026-09-28): resizing, and a better, lighter mini player
 
 - **Resize grip** in the bottom right corner of the window and the mini

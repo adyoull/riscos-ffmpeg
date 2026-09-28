@@ -86,6 +86,9 @@ From [Releases](../../releases):
 - `Reel-X.Y.Z.zip`: `!Reel` and `!ReelEGL`.
 
 They need SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan).
+They are linked with UnixLib 5.0.1 and carry its PThreadTicker module
+(the thread timer's code; `third_party/pthreadticker`), which each `!Run`
+loads.
 For sound: SharedSoundBuffer and StreamManager (`ssb.zip` from the
 RDPClient page at orac.co.uk), merged into `!System`; the apps' `!Run`
 files load them. The EGL examples and !ReelEGL need riscos-mesa.

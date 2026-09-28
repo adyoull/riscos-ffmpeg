@@ -7,11 +7,11 @@
 #   dist/riscos-ffmpeg-devkit-VERSION.tgz  static libraries (and libreelcore, libffegl) + headers + .pc
 # Filetypes go in the zip's Acorn extra fields (tools/mkrozip.py), so SparkFS
 # and RISC OS unzip give the files their real types.
-# Usage: build/package.sh [VERSION]      (default 5.1.10-riscos9)
+# Usage: build/package.sh [VERSION]      (default 5.1.10-riscos10)
 #        ELF2AIF=path/to/elf2aif        (host elf2aif; see tools/elf2aif)
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
-V=${1:-5.1.10-riscos9}
+V=${1:-5.1.10-riscos10}
 ELF2AIF=${ELF2AIF:-$TOP/tools/elf2aif/elf2aif}
 [ -x "$ELF2AIF" ] || { echo "no elf2aif at $ELF2AIF (make -C tools/elf2aif GCCSDK_SRC=...)" >&2; exit 1; }
 FF=$SRC/ffmpeg-5.1.10
@@ -19,6 +19,11 @@ DIST=$TOP/dist
 mkdir -p "$DIST"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+
+# every program must be linked with UnixLib 5.0.1 (what !Run loads PThreadTicker for)
+echo "UnixLib in the programs:"
+CROSS=$CROSS "$TOP/tools/check-unixlib.sh" "$FF/ffmpeg_g" "$FF/ffprobe_g" "$FF/ffplay_g" "$STAGE/bin/fffront" \
+  "$STAGE/bin/reel" "$STAGE/bin/reelegl" "$STAGE/bin/videowin" "$STAGE/bin/videocube" || exit 1
 
 # --- the application ---------------------------------------------------
 A=$TMP/'!FFmpeg'
@@ -30,6 +35,8 @@ for p in ffmpeg ffprobe ffplay; do
 done
 ${CROSS}strip -o "$TMP/fffront.elf" "$STAGE/bin/fffront"
 "$ELF2AIF" -e "$TMP/fffront.elf" "$A/!RunImage,ff8" >/dev/null
+# UnixLib 5.0.1's thread timer module, loaded by !Run (third_party/pthreadticker)
+cp "$TOP/third_party/pthreadticker/PThrTicker" "$A/PThrTicker,ffa"
 D=$A/docs
 mkdir -p "$D/Licences" "$D/source"
 cp "$TOP/README.md" "$D/ReadMe,fff"
@@ -46,9 +53,10 @@ cp "$SRC/opus-1.5.2/COPYING"      "$D/Licences/Opus,fff"
 cp "$SRC/libogg-1.3.5/COPYING"    "$D/Licences/Ogg,fff"
 cp "$SRC/libvorbis-1.3.7/COPYING" "$D/Licences/Vorbis,fff"
 cp "$SRC/SDL-release-2.26.0/LICENSE.txt" "$D/Licences/SDL2,fff"
+cp "$TOP/third_party/pthreadticker/Licence" "$D/Licences/PThreadTicker,fff"
 # Corresponding source for the GPL: this port's changes and how it is built
 # (the upstream tarballs are named, with checksums, in SOURCES).
-( cd "$TOP" && tar cf - build patches tools app common reelcore ffegl frontend player tests/qemu/*.sh tests/qemu/*.md tests/qemu/*.patch \
+( cd "$TOP" && tar cf - build patches tools app common third_party reelcore ffegl frontend player tests/qemu/*.sh tests/qemu/*.md tests/qemu/*.patch \
     README.md CHANGELOG.md docs Makefile 2>/dev/null ) | tar xf - -C "$D/source"
 rm -f "$DIST/FFmpeg-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-$V.zip" '!FFmpeg' )
@@ -71,6 +79,8 @@ cat > "$E/SetUp,feb" <<'EOF'
 | ffegl examples (riscos-ffmpeg): double-click to set up the videowin and
 | videocube commands. Each needs about 44MB of application space.
 Set FFmpegEGL$Dir <Obey$Dir>
+RMEnsure PThreadTicker 0.01 IfThere System:Modules.PThrTicker Then RMLoad System:Modules.PThrTicker
+RMEnsure PThreadTicker 0.01 IfThere <FFmpegEGL$Dir>.PThrTicker Then RMLoad <FFmpegEGL$Dir>.PThrTicker
 RMEnsure SharedSound 1.07 IfThere System:Modules.SSound Then RMLoad System:Modules.SSound
 RMEnsure StreamManager 0.03 IfThere System:Modules.StreamMan Then RMLoad System:Modules.StreamMan
 RMEnsure SharedSoundBuffer 0.07 IfThere System:Modules.SSBuffer Then RMLoad System:Modules.SSBuffer
@@ -82,11 +92,12 @@ cat > "$E/Task,feb" <<'EOF'
 WimpSlot -min 45056K -max 45056K
 Run <Obey$Dir>.%*0
 EOF
+cp "$TOP/third_party/pthreadticker/PThrTicker" "$E/PThrTicker,ffa"
 rm -f "$DIST/FFmpeg-EGL-examples-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-EGL-examples-$V.zip" EGLExamples )
 
 # --- !Reel and !ReelEGL, the video player (sprite / EGL drawing) ---------
-RV=${REEL_VERSION:-0.1.15}
+RV=${REEL_VERSION:-0.1.16}
 RT=$TMP/Reel
 mkdir -p "$RT"
 for app in Reel ReelEGL; do
@@ -96,6 +107,7 @@ for app in Reel ReelEGL; do
   python3 "$TOP/tools/mksprites.py" --$lc "$R/!Sprites,ff9"
   ${CROSS}strip -o "$TMP/$lc.elf" "$STAGE/bin/$lc"
   "$ELF2AIF" -e "$TMP/$lc.elf" "$R/!RunImage,ff8" >/dev/null
+  cp "$TOP/third_party/pthreadticker/PThrTicker" "$R/PThrTicker,ffa"
   mkdir -p "$R/docs/source/c" "$R/docs/source/h"
   cp -r "$D/Licences" "$R/docs/Licences"
   cp "$TOP/player/reel.c"  "$R/docs/source/c/reel,fff"
