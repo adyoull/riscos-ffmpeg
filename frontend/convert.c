@@ -212,6 +212,24 @@ int conv_build_args(char *buf, size_t size, const ConvSettings *s, const ConvSou
         snprintf(err, errsize, "This file has no picture: choose a sound format (MP3 or M4A).");
         return -1;
     }
+    {   /* the extra options: output options, so they come after ours (and win) */
+        const char *x = s->extra;
+        while (*x == ' ')
+            x++;
+        if (*x && *x != '-') {
+            snprintf(err, errsize, "Options: start with an option, e.g. -vf hflip.");
+            return -1;
+        }
+        for (const char *c = x; *c; c++)
+            if ((unsigned char)*c < 32) {
+                snprintf(err, errsize, "Options: only one line, please.");
+                return -1;
+            }
+        if (!strncmp(x, "-i ", 3) || strstr(x, " -i ")) {
+            snprintf(err, errsize, "Options: the file to convert is the Source; -i can't be added here.");
+            return -1;
+        }
+    }
     add(buf, size, &n, "-nostdin -hide_banner -v error -y");
     if (from > 0)
         add(buf, size, &n, " -ss %.3f", from);
@@ -248,6 +266,17 @@ int conv_build_args(char *buf, size_t size, const ConvSettings *s, const ConvSou
         add(buf, size, &n, " -an");
     if (s->format == CONV_MP4 || s->format == CONV_M4A)
         add(buf, size, &n, " -movflags +faststart");
+    {
+        const char *x = s->extra;
+        size_t len;
+        while (*x == ' ')
+            x++;
+        len = strlen(x);
+        while (len && x[len - 1] == ' ')
+            len--;
+        if (len)
+            add(buf, size, &n, " %.*s", (int)len, x);
+    }
     add(buf, size, &n, " -progress pipe:1 -nostats %s%s%s", q(out), out, q(out));
     if (n >= size) {
         snprintf(err, errsize, "The file names are too long.");
@@ -400,6 +429,7 @@ enum {
     I_QUAL_L, I_QUAL, I_QUAL_B, I_SPEED_L, I_SPEED, I_SPEED_B,
     I_SOUND, I_DEINT, I_EASY,
     I_TRIM_L, I_FROM, I_TO_L, I_TO, I_TRIM_H,
+    I_OPTS_L, I_OPTS, I_OPTS_H,
     I_FILE, I_NAME, I_CONVERT,
     I_BAR, I_FILL, I_STOP, I_STATUS,
     I_PLAY, I_SHOW, I_LOG,
@@ -422,7 +452,7 @@ enum {
 typedef struct { int x0, y0, x1, y1, flags; char *text; const char *valid; int len; } icon_t;
 
 #define WIN_W 1100
-#define WIN_H 832
+#define WIN_H 888
 #define BAR_X0 24
 #define BAR_X1 880
 
@@ -447,13 +477,14 @@ static struct {
     /* icon texts */
     char t_src[256], t_info[160], t_preset[40], t_preset_d[120], t_format[20], t_size[20],
          t_qual[20], t_speed[20], t_name[256], t_status[200], t_file[16];
-    char t_from[16], t_to[16];
+    char t_from[16], t_to[16], t_opts[256];
 } C;
 
 static char s_sound[] = "Sound", s_deint[] = "Deinterlace if needed", s_easy[] = "Quick to decode (for RISC OS)";
 static char s_src_l[] = "Source", s_preset_l[] = "Convert to", s_format_l[] = "Format", s_size_l[] = "Size",
             s_qual_l[] = "Quality", s_speed_l[] = "Speed", s_trim_l[] = "From", s_to_l[] = "to",
-            s_trim_h[] = "e.g. 1:30; empty: the start / the end", s_convert[] = "Convert", s_stop[] = "Stop",
+            s_trim_h[] = "e.g. 1:30; empty: the start / the end",
+            s_opts_l[] = "Options", s_opts_h[] = "more ffmpeg options, e.g. -vf hflip", s_convert[] = "Convert", s_stop[] = "Stop",
             s_play[] = "Play", s_show[] = "Show", s_log[] = "Log", s_empty[] = "";
 static char v_popup[] = "R5;Sgright,pgright", v_display[] = "R2", v_opt[] = "Soptoff,opton", v_default[] = "R6,3",
             v_action[] = "R5,3", v_write[] = "Pptr_write;Ktar;A~ ", v_time[] = "Pptr_write;Ktar;A0-9:.",
@@ -481,6 +512,10 @@ static const char *const help[N_ICONS] = {
                "the file is a little bigger.",
     [I_FROM] = "Convert only part of the file: start from this time (h:mm:ss, m:ss or seconds). Empty: from the start.",
     [I_TO] = "Stop at this time. Empty: to the end.",
+    [I_OPTS] = "More ffmpeg options for the new file, as on the command line (e.g. -vf hflip, -r 25, "
+               "-metadata title=Holiday). They come after the window's own, so they win: -c:v or -crf here "
+               "replaces what's chosen above, and -vf replaces the size and deinterlace filters. Empty: none.",
+    [I_OPTS_H] = "More ffmpeg options for the new file, as on the command line: see the Options field.",
     [I_FILE] = "Drag this to a directory display to put the new file there instead.",
     [I_NAME] = "Where the new file goes: next to the original to start with. Edit it, or drag the icon to "
                "another directory; Return converts.",
@@ -571,20 +606,24 @@ static int create_window(void)
     icon_mk(&w.icon[I_TO], 440, -532, 600, -484, IF_TEXT | IF_BORDER | IF_VCENT | IF_FILLED | IF_BUTTON(15) | IF_COL(7, 0),
             C.t_to, v_time, sizeof(C.t_to));
     icon_mk(&w.icon[I_TRIM_H], 616, -532, WIN_W - 24, -484, IF_TEXT | IF_VCENT | IF_COL(4, 1), s_trim_h, v_label, sizeof(s_trim_h));
+    LABEL(I_OPTS_L, 16, -588, 184, -540, s_opts_l);
+    icon_mk(&w.icon[I_OPTS], 200, -588, 700, -540, IF_TEXT | IF_BORDER | IF_VCENT | IF_FILLED | IF_BUTTON(15) | IF_COL(7, 0),
+            C.t_opts, v_write, sizeof(C.t_opts));
+    icon_mk(&w.icon[I_OPTS_H], 716, -588, WIN_W - 24, -540, IF_TEXT | IF_VCENT | IF_COL(4, 1), s_opts_h, v_label, sizeof(s_opts_h));
     /* 3. saving */
-    icon_mk(&w.icon[I_FILE], 24, -664, 132, -560, IF_TEXT | IF_SPRITE | IF_HCENT | IF_BUTTON(6) | IF_COL(7, 1),
+    icon_mk(&w.icon[I_FILE], 24, -720, 132, -616, IF_TEXT | IF_SPRITE | IF_HCENT | IF_BUTTON(6) | IF_COL(7, 1),
             s_empty, v_file, 1);
-    icon_mk(&w.icon[I_NAME], 148, -636, 860, -588, IF_TEXT | IF_BORDER | IF_VCENT | IF_FILLED | IF_BUTTON(15) | IF_COL(7, 0),
+    icon_mk(&w.icon[I_NAME], 148, -692, 860, -644, IF_TEXT | IF_BORDER | IF_VCENT | IF_FILLED | IF_BUTTON(15) | IF_COL(7, 0),
             C.t_name, v_write, sizeof(C.t_name));
-    ACTION(I_CONVERT, 880, -644, WIN_W - 24, -580, s_convert, v_default);
+    ACTION(I_CONVERT, 880, -700, WIN_W - 24, -636, s_convert, v_default);
     /* 4. progress */
-    icon_mk(&w.icon[I_BAR], BAR_X0, -716, BAR_X1, -684, IF_TEXT | IF_BORDER | IF_FILLED | IF_COL(7, 0), s_empty, "R2", 1);
-    icon_mk(&w.icon[I_FILL], BAR_X0 + 4, -712, BAR_X0 + 4, -688, IF_TEXT | IF_FILLED | IF_COL(7, 10), s_empty, v_fill, 1);
-    ACTION(I_STOP, 896, -724, WIN_W - 24, -676, s_stop, v_action);
-    icon_mk(&w.icon[I_STATUS], 24, -772, WIN_W - 24, -732, IF_TEXT | IF_VCENT | IF_COL(7, 1), C.t_status, v_label, sizeof(C.t_status));
-    ACTION(I_PLAY, 24, -824, 184, -776, s_play, v_action);
-    ACTION(I_SHOW, 200, -824, 360, -776, s_show, v_action);
-    ACTION(I_LOG, 376, -824, 536, -776, s_log, v_action);
+    icon_mk(&w.icon[I_BAR], BAR_X0, -772, BAR_X1, -740, IF_TEXT | IF_BORDER | IF_FILLED | IF_COL(7, 0), s_empty, "R2", 1);
+    icon_mk(&w.icon[I_FILL], BAR_X0 + 4, -768, BAR_X0 + 4, -744, IF_TEXT | IF_FILLED | IF_COL(7, 10), s_empty, v_fill, 1);
+    ACTION(I_STOP, 896, -780, WIN_W - 24, -732, s_stop, v_action);
+    icon_mk(&w.icon[I_STATUS], 24, -828, WIN_W - 24, -788, IF_TEXT | IF_VCENT | IF_COL(7, 1), C.t_status, v_label, sizeof(C.t_status));
+    ACTION(I_PLAY, 24, -880, 184, -832, s_play, v_action);
+    ACTION(I_SHOW, 200, -880, 360, -832, s_show, v_action);
+    ACTION(I_LOG, 376, -880, 536, -832, s_log, v_action);
 
     r.r[1] = (intptr_t)&w;
     if (swi(Wimp_CreateWindow, &r))
@@ -681,7 +720,7 @@ static void progress_bar(double frac)
     int x1 = BAR_X0 + 4 + (int)((BAR_X1 - BAR_X0 - 8) * (frac < 0 ? 0 : frac > 1 ? 1 : frac));
     if (x1 != C.fill_x1) {
         C.fill_x1 = x1;
-        resize_icon(I_FILL, BAR_X0 + 4, -712, x1, -688);
+        resize_icon(I_FILL, BAR_X0 + 4, -768, x1, -744);
     }
 }
 
@@ -741,6 +780,7 @@ static void show_settings(void)
     shade(I_EASY, !video_opts);
     shade(I_SOUND, !have || busy || sound_only || !C.in.has_audio || !C.in.has_video);
     for (int i = I_TRIM_L; i <= I_TRIM_H; i++) shade(i, !have || busy);
+    for (int i = I_OPTS_L; i <= I_OPTS_H; i++) shade(i, !have || busy);
     shade(I_FILE, !have || busy);
     shade(I_NAME, !have || busy);
     shade(I_CONVERT, !have || busy);
@@ -938,6 +978,7 @@ void conv_sync(void)
 {
     snprintf(C.set.from, sizeof(C.set.from), "%s", C.t_from);
     snprintf(C.set.to, sizeof(C.set.to), "%s", C.t_to);
+    snprintf(C.set.extra, sizeof(C.set.extra), "%s", C.t_opts);
 }
 
 /* The conversion to out (a full path): after asking before replacing */
@@ -1363,7 +1404,7 @@ int conv_message(int *b)
             const char *t = ic >= 0 && ic < N_ICONS && help[ic] ? help[ic] :
                 "The Convert window: drop a file on it, choose what to make, then drag the file icon to a directory.";
             if (ic == I_SRC_L || ic == I_PRESET_L || ic == I_FORMAT_L || ic == I_SIZE_L || ic == I_QUAL_L ||
-                ic == I_SPEED_L || ic == I_TRIM_L || ic == I_TO_L)
+                ic == I_SPEED_L || ic == I_TRIM_L || ic == I_TO_L || ic == I_OPTS_L)
                 t = help[ic + 1] ? help[ic + 1] : t;
             reply(b, MSG_HELPREPLY, t);
         }
@@ -1421,6 +1462,6 @@ const char *conv_test_text(int which)
     }
     return "";
 }
-char *conv_test_buffer(int which) { return which == 0 ? C.t_name : which == 1 ? C.t_from : C.t_to; }
+char *conv_test_buffer(int which) { return which == 0 ? C.t_name : which == 1 ? C.t_from : which == 2 ? C.t_to : C.t_opts; }
 int conv_test_fill(void) { return C.fill_x1; }
 #endif

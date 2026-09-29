@@ -53,6 +53,7 @@ const uint8_t *reel_test_sprite(int *w, int *h, int *rows);
 int reel_test_fullscreen(void);
 int reel_test_pic_flags(void);
 int reel_test_ab(double *a, double *b);
+const char *reel_test_panel(void);
 int reel_test_list(int *n);
 int reel_test_mini(int *ontop);
 int reel_test_deint(void);
@@ -227,7 +228,15 @@ static int next_event(int *b)
         case P_MINIPLAY: case P_URLPLAY: case P_URLFILEPLAY:
             if (!base_url && (phase == P_URLPLAY || phase == P_URLFILEPLAY))
                 break;
-            if (phase_step++ < 40) {
+            if (phase == P_URLPLAY && phase_step == 0) { phase_step++; key_event(b, WIN, 's'); return 8; }   /* stats on */
+            if (phase == P_URLPLAY && phase_step == 41) {                 /* a web address: the network rows */
+                CHECK(strstr(reel_test_panel(), "Connection Speed=") && strstr(reel_test_panel(), "Network Activity=") &&
+                      strstr(reel_test_panel(), "Buffer Health=") && !strstr(reel_test_panel(), "Reading="),
+                      "S, a web address: the network rows: %s", reel_test_panel());
+                printf("  stats panel, web address: %s\n", reel_test_panel());
+                phase_step++; key_event(b, WIN, 's'); return 8;           /* and off */
+            }
+            if (phase_step++ < 40 || (phase == P_URLPLAY && phase_step < 42)) {
                 fake_time += 0.02;
                 return 0;                                             /* null */
             }
@@ -375,7 +384,12 @@ static int next_event(int *b)
                     white += px[(y * w + x) * 4] > 220 && px[(y * w + x) * 4 + 1] > 220 && px[(y * w + x) * 4 + 2] > 220;
             CHECK(white > 500, "S: the panel's text isn't in the picture (%d white pixels)", white);
             check_picture("stats panel");
-            printf("  stats panel: %dx%d, %d white pixels of text in the picture\n", pw, ph, white);
+            CHECK(strstr(reel_test_panel(), "Reading=") && strstr(reel_test_panel(), "Ready=") &&
+                  !strstr(reel_test_panel(), "Connection Speed") && !strstr(reel_test_panel(), "Buffer Health"),
+                  "S, a file: no network rows: %s", reel_test_panel());
+            CHECK(strstr(reel_test_panel(), "Codecs=h264 (High) / aac (LC)|") && strstr(reel_test_panel(), "/ QuickTime / MOV|"),
+                  "S: short codec and container names: %s", reel_test_panel());
+            printf("  stats panel: %dx%d, %d white pixels of text in the picture\n    %s\n", pw, ph, white, reel_test_panel());
             break;
         }
         case P_PANELOFF: {

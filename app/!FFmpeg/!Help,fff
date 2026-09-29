@@ -48,6 +48,15 @@ Convert window. It works from the top down:
        Deinterlace if needed   removes the stripes from interlaced video
        Quick to decode         simpler video that plays smoothly here
        From ... to             only part of the file (e.g. 1:30 to 2:45)
+       Options     more ffmpeg options for the new file, as you'd type
+                   them on the command line: e.g. -vf hflip (mirror),
+                   -r 25 (frame rate), -metadata title=Holiday.
+                   They go after the
+                   window's own, so they win: -c:v, -crf or -b:a here
+                   replace what's chosen above, and -vf replaces the
+                   size and deinterlace filters (add them yourself, e.g.
+                   -vf scale=-2:480,hflip). Input options (before -i)
+                   can't be given here; use From ... to for trimming.
      Options that don't apply are greyed out.
   3. Click Convert. The new file goes next to the original, named after
      it (e.g. holiday_720/mp4 beside holiday/mkv); the name field shows

@@ -29,7 +29,7 @@ int conv_test_fill(void);
 
 enum { I_SRC_L, I_SRC, I_INFO, I_PRESET_L, I_PRESET, I_PRESET_B, I_PRESET_D, I_FORMAT_L, I_FORMAT, I_FORMAT_B,
        I_SIZE_L, I_SIZE, I_SIZE_B, I_QUAL_L, I_QUAL, I_QUAL_B, I_SPEED_L, I_SPEED, I_SPEED_B, I_SOUND, I_DEINT,
-       I_EASY, I_TRIM_L, I_FROM, I_TO_L, I_TO, I_TRIM_H, I_FILE, I_NAME, I_CONVERT, I_BAR, I_FILL, I_STOP,
+       I_EASY, I_TRIM_L, I_FROM, I_TO_L, I_TO, I_TRIM_H, I_OPTS_L, I_OPTS, I_OPTS_H, I_FILE, I_NAME, I_CONVERT, I_BAR, I_FILL, I_STOP,
        I_STATUS, I_PLAY, I_SHOW, I_LOG, N_ICONS };
 
 #define WINH 0x6000
@@ -143,6 +143,7 @@ static int script(int *b)
         strcpy(conv_test_buffer(0), "trailer_480/mp4");                          /* the user types a bare name */
         strcpy(conv_test_buffer(1), "0:10");                                     /* trim, as typed */
         strcpy(conv_test_buffer(2), "1:40");
+        strcpy(conv_test_buffer(3), "-metadata title=Trailer");                 /* more options, as typed */
         memset(b, 0, 28); b[0] = WINH; b[1] = I_NAME; b[6] = 13; return 8;      /* Return: not a full path */
     case 9:
         CHECK(nreports == 1 && strstr(reported[0], "needs a directory"), "refused name: %s", reported[0]);
@@ -163,7 +164,7 @@ static int script(int *b)
         CHECK(!strcmp(obey, "| Run by !FFmpeg's Convert window\nSDFS::Pi.$.Apps.!FFmpeg.ffmpeg -nostdin -hide_banner -v error -y "
                       "-ss 10.000 -to 100.000 -i SDFS::Pi.$.Films.trailer/mkv -map 0:v:0 -map 0:a:0 "
                       "-vf yadif=deint=interlaced,scale=-2:480 -c:v libx264 -preset veryfast -crf 23 -tune fastdecode "
-                      "-pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart -progress pipe:1 -nostats "
+                      "-pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart -metadata title=Trailer -progress pipe:1 -nostats "
                       "SDFS::Pi.$.Out.trailer_480/mp4\n"), "ffmpeg Obey file:\n%s", obey);
         CHECK(shaded(I_CONVERT) && shaded(I_SIZE) && !shaded(I_STOP) && !strcmp(conv_test_text(2), "SDFS::Pi.$.Out.trailer_480/mp4"),
               "while converting: shading, name '%s'", conv_test_text(2));
@@ -365,6 +366,19 @@ int main(void)
           strstr(a, " \"o ut\""), "silent video, spaced name: %s", a);
     in.has_video = 0; in.has_audio = 1;
     CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) < 0 && strstr(e, "no picture"), "MP4 from sound: %s", e);
+    in.has_video = 1;
+    conv_apply_preset(&s, 0);                                                  /* the extra options */
+    strcpy(s.extra, "  -vf hflip -r 25  ");
+    CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) == 0 &&
+          strstr(a, " -movflags +faststart -vf hflip -r 25 -progress pipe:1 -nostats out"), "extra options: %s", a);
+    strcpy(s.extra, "hflip");
+    CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) < 0 && strstr(e, "start with an option"),
+          "extra not an option: %s", e);
+    strcpy(s.extra, "-y -i other.mp4");
+    CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) < 0 && strstr(e, "-i can't"), "extra -i: %s", e);
+    strcpy(s.extra, "-r 25\n-an");
+    CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) < 0 && strstr(e, "one line"), "extra newline: %s", e);
+    s.extra[0] = 0;
     {
         ConvSource p;
         conv_parse_probe(&p, "codec_name=mjpeg|codec_type=video|width=500|height=500\ncodec_name=mp3|codec_type=audio|channels=2\nduration=N/A\n");

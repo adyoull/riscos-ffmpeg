@@ -22,6 +22,7 @@ typedef struct {
     int preset, format, size, quality, speed;
     int sound, deinterlace, easy;
     char from[16], to[16];              /* trim, as typed ("" = start / end) */
+    char extra[256];                    /* more ffmpeg options for the output, as typed ("" = none) */
 } ConvSettings;
 
 typedef struct {                        /* what ffprobe found */

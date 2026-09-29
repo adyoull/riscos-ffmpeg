@@ -17,6 +17,12 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   protocol's largest write; `truncate=0`), then opened again for writing
   without truncating, at the end of the shifted data. Elsewhere only when
   the second opening fails, or with `FFMPEG_SHIFT_IN_PLACE` set (tests).
+- **Convert window: an Options field** for more ffmpeg options, as on the
+  command line (e.g. `-vf hflip`, `-r 25`, `-metadata title=…`). They go
+  after the window's own output options, before `-progress`, so they win.
+  It must start with an option, be one line, and not add `-i`. Tab moves
+  to it; greyed out while converting, like Trim. The window is 56 OS units
+  taller. convert_test: the Obey file carries them; the three refusals.
 - **tests/qemu/faststart.sh** (in run-all.sh): MP4 (5 chunks), MOV and
   M4A made in place are byte for byte what the usual way makes. Mutations
   caught: opening with truncation (an empty file), 1 MB writes (EIO).
@@ -71,6 +77,12 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
     nothing changed outside the panel, graph bars, off again exactly as
     before). reel_test: S on, the text in the picture and the picture
     as reelcore draws it; S off.
+- **Stats on the picture, for a file:** Connection Speed, Network Activity
+  and Buffer Health only for a web address. For a file, Reading (Mbit/s
+  from the file) and Ready (pictures decoded ahead, sound queued) instead,
+  without graphs. Codecs and the container use the short names ("h264
+  (High) / aac (LC)", "QuickTime / MOV"). reel_test checks the rows for a
+  file and for a web address.
 - **No more late pictures from slow ones at 60 fps** (a Pi 4 ReelEGL log of
   test60_720p_60s: 1–8 late a second in stretches, decoding 2x real time on
   average).

@@ -2666,6 +2666,9 @@ static struct {
     const ReelCore *media_of;
     char media[4096];                   /* reelcore_media_info of that video */
 } P;
+#ifdef REEL_TEST
+static ReelCorePanel *panel_last;       /* what was last made */
+#endif
 
 /* A value from reelcore_media_info: label in section ("Video", "Audio", "File") */
 static const char *panel_media(const char *section, const char *label, char *out, int size)
@@ -2685,6 +2688,25 @@ static const char *panel_media(const char *section, const char *label, char *out
         l = e ? e + 1 : l + len;
     }
     return out;
+}
+
+/* Media info's long names made short: a codec's short name is in its last
+   brackets ("H.264 / AVC / ... (h264)" -> "h264"); a container's long name
+   comes before them ("QuickTime / MOV (mov,mp4,...)" -> "QuickTime / MOV"). */
+static char *panel_short(char *t, int codec)
+{
+    char *o = strrchr(t, '(');
+    size_t n = strlen(t);
+    if (!o || n < 2 || t[n - 1] != ')')
+        return t;
+    if (codec) {
+        t[n - 1] = 0;
+        return o + 1;
+    }
+    while (o > t && o[-1] == ' ')
+        o--;
+    *o = 0;
+    return t;
 }
 
 static void panel_push(float *a, double v)
@@ -2709,7 +2731,7 @@ static void panel_update(int sample)
 {
     static char val[REELCORE_PANEL_ROWS][160];
     static float g_speed[PANEL_N], g_act[PANEL_N], g_buf[PANEL_N];
-    ReelCorePanel pp;
+    static ReelCorePanel pp;            /* (static: reel_test reads the rows) */
     ReelCoreStats st;
     ReelCoreNet ns;
     char a[96], b[96], c[96], d[96];
@@ -2749,7 +2771,7 @@ static void panel_update(int sample)
     pic = ov_pic_box(S.fullscreen ? S.full : S.win);
 
     panel_media("File", "Container", a, sizeof(a));
-    snprintf(val[i], sizeof(val[i]), "%.40s / %.30s", S.title, a[0] ? a : "?");
+    snprintf(val[i], sizeof(val[i]), "%.50s / %.30s", S.title, a[0] ? panel_short(a, 0) : "?");
     pp.label[i] = "Video / Source"; pp.value[i] = val[i]; i++;
 
     snprintf(val[i], sizeof(val[i]), "%dx%d / %u dropped of %u", (pic.x1 - pic.x0) >> S.xeig, (pic.y1 - pic.y0) >> S.yeig,
@@ -2775,25 +2797,34 @@ static void panel_update(int sample)
     panel_media("Video", "Profile", b, sizeof(b));
     panel_media("Audio", "Codec", c, sizeof(c));
     panel_media("Audio", "Profile", d, sizeof(d));
-    snprintf(val[i], sizeof(val[i]), "%.30s%s%.20s%s / %.30s%s%.20s%s", a[0] ? a : "none", b[0] ? " (" : "", b, b[0] ? ")" : "",
-             c[0] ? c : "none", d[0] ? " (" : "", d, d[0] ? ")" : "");
+    snprintf(val[i], sizeof(val[i]), "%.30s%s%.20s%s / %.30s%s%.20s%s", a[0] ? panel_short(a, 1) : "none",
+             b[0] ? " (" : "", b, b[0] ? ")" : "", c[0] ? panel_short(c, 1) : "none", d[0] ? " (" : "", d, d[0] ? ")" : "");
     pp.label[i] = "Codecs"; pp.value[i] = val[i]; i++;
 
     panel_media("Video", "Colours", a, sizeof(a));
     snprintf(val[i], sizeof(val[i]), "%.100s", a[0] ? a : "?");
     pp.label[i] = "Color"; pp.value[i] = val[i]; i++;
 
-    snprintf(val[i], sizeof(val[i]), "%.0f Kbps", rate);
-    pp.label[i] = "Connection Speed"; pp.value[i] = val[i];
-    pp.graph[i] = g_speed; pp.graph_rgb[i] = 0x1E88E5; i++;
+    if (net) {                                  /* a web address: the network rows, as YouTube's */
+        snprintf(val[i], sizeof(val[i]), "%.0f Kbps", rate);
+        pp.label[i] = "Connection Speed"; pp.value[i] = val[i];
+        pp.graph[i] = g_speed; pp.graph_rgb[i] = 0x1E88E5; i++;
 
-    snprintf(val[i], sizeof(val[i]), "%.0f KB", got / 1024);
-    pp.label[i] = "Network Activity"; pp.value[i] = val[i];
-    pp.graph[i] = g_act; pp.graph_rgb[i] = 0x26A69A; i++;
+        snprintf(val[i], sizeof(val[i]), "%.0f KB", got / 1024);
+        pp.label[i] = "Network Activity"; pp.value[i] = val[i];
+        pp.graph[i] = g_act; pp.graph_rgb[i] = 0x26A69A; i++;
 
-    snprintf(val[i], sizeof(val[i]), "%.2f s%s", ahead, net ? "" : " (sound queued)");
-    pp.label[i] = "Buffer Health"; pp.value[i] = val[i];
-    pp.graph[i] = g_buf; pp.graph_rgb[i] = 0xFFB300; i++;
+        snprintf(val[i], sizeof(val[i]), "%.2f s", ahead);
+        pp.label[i] = "Buffer Health"; pp.value[i] = val[i];
+        pp.graph[i] = g_buf; pp.graph_rgb[i] = 0xFFB300; i++;
+    } else {                                    /* a file: what's being read, and what's ready */
+        snprintf(val[i], sizeof(val[i]), "%.2f Mbit/s from the file", rate / 1000);
+        pp.label[i] = "Reading"; pp.value[i] = val[i]; i++;
+
+        snprintf(val[i], sizeof(val[i]), "%d pictures decoded ahead, %.2f s of sound",
+                 st.pictures_waiting, st.sound_queued);
+        pp.label[i] = "Ready"; pp.value[i] = val[i]; i++;
+    }
 
     dec = st.decoded - P.prev.decoded;
     draws = S.draw_n - P.prev_draw_n;
@@ -2811,6 +2842,9 @@ static void panel_update(int sample)
     pp.graph_n = PANEL_N;
     pp.yuv_scale = ov.shown && ov.placed[1] > 0 && fw > 0 ? (double)fw / ov.placed[1] : 1;
     reelcore_set_panel(S.v, &pp);
+#ifdef REEL_TEST
+    panel_last = &pp;
+#endif
     if (sample && dt > 0.5) {
         P.prev = st;
         P.prev_cs = t;
@@ -2818,6 +2852,12 @@ static void panel_update(int sample)
         P.prev_draw_cs = S.draw_cs;
     }
 }
+
+#ifdef REEL_TEST
+static int panel_rows_made(void) { return panel_last ? panel_last->rows : 0; }
+static const char *panel_row_label(int i) { return panel_last->label[i]; }
+static const char *panel_row_value(int i) { return panel_last->value[i]; }
+#endif
 
 /* Shown or hidden: the picture drawn again if nothing new is coming */
 static void panel_toggle(void)
@@ -3929,6 +3969,16 @@ int reel_test_ab(double *a, double *b) { *a = S.ab_a; *b = S.ab_b; return S.ab; 
 int reel_test_list(int *n) { *n = S.list_n; return S.list_i; }
 int reel_test_mini(int *ontop) { *ontop = S.ontop; return mini; }
 int reel_test_deint(void) { return deint_modes[S.deint_i]; }
+/* The stats panel's rows as last made, "Label=value|..." (empty when off) */
+const char *reel_test_panel(void)
+{
+    static char t[2048];
+    size_t n = 0;
+    t[0] = 0;
+    for (int i = 0; P.on && i < panel_rows_made(); i++)
+        n += snprintf(t + n, n < sizeof(t) ? sizeof(t) - n : 0, "%s=%s|", panel_row_label(i), panel_row_value(i));
+    return t;
+}
 #endif
 
 #ifndef REEL_NO_MAIN

@@ -226,11 +226,14 @@ on the picture's top left corner, as YouTube's "Stats for nerds" does:
                       (hardware overlay, or converted)
   Volume              and the speed, if not normal
   Codecs, Color       the video's and sound's codecs; its colours
-  Connection Speed    how fast the file (or web address) is being read,
-                      with the last minute as a graph
+  For a web address:
+  Connection Speed    how fast it's being read, with the last minute as
+                      a graph
   Network Activity    how much was read in the last second, and a graph
-  Buffer Health       for a web address, how much is read ahead; for a
-                      file, the sound queued; and a graph
+  Buffer Health       how much is read ahead, and a graph
+  For a file, instead:
+  Reading             how fast the file is being read
+  Ready               pictures decoded ahead, and the sound queued
   Timing              decoding and drawing each picture, how busy
                       decoding is, and how far the picture is from the
                       sound
