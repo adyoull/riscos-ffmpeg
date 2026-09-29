@@ -59,6 +59,15 @@
 #define LATE_SKIP     0.3    /* this far behind: skip decoding non-reference frames, */
 #define LATE_KEYS     1.5    /* this far: decode only keyframes, */
 #define LATE_OK       0.05   /* until this close again */
+/* Deblocking turned off by itself: when pictures take longer to decode
+   than FAST_SLOW of the time between them (or they're LATE_FAST behind),
+   and on again only below FAST_EASY and after FAST_HOLD seconds off.
+   Deblocking is about a quarter of H.264 decoding, so back on, a video at
+   FAST_EASY comes to about 0.8 of the time: under FAST_SLOW, no see-saw. */
+#define FAST_SLOW     0.9
+#define FAST_EASY     0.6
+#define LATE_FAST     0.1
+#define FAST_HOLD     5.0
 #define NET_AHEAD     10.0   /* network: seconds read ahead of the picture shown */
 #define NET_MAX_BYTES (32 << 20)  /* ... and at most this much */
 #define NET_LOW       3.0    /* below this, reelcore_update gives the reader time */
@@ -171,6 +180,10 @@ struct ReelCore {
     AVFilterContext *tempo_in, *tempo_out;
     AVFrame *tempo_frame;
     int fast;                          /* fast decoding: no deblocking filter */
+    int auto_fast;                     /* too slow: deblocking off by itself (while fast is off) */
+    unsigned auto_fast_spells;
+    double auto_fast_since;            /* clock_now when turned off (for FAST_HOLD) */
+    double dec_avg;                    /* moving average: seconds decoding a picture */
     int deint;                         /* REELCORE_DEINT_* */
     AVFilterGraph *dgraph;             /* buffer -> yadif -> buffersink, made when needed */
     AVFilterContext *din, *dout;
@@ -1441,6 +1454,9 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
                          (v->afmt && v->afmt->pb ? v->afmt->pb->bytes_read : 0);
     st->speed = v->speed;
     st->fast = v->fast;
+    st->auto_fast = v->auto_fast && v->fast != REELCORE_FAST_ON;
+    st->auto_fast_spells = v->auto_fast_spells;
+    st->decode_avg = v->dec_avg;
     st->deinterlace = v->deint;
     st->interlaced = v->n_interlaced;
     st->deinterlaced = v->n_deint;
@@ -2092,10 +2108,16 @@ static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int v
 static void decode(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
 {
     int64_t t0 = av_gettime_relative();
+    unsigned n0 = v->n_decoded;
     decode_frames(v, dec, pkt, video);
-    if (video)
-        v->t_decode += av_gettime_relative() - t0;
-    else
+    if (video) {
+        int64_t t = av_gettime_relative() - t0;
+        v->t_decode += t;
+        /* the recent time a picture takes (not on the way to a seek's
+           picture, nor while frames are skipped: those are cheap) */
+        if (pkt && v->n_decoded == n0 + 1 && !v->need_first && v->seek_target < 0 && !v->skipping)
+            v->dec_avg = v->dec_avg > 0 ? v->dec_avg * 0.9 + t / 1e6 * 0.1 : t / 1e6;
+    } else
         v->t_audio += av_gettime_relative() - t0;
 }
 
@@ -2131,6 +2153,38 @@ static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int v
    B-frames) until caught up; far behind, decode only keyframes. Those
    frames would only be dropped as late anyway, and the sound (the clock)
    doesn't wait. */
+static void set_deblock(ReelCore *v);
+
+/* Pictures decoding too slowly for the frame rate: deblocking off by
+   itself before frames are skipped (4K, 4:4:4: about a quarter of the
+   time); on again once decoding has plenty to spare. */
+static void check_slow(ReelCore *v, double lag)
+{
+    double gap, now;
+    if (v->fast == REELCORE_FAST_ON || (v->flags & REELCORE_NO_AUTOFAST) || v->paused)
+        return;
+    gap = 1.0 / ((v->fps > 0 ? v->fps : 25) * v->speed);
+    now = clock_now(v);
+    if (!v->auto_fast) {
+        /* (behind with decoding not the reason, a busy desktop, say: left on) */
+        if (v->dec_avg > gap * FAST_SLOW || (lag > LATE_FAST && v->dec_avg > gap * 0.5)) {
+            v->auto_fast = 1;
+            v->auto_fast_spells++;
+            v->auto_fast_since = now;
+            v->dec_avg *= 0.8;             /* (what it should come down to) */
+            set_deblock(v);
+            av_log(NULL, AV_LOG_VERBOSE, "reelcore: decoding too slowly (%.1f ms a picture, %.2f s behind): "
+                   "deblocking off\n", v->dec_avg / 0.8 * 1000, lag);
+        }
+    } else if (!v->skipping && lag < LATE_OK && v->dec_avg > 0 && v->dec_avg < gap * FAST_EASY &&
+               fabs(now - v->auto_fast_since) > FAST_HOLD) {
+        v->auto_fast = 0;
+        set_deblock(v);
+        av_log(NULL, AV_LOG_VERBOSE, "reelcore: decoding keeps up (%.1f ms a picture): deblocking on\n",
+               v->dec_avg * 1000);
+    }
+}
+
 static void check_late(ReelCore *v)
 {
     static const char *what[3] = { "decoding every frame", "skipping non-reference frames",
@@ -2141,6 +2195,7 @@ static void check_late(ReelCore *v)
         return;
     last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
     lag = clock_now(v) - last;
+    check_slow(v, lag);
     want = lag > LATE_KEYS ? 2 : lag > LATE_SKIP ? (v->skipping > 1 ? 2 : 1) : lag < LATE_OK ? 0 : v->skipping;
     if (want != v->skipping) {
         if (want > v->skipping)
@@ -3670,15 +3725,24 @@ void reelcore_set_fast(ReelCore *v, int mode)
     if (mode == v->fast)
         return;
     v->fast = mode;
-    v->vdec->skip_loop_filter = mode == REELCORE_FAST_ON ? AVDISCARD_ALL :
+    set_deblock(v);
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: fast decoding %s\n",
+           mode == REELCORE_FAST_ON ? "on (no deblocking)" :
+           mode == REELCORE_FAST_LIGHT ? "light (no deblocking of pictures nothing is predicted from)" : "off");
+}
+
+/* The deblocking filter as fast (and auto_fast) say */
+static void set_deblock(ReelCore *v)
+{
+    int mode = v->fast;
+    if (!v->vdec)
+        return;
+    v->vdec->skip_loop_filter = mode == REELCORE_FAST_ON || v->auto_fast ? AVDISCARD_ALL :
                                 mode == REELCORE_FAST_LIGHT ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
     if (mode == REELCORE_FAST_ON)       /* (the "fast" shortcuts change pictures others are predicted from) */
         v->vdec->flags2 |= AV_CODEC_FLAG2_FAST;
     else
         v->vdec->flags2 &= ~AV_CODEC_FLAG2_FAST;
-    av_log(NULL, AV_LOG_VERBOSE, "reelcore: fast decoding %s\n",
-           mode == REELCORE_FAST_ON ? "on (no deblocking)" :
-           mode == REELCORE_FAST_LIGHT ? "light (no deblocking of pictures nothing is predicted from)" : "off");
 }
 
 int reelcore_fast(const ReelCore *v) { return v->fast; }

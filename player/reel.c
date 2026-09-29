@@ -1952,7 +1952,8 @@ static void play_source(const source_t *src)
     cs.headers = src->headers;
     cs.user_agent = src->user_agent;
     cs.title = src->title;
-    v = reelcore_open_source(&cs, (S.loop && S.list_n <= 1 ? REELCORE_LOOP : 0) | (net ? REELCORE_ASYNC : 0));
+    v = reelcore_open_source(&cs, (S.loop && S.list_n <= 1 ? REELCORE_LOOP : 0) | (net ? REELCORE_ASYNC : 0) |
+                             (getenv(APP "$NoAutoFast") ? REELCORE_NO_AUTOFAST : 0));
     if (!v) {
         char msg[300];
         snprintf(msg, sizeof(msg), "%s: %s", name, reelcore_last_error());
@@ -2399,9 +2400,11 @@ static void info_stats(void)
         snprintf(r[3].value, sizeof(r[3].value), "%.1f a second", dec / dt);
     snprintf(r[4].value, sizeof(r[4].value), "%.0f%% of the time for pictures, %.0f%% for sound",
              dtime * 100 / dt, (st.audio_time - info_prev.audio_time) * 100 / dt);
-    snprintf(r[5].value, sizeof(r[5].value), "%s; %u time%s so far",
+    snprintf(r[5].value, sizeof(r[5].value), "%s; %u time%s so far%s",
              st.skip_level == 2 ? "keyframes only" : st.skip_level ? "non-reference frames skipped" : "off",
-             st.skip_spells, st.skip_spells == 1 ? "" : "s");
+             st.skip_spells, st.skip_spells == 1 ? "" : "s",
+             st.auto_fast ? "; deblocking off (decoding too slow)" :
+             st.auto_fast_spells ? "; deblocking was off for a while" : "");
     if (dec || shown) {
         unsigned conv = shown ? shown : dec;
         if (ov.shown)
@@ -2919,6 +2922,13 @@ static void panel_update(int sample)
              draws ? (S.draw_cs - P.prev_draw_cs) * 10.0 / draws : 0.0,
              dt > 0 ? (st.decode_time - P.prev.decode_time) * 100 / dt : 0.0, (int)((st.position - st.clock) * 1000));
     pp.label[i] = "Timing"; pp.value[i] = val[i]; i++;
+
+    if (st.auto_fast || st.skip_level) {       /* what's being left out to keep up */
+        snprintf(val[i], sizeof(val[i]), "%s%s%s", st.auto_fast ? "no deblocking" : "",
+                 st.auto_fast && st.skip_level ? ", " : "",
+                 st.skip_level == 2 ? "keyframes only" : st.skip_level ? "non-reference frames skipped" : "");
+        pp.label[i] = "Keeping Up"; pp.value[i] = val[i]; i++;
+    }
 
     now = time(NULL);
     strftime(val[i], sizeof(val[i]), "%a %b %d %Y %H:%M:%S", localtime(&now));

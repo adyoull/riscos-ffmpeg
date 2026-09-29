@@ -10,6 +10,10 @@
  * must stay near reelcore's own limit however far the video reads ahead
  * (a 4K film on a Pi: 15 s queued, StreamManager refused it, the sound
  * was given up).
+ * Then decoding only a little too slow (0.048 s a picture, 0.04 s apart):
+ * reelcore must turn deblocking off by itself (a quarter less here) and
+ * keep up without skipping; with REELCORE_NO_AUTOFAST it can't. A light
+ * video never has it turned off, and one that gets lighter has it back.
  *
  *   slow_test CLIP   (a 6 s clip with B-frames and sound)
  */
@@ -29,10 +33,11 @@ int __wrap_avcodec_send_packet(AVCodecContext *c, const AVPacket *p)
     if (c->codec_type == AVMEDIA_TYPE_VIDEO && p) {
         int key = p->flags & AV_PKT_FLAG_KEY;
         n++;
+        double k = c->skip_loop_filter == AVDISCARD_ALL ? cost * 0.75 : cost;
         if (c->skip_frame == AVDISCARD_DEFAULT || key)
-            fake_time += cost;
+            fake_time += k;
         else if (c->skip_frame == AVDISCARD_NONREF)
-            fake_time += (n & 1) ? cost : cost / 10;
+            fake_time += (n & 1) ? k : k / 10;
         else
             fake_time += 0.002;
     }
@@ -44,8 +49,36 @@ static int fails;
 
 static void log_line(int level, const char *line)
 {
-    if (strstr(line, "behind"))
+    if (strstr(line, "behind") || strstr(line, "deblocking"))
         printf("  %.1f s: %s\n", fake_time, line);
+}
+
+/* plays clip for up to secs with pictures costing c (c2 from after2 s on) */
+static void play(const char *clip, int flags, double c, double c2, double after, double secs,
+                 ReelCoreStats *st, unsigned *shown)
+{
+    ReelCore *v;
+    double t0 = fake_time;
+    int r = 0;
+    cost = c;
+    *shown = 0;
+    v = reelcore_open(clip, flags);
+    CHECK(v, "open %s", clip);
+    if (!v)
+        return;
+    for (int i = 0; i < 40000 && r != REELCORE_END && fake_time - t0 < secs; i++) {
+        if (fake_time - t0 > after)
+            cost = c2;
+        r = reelcore_update(v);
+        if (r == REELCORE_NEW_FRAME)
+            (*shown)++;
+        fake_time += 0.002;
+    }
+    reelcore_stats(v, st);
+    reelcore_close(v);
+    printf("  cost %.3f%s: %u shown, %u late, %u skip spells, deblocking off %u time(s), now %s, %.1f ms a picture\n",
+           c, flags & REELCORE_NO_AUTOFAST ? " (no auto)" : "", *shown, st->late, st->skip_spells,
+           st->auto_fast_spells, st->auto_fast ? "off" : "on", st->decode_avg * 1000);
 }
 
 int main(int argc, char **argv)
@@ -111,6 +144,25 @@ int main(int argc, char **argv)
         CHECK(most_sound < 0.6, "heavy: the sound queued reached %.2f s", most_sound);
         CHECK(strstr(d, "keyframes only") != NULL || strstr(d, "skip spells") != NULL, "heavy: didn't skip");
         reelcore_close(v);
+    }
+    if (argc > 2) {
+        ReelCoreStats st;
+        unsigned shown;
+        /* a little too slow: deblocking off by itself, and no frames skipped */
+        play(argv[2], 0, 0.048, 0.048, 99, 10, &st, &shown);
+        CHECK(st.auto_fast && st.auto_fast_spells == 1, "a little slow: deblocking not turned off");
+        CHECK(st.skip_spells == 0 && st.late < shown / 10, "a little slow: %u skip spells, %u late of %u",
+              st.skip_spells, st.late, shown);
+        /* the same without: it falls behind */
+        play(argv[2], REELCORE_NO_AUTOFAST, 0.048, 0.048, 99, 10, &st, &shown);
+        CHECK(st.auto_fast_spells == 0, "no auto: deblocking turned off");
+        CHECK(st.skip_spells > 0 || st.late > shown / 10, "no auto: kept up anyway");
+        /* light: left alone */
+        play(argv[2], 0, 0.015, 0.015, 99, 10, &st, &shown);
+        CHECK(st.auto_fast_spells == 0, "light: deblocking turned off");
+        /* lighter after 2 s: on again (after 5 s off) */
+        play(argv[2], 0, 0.048, 0.01, 2, 11, &st, &shown);
+        CHECK(st.auto_fast_spells == 1 && !st.auto_fast, "lighter: deblocking not back on");
     }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;

@@ -45,6 +45,7 @@ typedef struct ReelCore ReelCore;
 #define REELCORE_PAUSED     4   /* open paused (reelcore_pause(v, 0) starts it) */
 #define REELCORE_ASYNC      8   /* reelcore_open_source: return at once; see below */
 #define REELCORE_NO_ROTATE 16   /* show the picture as stored, not turned as the file says */
+#define REELCORE_NO_AUTOFAST 32 /* never turn the deblocking filter off by itself (see reelcore_set_fast) */
 
 /* reelcore_update results */
 #define REELCORE_SAME_FRAME 0   /* nothing new to show */
@@ -159,6 +160,9 @@ typedef struct ReelCoreStats {
     long long bytes_read;             /* from the file */
     double speed;                     /* reelcore_set_speed */
     int fast;                         /* reelcore_set_fast */
+    int auto_fast;                    /* deblocking turned off by itself (too slow): 1 now */
+    unsigned auto_fast_spells;        /* how many times it has been */
+    double decode_avg;                /* recent seconds a picture takes to decode (0 unknown) */
     int audio_track, audio_tracks;    /* the sound track played (0 = the first; -1 none), and how many */
     int deinterlace;                  /* REELCORE_DEINT_* */
     unsigned interlaced;              /* pictures decoded that were interlaced */
@@ -232,7 +236,11 @@ int reelcore_deinterlace(const ReelCore *v);
    REELCORE_FAST_LIGHT: only on pictures no other picture is predicted from
    (most B-frames), so nothing carries over: about 15% less for typical
    H.264 with B-frames, and invisible once the picture is shown smaller
-   (Reel's mini player). Can be changed at any time. */
+   (Reel's mini player). Can be changed at any time.
+   Without REELCORE_NO_AUTOFAST, a video that decodes too slowly for its
+   frame rate (a 4K or 4:4:4 file on a Pi) has deblocking turned off on
+   every picture by itself, before any frames are skipped, and back on once
+   decoding keeps up with plenty to spare; ReelCoreStats.auto_fast says when. */
 #define REELCORE_FAST_OFF   0
 #define REELCORE_FAST_ON    1
 #define REELCORE_FAST_LIGHT 2

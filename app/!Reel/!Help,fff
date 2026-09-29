@@ -88,7 +88,11 @@ Menu on the window:
   Loop                play the file (or the playlist) again and again
   Fast decode         cheaper, rougher decoding, for files that are too
                       much for the machine (it skips the deblocking
-                      filter, so you may see blocks)
+                      filter, so you may see blocks). Without it, Reel
+                      skips the filter by itself when a file decodes
+                      too slowly to keep up (a 4K or 4:4:4 file), and
+                      puts it back once decoding has time to spare;
+                      *Set Reel$NoAutoFast 1 stops that
   Vsync (full screen) full screen waits for the screen's refresh before
                       each picture: no tearing. Untick it to draw at
                       once (a little faster; you may see a tear line).
@@ -277,6 +281,8 @@ on the picture's top left corner, as YouTube's "Stats for nerds" does:
   Timing              decoding and drawing each picture, how busy
                       decoding is, and how far the picture is from the
                       sound
+  Keeping Up          only when decoding is too slow: what's being left
+                      out (deblocking, frames)
   Date                today's date and the time
 It's drawn into the picture itself, not in a window over it, so it can be
 seen over a hardware overlay too (which covers anything else on the
@@ -334,7 +340,8 @@ at the top, "stats for nerds", updated every second while playing:
   Decoded           pictures decoded a second, the time each took, and
                     how many times faster than real time that is
   Decoding load     the share of the time spent decoding
-  Frame skipping    whether Reel is skipping frames to keep up
+  Frame skipping    whether Reel is skipping frames to keep up, and
+                    whether it has turned deblocking off to keep up
   Converting        swscale's time a picture (colours and scaling)
   Deinterlacing     Auto/On/Off, the time a picture, and how many
                     pictures were interlaced
