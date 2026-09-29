@@ -235,6 +235,8 @@ static struct {
     char info_title[80];
     unsigned st_nulls, draw_n;          /* for its stats: null events, pictures drawn ... */
     unsigned draw_cs;                   /* ... and the time drawing them took */
+    int ov_pending;                     /* a picture waiting for the overlay's next switch */
+    unsigned ov_waited, ov_replaced;    /* for the stats: pictures that waited; replaced before shown */
     int nosleep;                        /* Reel$NoSleep: poll flat out, as before 0.1.9 */
     int idle_cs;                        /* after a null: centiseconds we may sleep */
     unsigned slept_cs;                  /* for the stats: sleep asked for */
@@ -1106,6 +1108,7 @@ static void ov_destroy(void)
         lg("overlay: destroyed");
     }
     ov.id = ov.shown = ov.win = 0;
+    S.ov_pending = 0;
 }
 
 static void ov_fail(const char *why)
@@ -1122,6 +1125,7 @@ static int ov_hide(void)
         return 0;
     ov_call(OV_DISPLAY, ov.id, -1);
     ov.shown = 0;
+    S.ov_pending = 0;
     return 1;
 }
 
@@ -1255,7 +1259,10 @@ static int ov_place(int w)
 }
 
 /* A new picture: shown through the overlay if we can (1), else the caller
-   draws it as before (0). */
+   draws it as before (0). 2: not yet; the overlay's last switch hasn't
+   happened (no vsync since), so every buffer may still be in use. Rather
+   than wait for the vsync here (up to a whole refresh, 16.7 ms at 60 Hz,
+   with nothing decoded meanwhile), the caller tries again on its next pass. */
 static int ov_show_frame(void)
 {
     int w = S.fullscreen ? S.full : S.win, fw, fh, colour, mode, placed, b;
@@ -1295,10 +1302,8 @@ static int ov_show_frame(void)
         return 0;
     }
     /* a switch happens at the next vsync: don't write into a buffer until one has passed */
-    if (ov_vsyncs() == ov.vsync) {
-        r.r[0] = 19;
-        swi(0x06, &r);
-    }
+    if (ov_vsyncs() == ov.vsync)
+        return 2;
     b = ov.next;
     r.r[0] = ov.id;
     r.r[1] = b;
@@ -1395,13 +1400,28 @@ static void redraw(int *block)
 
 static void show_frame_now(void);
 
-static void show_frame(void)
+/* The picture waiting (S.ov_pending): through the overlay, or drawn as
+   before; or left waiting for the overlay's next switch. */
+static void show_pending(void)
 {
-    int t0 = now_cs();
-    if (!ov_show_frame())
+    int t0 = now_cs(), s = ov_show_frame();
+    if (s == 2)
+        return;
+    S.ov_pending = 0;
+    if (!s)
         show_frame_now();
     S.draw_cs += now_cs() - t0;
     S.draw_n++;
+}
+
+static void show_frame(void)
+{
+    if (S.ov_pending)
+        S.ov_replaced++;                /* two pictures before one refresh: the newer one wins */
+    S.ov_pending = 1;
+    show_pending();
+    if (S.ov_pending)
+        S.ov_waited++;
 }
 
 static void show_frame_now(void)
@@ -2193,6 +2213,7 @@ static int info_n, info_stats_at;       /* rows, and the first of the stats */
 static ReelCoreStats info_prev;
 static int info_prev_cs;
 static unsigned info_prev_nulls, info_prev_draw_n, info_prev_draw_cs, info_prev_slept;
+static unsigned info_prev_waited, info_prev_replaced;
 
 static info_row_t *info_add(int heading, const char *label, const char *value)
 {
@@ -2317,8 +2338,9 @@ static void info_stats(void)
                      st.interlaced, st.decoded);
     }
     if (draws && ov.shown)
-        snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (hardware overlay, %s, %d buffers)",
-                 (S.draw_cs - info_prev_draw_cs) * 10.0 / draws, ov.type == 1 ? "Basic" : "Z-Order", ov.banks);
+        snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (hardware overlay, %s, %d buffers); %u waited, %u replaced",
+                 (S.draw_cs - info_prev_draw_cs) * 10.0 / draws, ov.type == 1 ? "Basic" : "Z-Order", ov.banks,
+                 S.ov_waited - info_prev_waited, S.ov_replaced - info_prev_replaced);
     else if (draws)
         snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (%s%s)",
                  (S.draw_cs - info_prev_draw_cs) * 10.0 / draws,
@@ -2379,6 +2401,8 @@ static void info_stats(void)
     info_prev_draw_n = S.draw_n;
     info_prev_draw_cs = S.draw_cs;
     info_prev_slept = S.slept_cs;
+    info_prev_waited = S.ov_waited;
+    info_prev_replaced = S.ov_replaced;
 }
 
 static void text_colour(unsigned fg)
@@ -2502,9 +2526,55 @@ static int info_create(void)
     return 0;
 }
 
+/* Where Media info goes when it opens: beside the player (right, then
+   left), else below or above it, so it doesn't cover the picture (a
+   hardware overlay is hidden while anything does, and the picture drawn
+   the slow way). Fills the visible area b[1..4]; 0 if there's no room
+   anywhere (then it goes where it always did). Gaps allow for the
+   windows' title bars (44), scroll bars (44) and borders. */
+#define INFO_MIN_W 1000
+#define INFO_MIN_H 240
+static int info_beside(int *b, int h)
+{
+    int p[9], top, x0, x1, y0, y1;
+    if (S.fullscreen || !S.win)
+        return 0;
+    window_state(S.win, p);
+    if (!(p[8] & (1 << 16)))
+        return 0;
+    top = S.scr_h - 160;                                    /* as high as before: all of it shows */
+    y0 = top - h < 92 ? 92 : top - h;                       /* above its own scroll bar */
+    if (top - y0 >= INFO_MIN_H) {
+        x0 = p[3] + 64;                                     /* on the right */
+        x1 = x0 + INFO_W < S.scr_w - 44 ? x0 + INFO_W : S.scr_w - 44;
+        if (x1 - x0 < INFO_MIN_W) {
+            x1 = p[1] - 64 - 44;                            /* on the left */
+            x0 = x1 - INFO_W > 0 ? x1 - INFO_W : 0;
+        }
+        if (x1 - x0 >= INFO_MIN_W) {
+            b[1] = x0; b[2] = y0; b[3] = x1; b[4] = top;
+            return 1;
+        }
+    }
+    x0 = p[1];
+    x1 = x0 + INFO_W < S.scr_w - 44 ? x0 + INFO_W : S.scr_w - 44;
+    if (x1 - x0 < INFO_MIN_W)
+        return 0;
+    y1 = p[2] - 64 - 44;                                    /* below */
+    y0 = y1 - h > 92 ? y1 - h : 92;
+    if (y1 - y0 < INFO_MIN_H) {
+        y0 = p[4] + 44 + 64 + 44;                           /* above */
+        y1 = y0 + h < S.scr_h - 44 ? y0 + h : S.scr_h - 44;
+    }
+    if (y1 - y0 < INFO_MIN_H)
+        return 0;
+    b[1] = x0; b[2] = y0; b[3] = x1; b[4] = y1;
+    return 1;
+}
+
 static void info_open(void)
 {
-    int b[8], h;
+    int b[9], h;               /* 9: GetWindowState fills the flags word too */
     _kernel_swi_regs r;
     if (!S.v)
         return;
@@ -2522,6 +2592,8 @@ static void info_open(void)
     if (S.info_open) {                  /* already open: bring it to the front */
         window_state(S.info, b);
         b[7] = -1;
+    } else if (info_beside(b, h)) {
+        b[5] = 0; b[6] = 0; b[7] = -1;
     } else {
         b[1] = S.scr_w - INFO_W - 96;
         if (b[1] < 0) b[1] = 0;
@@ -2558,6 +2630,8 @@ static void info_new_file(void)
     info_prev_draw_n = S.draw_n;
     info_prev_draw_cs = S.draw_cs;
     info_prev_slept = S.slept_cs;
+    info_prev_waited = S.ov_waited;
+    info_prev_replaced = S.ov_replaced;
     info_close();
     if (was_open)
         info_open();
@@ -3154,7 +3228,11 @@ static void tick(void)
     if (r2 == REELCORE_NEW_FRAME) {
         show_frame();
         S.log_frames++;
-    } else if (r2 == REELCORE_END) {
+    } else if (S.ov_pending && r2 == REELCORE_SAME_FRAME)
+        show_pending();                 /* waiting for the overlay's switch */
+    if (S.ov_pending)
+        S.idle_cs = 0;                  /* ... so no sleeping: it's due within a refresh */
+    if (r2 == REELCORE_END) {
         lg("end of the file");
         S.ended = 1;
         ov_hide_and_draw();
@@ -3179,7 +3257,7 @@ static void tick(void)
         char d[300];
         /* what each picture cost (full screen too, where Media info can't be seen) */
         static ReelCoreStats p;
-        static unsigned p_draw_n, p_draw_cs;
+        static unsigned p_draw_n, p_draw_cs, p_waited, p_replaced;
         ReelCoreStats st;
         unsigned dec, shown, draws;
         reelcore_stats(S.v, &st);
@@ -3190,12 +3268,15 @@ static void tick(void)
         draws = S.draw_n - p_draw_n;
         reelcore_debug(S.v, d, sizeof(d));
         lg("%s; %d nulls, %d pictures in %.2f s, asleep %u%%; ms a picture: decode %.1f, convert %.1f (to %dx%d), "
-           "draw %.1f, deinterlace %.1f", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0,
+           "draw %.1f, deinterlace %.1f; overlay: %u waited for a refresh, %u replaced", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0,
            (unsigned)((S.slept_cs - S.log_slept) * 100 / (t - S.log_cs)),
            dec ? (st.decode_time - p.decode_time) * 1000 / dec : 0.0,
            shown ? (st.convert_time - p.convert_time) * 1000 / shown : 0.0, st.convert_w, st.convert_h,
            draws ? (S.draw_cs - p_draw_cs) * 10.0 / draws : 0.0,
-           st.deinterlaced > p.deinterlaced ? (st.deinterlace_time - p.deinterlace_time) * 1000 / (st.deinterlaced - p.deinterlaced) : 0.0);
+           st.deinterlaced > p.deinterlaced ? (st.deinterlace_time - p.deinterlace_time) * 1000 / (st.deinterlaced - p.deinterlaced) : 0.0,
+           S.ov_waited - p_waited, S.ov_replaced - p_replaced);
+        p_waited = S.ov_waited;
+        p_replaced = S.ov_replaced;
         p = st;
         p_draw_n = S.draw_n;
         p_draw_cs = S.draw_cs;

@@ -111,6 +111,10 @@ static uint8_t *ovl_buf[3];
 static int ovl_arr[3][6];
 static int cover_on;                  /* COVERW is open over the picture */
 static int fake_vsync;
+static int last_poll_idle;               /* the poll now was Wimp_PollIdle */
+static int vsync_held = -1;             /* >= 0: the vsync counter stands still at this */
+static int ovl_last_vsync = -1, ovl_same_vsync;   /* two switches before one vsync: it would tear */
+static int vsync_now(void) { return vsync_held >= 0 ? vsync_held : (fake_vsync + (int)(fake_time * 60)) & 0xFF; }
 
 /* Choices: what Reel saved */
 static int choices_has(const char *want)
@@ -165,7 +169,7 @@ static int script(int *b)
 enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
        P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL,
        P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
-       P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
+       P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
        P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_CLOSE2, P_QUIT };
 static int phase = -1, phase_step;
@@ -175,7 +179,7 @@ static int next_is_null(void)
     return phase == P_PLAY1 || phase == P_PLAY2 || phase == P_PLAY3 || phase == P_PLAYFULL || phase == P_PLAY4 ||
            phase == P_PLAY5 || phase == P_PLAY6 || phase == P_INFOPLAY || phase == P_SPEEDPLAY || phase == P_AB ||
            phase == P_ABPLAY || phase == P_MINIPLAY || phase == P_ONTOP || phase == P_URLPLAY || phase == P_URLFILEPLAY ||
-           phase == P_URLOPENING || phase == P_URLFILEOPENING || phase == P_OVLREFUSE || phase == P_OVLPLAY ||
+           phase == P_URLOPENING || phase == P_URLFILEOPENING || phase == P_OVLREFUSE || phase == P_OVLPLAY || phase == P_OVLWAIT ||
            phase == P_OVLCOVER || phase == P_OVLUNCOVER || phase == P_OVLRESUME || phase == P_OVLFEWER ||
            phase == P_OVLOFF || phase == P_OVLMODE;
 }
@@ -327,6 +331,14 @@ static int next_event(int *b)
             if (phase_step == 0) { phase_step++; memset(b, 0, 28); b[0] = WIN; b[6] = 'i'; return 8; }
             if (phase_step++ == 1) { info_seen[0] = 0; memset(b, 0, 44); b[0] = INFO; return 1; }   /* its redraw */
             CHECK(info_created == 1 && info_open, "I: info window %d made, open %d", info_created, info_open);
+            {                                                         /* beside the player, not over it */
+                int *w = st(WIN), *i = st(INFO);
+                CHECK(i[1] >= w[3] + 44 || i[3] <= w[1] - 44 || i[4] <= w[2] - 44 || i[2] >= w[4] + 44,
+                      "I: media info (%d,%d)-(%d,%d) over the player (%d,%d)-(%d,%d)",
+                      i[1], i[2], i[3], i[4], w[1], w[2], w[3], w[4]);
+                CHECK(i[1] >= 0 && i[3] <= SCR_W * 2 && i[2] >= 0 && i[4] <= SCR_H * 2 && i[3] - i[1] >= 1000,
+                      "I: media info (%d,%d)-(%d,%d) off the screen or too narrow", i[1], i[2], i[3], i[4]);
+            }
             CHECK(strstr(info_seen, "h264") && strstr(info_seen, "Sample rate") && strstr(info_seen, "Stats for nerds"),
                   "info window text: %.300s", info_seen);
             break;
@@ -692,6 +704,27 @@ static int next_event(int *b)
                    ovl_scale[0], ovl_scale[1]);
             break;
         }
+        case P_OVLWAIT: {                                             /* no vsync yet: pictures wait, nothing blocks */
+            static int displays0, vs0, draws0;
+            if (phase_step == 0) {
+                vsync_held = vsync_now();
+                displays0 = ovl_displays; vs0 = vsyncs; draws0 = FRAMES_DRAWN;
+            }
+            if (phase_step++ < 15) { fake_time += 0.02; return 0; }
+            if (phase_step == 16) {
+                CHECK(ovl_displays <= displays0 + 1 && vsyncs == vs0 && FRAMES_DRAWN == draws0,
+                      "no vsync: %d switches, %d vsync waits, %d drawn (want <= 1, none, none)",
+                      ovl_displays - displays0, vsyncs - vs0, FRAMES_DRAWN - draws0);
+                CHECK(!last_poll_idle, "a picture waiting for the overlay, yet Reel slept");
+                vsync_held = -1;                                      /* the refresh comes: shown on the next pass */
+                displays0 = ovl_displays;
+                fake_time += 0.02;
+                return 0;
+            }
+            CHECK(ovl_displays == displays0 + 1, "after the vsync: %d switches (want 1)", ovl_displays - displays0);
+            CHECK(!ovl_same_vsync, "%d overlay switches before a vsync (tearing)", ovl_same_vsync);
+            break;
+        }
         case P_OVLREDRAW:                                             /* a redraw asks VideoOverlay to do its part */
             if (phase_step++ == 0) {
                 ovl_redraws = 0;
@@ -1027,7 +1060,11 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x59CC2:                                                         /* DisplayBuffer */
         if (in->r[0] != ovl_id || !ovl_id || in->r[1] >= ovl_banks) return &err;
         ovl_shown = in->r[1] < 0 ? -1 : in->r[1];
-        if (in->r[1] >= 0) ovl_displays++;
+        if (in->r[1] >= 0) {
+            ovl_displays++;
+            if (vsync_now() == ovl_last_vsync) ovl_same_vsync++;
+            ovl_last_vsync = vsync_now();
+        }
         return NULL;
     case 0x59CC3:                                                         /* MapBuffer */
         if (in->r[0] != ovl_id || !ovl_id || in->r[1] < 0 || in->r[1] >= ovl_banks || in->r[1] >= ovl_map_fail_from)
@@ -1130,7 +1167,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         return NULL;
     case 0x06:                                                            /* OS_Byte */
         if (in->r[0] == 19) { vsyncs++; fake_vsync++; }                   /* wait for the vsync */
-        else if (in->r[0] == 176) out->r[1] = (fake_vsync + (int)(fake_time * 60)) & 0xFF;   /* vsync counter */
+        else if (in->r[0] == 176)                                         /* vsync counter */
+            out->r[1] = vsync_now();
         else if (in->r[0] == 129) out->r[1] = 0;                          /* INKEY: Shift isn't held */
         return NULL;
     case 0x400E7:                                                         /* SendMessage */
@@ -1185,6 +1223,7 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         /* fallthrough */
     case 0x400C7: {                                                       /* Wimp_Poll */
         last_mask = in->r[0];
+        last_poll_idle = swi == 0x400E1;
         out->r[0] = next_event(b);
         return NULL;
     }

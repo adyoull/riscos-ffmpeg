@@ -3,7 +3,7 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next Reel): a steady clock, steered by the sound
+## Unreleased (next Reel): a steady clock, steered by the sound; 60 fps through the overlay
 
 - **reelcore's `clock_smooth()` is now a timer steered by the sound**
   (0.1.19 snapped to each of the sound's readings). The clock is the
@@ -23,6 +23,24 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   each step). Media info shows both: "evenly to N ms" on Pictures shown,
   and "steered to within N ms of it" on Clock. !Help has a "Keeping time"
   section.
+- **The overlay no longer waits for the vsync.** A picture that comes
+  before the overlay's last switch has happened used to wait for the
+  vsync there and then (OS_Byte 19), up to 16.7 ms with nothing decoded
+  meanwhile; at 60 fps that was most of the drawing time. Now it waits
+  as `S.ov_pending`, and Reel carries on decoding and tries again on the
+  next pass (without sleeping). If a newer picture is due first, the
+  newer one is shown. Media info's Drawing line and the log count both
+  ("N waited, N replaced").
+- **Media info opens beside the player** (right, then left, else below or
+  above) where there's room, so it doesn't cover the picture and hide the
+  overlay. Otherwise it goes where it always did. `info_open` also had a
+  block of 8 words for Wimp_GetWindowState, which writes 9: fixed.
+- **reel_test:** a new phase `P_OVLWAIT` holds the vsync counter still.
+  Pictures wait without blocking or sleeping, none are drawn another way,
+  and one is shown once the vsync comes. The fake overlay counts two
+  switches in one vsync (tearing). Media info must not overlap the player.
+  Mutations caught: the blocking wait put back, sleeping while a picture
+  waits, and Media info opening in the old place.
 - **clock_test:** sound reported in 2048-frame blocks, a 30 fps clip at
   44.1 kHz.
   - Pictures evenly spaced to 0.4 ms, the sound followed to within 0.5 ms,

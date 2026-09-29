@@ -32,6 +32,12 @@ How it draws
   the end). ReelEGL talks to VideoOverlay itself: riscos-mesa's EGL
   overlays (EGL_RISCOS_overlay) cover visible-area RGB surfaces 1:1, and
   ReelEGL's picture is a work area surface.
+  A picture that comes before the overlay's last change of picture (at
+  the screen's refresh) waits for it without holding up decoding;
+  Media info's Drawing line counts those ("waited") and any a newer one
+  replaced before it was shown ("replaced").
+- Media info opens beside the player (or above or below it) where there's
+  room, so it doesn't cover the picture.
 - The mini player (M) is a second window; its picture is a work area
   surface of its own, made when it opens (only one surface exists at a
   time, so switching makes the other window's surface again).

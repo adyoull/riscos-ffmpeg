@@ -198,7 +198,13 @@ hides it, and draws the picture as before, whenever a window or menu is
 over the picture, while paused, at the end, and while it asks you
 something; it comes back by itself. Screen grabs don't see the overlay.
 Media info's Converting and Drawing lines say when it's in use (or why
-not).
+not). The overlay changes picture at the screen's refresh, so a picture
+that comes before the last change has happened waits for it (Drawing:
+"waited"), while Reel carries on decoding; if a newer one is due by
+then, the newer one is shown instead ("replaced"). At 60 fps on a 60 Hz
+screen a few are replaced; at 24-30 fps there should be none.
+Media info opens beside the player (or above or below it) where there's
+room, so it doesn't cover the picture.
 Whenever an overlay isn't possible, the picture is drawn exactly as
 before, with no message: the option off, no VideoOverlay module, the
 display refusing the size or running short of memory, any error from the
