@@ -45,6 +45,7 @@ Keys (click in the window first):
   N, P          the next / previous file in the playlist
   Q             close the video
   I             the media info window on and off
+  S             stats on the picture on and off (below)
 
 Resize the window by dragging the grip in its bottom right corner (the
 three diagonal lines), or choose a size from Window size on its menu; the
@@ -53,6 +54,8 @@ which file it is, e.g. "(2/5)".
 
 Menu on the window:
   Media info          the media info window (below)
+  Stats on the picture  the figures YouTube's "Stats for nerds" shows,
+                      drawn on the picture's top left corner (below)
   Full screen         the whole screen (Escape to come back)
   Mini player         a small player above the icon bar (below)
   Keep on top         the mini player comes back to the front
@@ -211,6 +214,31 @@ display refusing the size or running short of memory, any error from the
 module. To turn it off: untick Hardware acceleration on the window menu,
 or *Set Reel$NoOverlay 1 (or *Set EGL$Overlay off, which turns overlays
 off for every program) before starting Reel.
+
+Stats on the picture
+--------------------
+S (or Stats on the picture on the window menu) draws a panel of figures
+on the picture's top left corner, as YouTube's "Stats for nerds" does:
+  Video / Source      the file, and its container
+  Viewport / Frames   the picture area's size in pixels; pictures skipped
+                      as late, of all pictures, since the start
+  Current Res / Drawn the video's size and frame rate; how it's drawn
+                      (hardware overlay, or converted)
+  Volume              and the speed, if not normal
+  Codecs, Color       the video's and sound's codecs; its colours
+  Connection Speed    how fast the file (or web address) is being read,
+                      with the last minute as a graph
+  Network Activity    how much was read in the last second, and a graph
+  Buffer Health       for a web address, how much is read ahead; for a
+                      file, the sound queued; and a graph
+  Timing              decoding and drawing each picture, how busy
+                      decoding is, and how far the picture is from the
+                      sound
+  Date                today's date and the time
+It's drawn into the picture itself, not in a window over it, so it can be
+seen over a hardware overlay too (which covers anything else on the
+screen), and moving it doesn't hide the overlay. Screen grabs don't see it
+through an overlay. The figures change once a second. Media info has more.
 
 Keeping time
 ------------

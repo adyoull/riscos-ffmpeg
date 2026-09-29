@@ -86,7 +86,7 @@ static double ab_lo, ab_hi;
 static char choices_dir[64];
 
 /* the window menu (reel.c's WM_*) */
-enum { M_INFO, M_FULL, M_MINI, M_ONTOP, M_SIZE, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_HWACCEL, M_CLOSE };
+enum { M_INFO, M_STATS, M_FULL, M_MINI, M_ONTOP, M_SIZE, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_HWACCEL, M_CLOSE };
 static char title[64];
 static int *title_ptr;
 static int proginfo_made, proginfo_icons, bar_info_sub = -99;
@@ -167,7 +167,7 @@ static int script(int *b)
 
 /* the phases after the first drop */
 enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
-       P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL,
+       P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PANEL, P_PANELOFF, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL,
        P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
        P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
@@ -177,7 +177,7 @@ static int phase = -1, phase_step;
 static int next_is_null(void)
 {
     return phase == P_PLAY1 || phase == P_PLAY2 || phase == P_PLAY3 || phase == P_PLAYFULL || phase == P_PLAY4 ||
-           phase == P_PLAY5 || phase == P_PLAY6 || phase == P_INFOPLAY || phase == P_SPEEDPLAY || phase == P_AB ||
+           phase == P_PLAY5 || phase == P_PLAY6 || phase == P_INFOPLAY || phase == P_PANEL || phase == P_PANELOFF || phase == P_SPEEDPLAY || phase == P_AB ||
            phase == P_ABPLAY || phase == P_MINIPLAY || phase == P_ONTOP || phase == P_URLPLAY || phase == P_URLFILEPLAY ||
            phase == P_URLOPENING || phase == P_URLFILEOPENING || phase == P_OVLREFUSE || phase == P_OVLPLAY || phase == P_OVLWAIT ||
            phase == P_OVLCOVER || phase == P_OVLUNCOVER || phase == P_OVLRESUME || phase == P_OVLFEWER ||
@@ -362,6 +362,31 @@ static int next_event(int *b)
             if (phase_step++ == 0) { memset(b, 0, 4); b[0] = INFO; return 3; }
             CHECK(!info_open, "info window didn't close");
             break;
+        case P_PANEL: {                                               /* S: stats drawn into the picture */
+            int pw, ph, w, h, rows, white = 0;
+            const uint8_t *px;
+            if (phase_step == 0) { phase_step++; key_event(b, WIN, 's'); return 8; }
+            if (phase_step++ < 80) { fake_time += 0.02; return 0; }
+            reelcore_panel_size(v, &pw, &ph);
+            px = reel_test_sprite(&w, &h, &rows);
+            CHECK(pw > 300 && ph > 150, "S: stats panel %dx%d", pw, ph);
+            for (int y = 10; px && y < 10 + ph && y < h; y++)
+                for (int x = 10; x < 10 + pw && x < w; x++)
+                    white += px[(y * w + x) * 4] > 220 && px[(y * w + x) * 4 + 1] > 220 && px[(y * w + x) * 4 + 2] > 220;
+            CHECK(white > 500, "S: the panel's text isn't in the picture (%d white pixels)", white);
+            check_picture("stats panel");
+            printf("  stats panel: %dx%d, %d white pixels of text in the picture\n", pw, ph, white);
+            break;
+        }
+        case P_PANELOFF: {
+            int pw, ph;
+            if (phase_step == 0) { phase_step++; key_event(b, WIN, 's'); return 8; }
+            if (phase_step++ < 10) { fake_time += 0.02; return 0; }
+            reelcore_panel_size(v, &pw, &ph);
+            CHECK(pw == 0 && ph == 0, "S again: the panel is still %dx%d", pw, ph);
+            check_picture("stats panel off");
+            break;
+        }
         case P_PAUSE:
             if (phase_step++ == 0) {
                 /* the Play/Pause button: first icon */

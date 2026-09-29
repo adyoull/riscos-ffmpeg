@@ -36,6 +36,9 @@ How it draws
   the screen's refresh) waits for it without holding up decoding;
   Media info's Drawing line counts those ("waited") and any a newer one
   replaced before it was shown ("replaced").
+- S (or Stats on the picture on the window menu) draws YouTube-style
+  "Stats for nerds" figures into the picture, as in Reel (see its !Help):
+  into the picture itself, so they show over a hardware overlay too.
 - Media info opens beside the player (or above or below it) where there's
   room, so it doesn't cover the picture.
 - The mini player (M) is a second window; its picture is a work area

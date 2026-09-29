@@ -54,6 +54,7 @@ cp "$SRC/libogg-1.3.5/COPYING"    "$D/Licences/Ogg,fff"
 cp "$SRC/libvorbis-1.3.7/COPYING" "$D/Licences/Vorbis,fff"
 cp "$SRC/SDL-release-2.26.0/LICENSE.txt" "$D/Licences/SDL2,fff"
 cp "$TOP/third_party/pthreadticker/Licence" "$D/Licences/PThreadTicker,fff"
+cp "$TOP/third_party/dejavu/Licence" "$D/Licences/DejaVu,fff"
 # Corresponding source for the GPL: this port's changes and how it is built
 # (the upstream tarballs are named, with checksums, in SOURCES).
 ( cd "$TOP" && tar cf - build patches tools app common third_party reelcore ffegl frontend player tests/qemu/*.sh tests/qemu/*.md tests/qemu/*.patch \
@@ -115,6 +116,7 @@ for app in Reel ReelEGL; do
   cp "$TOP/player/sources.h"  "$R/docs/source/h/sources,fff"
   cp "$TOP/reelcore/reelcore.c"  "$R/docs/source/c/reelcore,fff"
   cp "$TOP/reelcore/reelcore.h"  "$R/docs/source/h/reelcore,fff"
+  cp "$TOP/reelcore/panel_font.h"  "$R/docs/source/h/panel_font,fff"
   cp "$TOP/common/version.h"  "$R/docs/source/h/version,fff"
   cp "$TOP/common/proginfo.h"  "$R/docs/source/h/proginfo,fff"
   if [ "$app" = ReelEGL ]; then

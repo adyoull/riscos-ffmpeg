@@ -55,6 +55,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <kernel.h>
 #include "reelcore.h"
 #include "sources.h"                   /* files, and web addresses given in text */
@@ -237,7 +238,7 @@ static struct {
     unsigned draw_cs;                   /* ... and the time drawing them took */
     int ov_pending;                     /* a picture waiting for the overlay's next switch */
     unsigned ov_waited, ov_replaced;    /* for the stats: pictures that waited; replaced before shown */
-    unsigned late_base;                 /* reelcore's late count when played again from the start */
+    unsigned late_base, shown_base;     /* reelcore's counts when played again from the start */
     int nosleep;                        /* Reel$NoSleep: poll flat out, as before 0.1.9 */
     int idle_cs;                        /* after a null: centiseconds we may sleep */
     unsigned slept_cs;                  /* for the stats: sleep asked for */
@@ -1952,7 +1953,7 @@ static void opened(ReelCore *v, const source_t *src)
     S.v = v;
     S.ended = 0;
     S.ab = 0;
-    S.late_base = 0;
+    S.late_base = S.shown_base = 0;
     if (&S.cur != src) {
         source_free(&S.cur);
         source_copy(&S.cur, src);
@@ -2647,6 +2648,197 @@ static void info_toggle(void)
         info_open();
 }
 
+/* ---- Stats for nerds on the picture (as YouTube's) -------------------------------
+   Drawn into the picture by reelcore (reelcore_set_panel), not in a window
+   over it: the Pi's hardware overlay sits on top of everything on the
+   screen, so only what's in the picture itself can be seen over it. Made
+   again once a second (the graphs get a sample a second, the last 60). */
+
+#define PANEL_N 60
+static struct {
+    int on;
+    float speed[PANEL_N], act[PANEL_N], buf[PANEL_N];
+    int n;                              /* samples so far (up to PANEL_N) */
+    double max_speed, max_act, max_buf;
+    ReelCoreStats prev;
+    int prev_cs;
+    unsigned prev_draw_n, prev_draw_cs;
+    const ReelCore *media_of;
+    char media[4096];                   /* reelcore_media_info of that video */
+} P;
+
+/* A value from reelcore_media_info: label in section ("Video", "Audio", "File") */
+static const char *panel_media(const char *section, const char *label, char *out, int size)
+{
+    const char *l = P.media;
+    int in = 0, n = (int)strlen(label);
+    out[0] = 0;
+    while (*l) {
+        const char *e = strchr(l, '\n');
+        int len = e ? (int)(e - l) : (int)strlen(l);
+        if (l[0] == '#')
+            in = len - 1 == (int)strlen(section) && !strncmp(l + 1, section, len - 1);
+        else if (in && len > n && !strncmp(l, label, n) && l[n] == '\t') {
+            snprintf(out, size, "%.*s", len - n - 1, l + n + 1);
+            break;
+        }
+        l = e ? e + 1 : l + len;
+    }
+    return out;
+}
+
+static void panel_push(float *a, double v)
+{
+    if (P.n == PANEL_N)
+        memmove(a, a + 1, (PANEL_N - 1) * sizeof(*a));
+    a[P.n < PANEL_N ? P.n : PANEL_N - 1] = (float)v;
+}
+
+/* Scaled to the graph's own largest sample (a little headroom) */
+static void panel_scale(float *out, const float *a, int n, double *max)
+{
+    double m = 0;
+    for (int i = 0; i < n; i++)
+        if (a[i] > m) m = a[i];
+    *max = m > 0 ? m * 1.1 : 1;
+    for (int i = 0; i < PANEL_N; i++)       /* oldest first, empty (0) before the first */
+        out[i] = i < PANEL_N - n ? 0 : (float)(a[i - (PANEL_N - n)] / *max);
+}
+
+static void panel_update(int sample)
+{
+    static char val[REELCORE_PANEL_ROWS][160];
+    static float g_speed[PANEL_N], g_act[PANEL_N], g_buf[PANEL_N];
+    ReelCorePanel pp;
+    ReelCoreStats st;
+    ReelCoreNet ns;
+    char a[96], b[96], c[96], d[96];
+    int t = now_cs(), fw = 0, fh = 0, i = 0, net;
+    double dt = (t - P.prev_cs) / 100.0, rate, got, ahead;
+    unsigned dec, draws;
+    box_t pic;
+    time_t now;
+    if (!P.on || !S.v)
+        return;
+    if (P.media_of != S.v) {                    /* a new video: its details, and the graphs again */
+        reelcore_media_info(S.v, P.media, sizeof(P.media));
+        P.media_of = S.v;
+        P.n = 0;
+        reelcore_stats(S.v, &P.prev);
+        P.prev_cs = t;
+        dt = 0;
+    }
+    reelcore_stats(S.v, &st);
+    net = reelcore_net(S.v, &ns);
+    if (st.bytes_read < P.prev.bytes_read || st.decoded < P.prev.decoded)
+        P.prev = st;                            /* seeked in a new file: start the differences again */
+    got = (double)(st.bytes_read - P.prev.bytes_read);
+    rate = dt > 0 ? got * 8 / dt / 1000 : 0;    /* kbit/s */
+    ahead = net ? ns.ahead : st.sound_queued;
+    if (sample && dt > 0.5) {
+        panel_push(P.speed, rate);
+        panel_push(P.act, got / 1024);
+        panel_push(P.buf, ahead);
+        if (P.n < PANEL_N) P.n++;
+    }
+    panel_scale(g_speed, P.speed, P.n, &P.max_speed);
+    panel_scale(g_act, P.act, P.n, &P.max_act);
+    panel_scale(g_buf, P.buf, P.n, &P.max_buf);
+    memset(&pp, 0, sizeof(pp));
+    reelcore_frame_size(S.v, &fw, &fh);
+    pic = ov_pic_box(S.fullscreen ? S.full : S.win);
+
+    panel_media("File", "Container", a, sizeof(a));
+    snprintf(val[i], sizeof(val[i]), "%.40s / %.30s", S.title, a[0] ? a : "?");
+    pp.label[i] = "Video / Source"; pp.value[i] = val[i]; i++;
+
+    snprintf(val[i], sizeof(val[i]), "%dx%d / %u dropped of %u", (pic.x1 - pic.x0) >> S.xeig, (pic.y1 - pic.y0) >> S.yeig,
+             st.late - S.late_base, (st.shown - S.shown_base) + (st.late - S.late_base));
+    pp.label[i] = "Viewport / Frames"; pp.value[i] = val[i]; i++;
+
+    snprintf(val[i], sizeof(val[i]), "%dx%d@%.3g / %s", fw, fh, st.fps,
+             ov.shown ? "hardware overlay" :
+#ifdef REEL_EGL
+             "EGL surface"
+#else
+             "sprite"
+#endif
+             );
+    pp.label[i] = "Current Res / Drawn"; pp.value[i] = val[i]; i++;
+
+    snprintf(val[i], sizeof(val[i]), "%d%%%s", (int)(S.vol * 100 + 0.5), st.speed != 1 ? "" : "");
+    if (st.speed != 1)
+        snprintf(val[i] + strlen(val[i]), sizeof(val[i]) - strlen(val[i]), " / speed %.2fx", st.speed);
+    pp.label[i] = "Volume"; pp.value[i] = val[i]; i++;
+
+    panel_media("Video", "Codec", a, sizeof(a));
+    panel_media("Video", "Profile", b, sizeof(b));
+    panel_media("Audio", "Codec", c, sizeof(c));
+    panel_media("Audio", "Profile", d, sizeof(d));
+    snprintf(val[i], sizeof(val[i]), "%.30s%s%.20s%s / %.30s%s%.20s%s", a[0] ? a : "none", b[0] ? " (" : "", b, b[0] ? ")" : "",
+             c[0] ? c : "none", d[0] ? " (" : "", d, d[0] ? ")" : "");
+    pp.label[i] = "Codecs"; pp.value[i] = val[i]; i++;
+
+    panel_media("Video", "Colours", a, sizeof(a));
+    snprintf(val[i], sizeof(val[i]), "%.100s", a[0] ? a : "?");
+    pp.label[i] = "Color"; pp.value[i] = val[i]; i++;
+
+    snprintf(val[i], sizeof(val[i]), "%.0f Kbps", rate);
+    pp.label[i] = "Connection Speed"; pp.value[i] = val[i];
+    pp.graph[i] = g_speed; pp.graph_rgb[i] = 0x1E88E5; i++;
+
+    snprintf(val[i], sizeof(val[i]), "%.0f KB", got / 1024);
+    pp.label[i] = "Network Activity"; pp.value[i] = val[i];
+    pp.graph[i] = g_act; pp.graph_rgb[i] = 0x26A69A; i++;
+
+    snprintf(val[i], sizeof(val[i]), "%.2f s%s", ahead, net ? "" : " (sound queued)");
+    pp.label[i] = "Buffer Health"; pp.value[i] = val[i];
+    pp.graph[i] = g_buf; pp.graph_rgb[i] = 0xFFB300; i++;
+
+    dec = st.decoded - P.prev.decoded;
+    draws = S.draw_n - P.prev_draw_n;
+    snprintf(val[i], sizeof(val[i]), "decode %.1f ms, draw %.1f ms, %.0f%% busy, sync %+d ms",
+             dec ? (st.decode_time - P.prev.decode_time) * 1000 / dec : 0.0,
+             draws ? (S.draw_cs - P.prev_draw_cs) * 10.0 / draws : 0.0,
+             dt > 0 ? (st.decode_time - P.prev.decode_time) * 100 / dt : 0.0, (int)((st.position - st.clock) * 1000));
+    pp.label[i] = "Timing"; pp.value[i] = val[i]; i++;
+
+    now = time(NULL);
+    strftime(val[i], sizeof(val[i]), "%a %b %d %Y %H:%M:%S", localtime(&now));
+    pp.label[i] = "Date"; pp.value[i] = val[i]; i++;
+
+    pp.rows = i;
+    pp.graph_n = PANEL_N;
+    pp.yuv_scale = ov.shown && ov.placed[1] > 0 && fw > 0 ? (double)fw / ov.placed[1] : 1;
+    reelcore_set_panel(S.v, &pp);
+    if (sample && dt > 0.5) {
+        P.prev = st;
+        P.prev_cs = t;
+        P.prev_draw_n = S.draw_n;
+        P.prev_draw_cs = S.draw_cs;
+    }
+}
+
+/* Shown or hidden: the picture drawn again if nothing new is coming */
+static void panel_toggle(void)
+{
+    int w = S.fullscreen ? S.full : S.win;
+    if (!S.v)
+        return;
+    P.on = !P.on;
+    lg("stats panel %s", P.on ? "on" : "off");
+    if (P.on) {
+        P.media_of = NULL;
+        panel_update(0);
+    } else
+        reelcore_set_panel(S.v, NULL);
+    if ((reelcore_paused(S.v) || S.ended || !ov.shown) && w) {
+        box_t pic = ov_pic_box(w);
+        pic_refresh();
+        force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);
+    }
+}
+
 /* ---- menus -------------------------------------------------------------------- */
 
 /* Menu items have indirected text, so they can be long (file names) */
@@ -2664,7 +2856,7 @@ static int menu_is_bar;                 /* the open menu: 1 icon bar, 0 window *
 static int menu_x, menu_y;
 
 /* The window menu */
-enum { WM_INFO, WM_FULL, WM_MINI, WM_ONTOP, WM_SIZE, WM_PIC, WM_DEINT, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_HWACCEL, WM_CLOSE, WM_N };
+enum { WM_INFO, WM_STATS, WM_FULL, WM_MINI, WM_ONTOP, WM_SIZE, WM_PIC, WM_DEINT, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_HWACCEL, WM_CLOSE, WM_N };
 
 static void menu_start(menu_t *m, const char *title)
 {
@@ -2759,6 +2951,7 @@ static void menu_open(int bar, int x, int y)
         menu_end(&m_list, k);
 
         menu_add(&menu, 0, &n, "Media info", S.info_open, NULL, 0);
+        menu_add(&menu, 0, &n, "Stats on the picture", P.on, NULL, !S.v);
         menu_add(&menu, 0, &n, "Full screen", S.fullscreen, NULL, 0);
         menu_add(&menu, 0, &n, "Mini player", mini, NULL, !S.v);
         menu_add(&menu, 0, &n, "Keep on top", S.ontop, NULL, 0);
@@ -3068,6 +3261,7 @@ static void menu_select(const int *sel)
     } else {
         switch (sel[0]) {
         case WM_INFO: info_toggle(); break;
+        case WM_STATS: panel_toggle(); break;
         case WM_FULL: set_fullscreen(!S.fullscreen); break;
         case WM_MINI: set_mini(!mini); break;
         case WM_ONTOP:
@@ -3125,6 +3319,7 @@ static void stats_restart(void)
     ReelCoreStats st;
     reelcore_stats(S.v, &st);
     S.late_base = st.late;
+    S.shown_base = st.shown;
 }
 
 static void toggle_pause(void)
@@ -3213,6 +3408,7 @@ static void key(int *b)
         break;
     case 'q': case 'Q': close_video(); return;
     case 'i': case 'I': info_toggle(); return;
+    case 's': case 'S': panel_toggle(); return;
     case 'm': case 'M': set_mini(!mini); return;
     case 'd': case 'D': set_deint_i((S.deint_i + 1) % 3); return;
     case 'a': case 'A': ab_press(); return;
@@ -3300,6 +3496,8 @@ static void tick(void)
         S.log_nulls = S.log_frames = 0;
     }
     mini_keep_on_top(t);
+    if (P.on && t - P.prev_cs >= 100)     /* the stats panel: once a second */
+        panel_update(1);
     if (t - info_prev_cs >= 100) {        /* the stats: once a second */
         info_stats();
         info_update();

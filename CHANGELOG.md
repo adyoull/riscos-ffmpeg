@@ -35,6 +35,24 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   above) where there's room, so it doesn't cover the picture and hide the
   overlay. Otherwise it goes where it always did. `info_open` also had a
   block of 8 words for Wimp_GetWindowState, which writes 9: fixed.
+- **Stats on the picture** (S, or the window menu): YouTube's "Stats for
+  nerds" rows (Video / Source, Viewport / Frames, Current Res / Drawn,
+  Volume, Codecs, Color, Connection Speed, Network Activity and Buffer
+  Health with a graph of the last minute each, Timing, Date), drawn *into*
+  the picture by reelcore, so it shows over the Pi's hardware overlay
+  (which covers anything on the screen).
+  - `reelcore_set_panel()` / `reelcore_panel_size()`: rows of label and
+    value, optional graphs. `reelcore_draw_pixels` blends it 1:1 at the
+    picture's top left; `reelcore_draw_yuv420` blends it into the YV12
+    rows as they're copied (in cached memory, then written once), scaled
+    by `yuv_scale` to undo the overlay's scaling.
+  - The font is DejaVu Sans Mono Bold at 15 px, as 8-bit coverage
+    (`reelcore/panel_font.h`, made by `tools/mkpanelfont.py`; Latin-1).
+    Its licence is in `third_party/dejavu/Licence` and the zips' Licences.
+  - **Tests:** `panel_test` (RGB both byte orders, YV12 at 1x and 2x,
+    nothing changed outside the panel, graph bars, off again exactly as
+    before). reel_test: S on, the text in the picture and the picture
+    as reelcore draws it; S off.
 - **No more late pictures from slow ones at 60 fps** (a Pi 4 ReelEGL log of
   test60_720p_60s: 1–8 late a second in stretches, decoding 2x real time on
   average).

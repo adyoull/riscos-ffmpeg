@@ -175,6 +175,10 @@ struct ReelCore {
 
     /* a layer's own state (reelcore's textures), released on close */
     void *attach;
+    uint8_t *pan;                          /* the stats panel: premultiplied R,G,B,A */
+    uint8_t *pan_yuv;                      /* ... as Y,Cb,Cr (not premultiplied),A for pan_yuv_c */
+    int pan_w, pan_h, pan_yuv_c;
+    double pan_k;                          /* frame pixels per panel pixel (draw_yuv420) */
     void (*attach_release)(void *);
 };
 
@@ -1245,6 +1249,8 @@ void reelcore_close(ReelCore *v)
     tempo_close(v);
     sws_freeContext(v->sws);
     sws_freeContext(v->sws_yuv);
+    av_free(v->pan);
+    av_free(v->pan_yuv);
     for (int i = 0; i < REELCORE_HALVINGS; i++)
         av_free(v->half[i]);
     av_free(v->abuf);
@@ -2384,6 +2390,177 @@ static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPi
     }
 }
 
+/* ---------------------------------------------------------- the stats panel */
+
+#include "panel_font.h"
+
+#define PAN_PAD     8
+#define PAN_GAP     12
+#define PAN_ROW     (PANEL_FONT_H + 3)
+#define PAN_GRAPH_W 200
+#define PAN_GRAPH_H 14
+#define PAN_BG      150                     /* the background's alpha: see-through black */
+#define PAN_MARGIN  10                      /* from the picture's top left corner */
+
+static int pan_textw(const char *t) { return t ? (int)strlen(t) * PANEL_FONT_W : 0; }
+
+/* src over the panel's pixel, alpha a (0-255), colour r,g,b */
+static void pan_put(ReelCore *v, int x, int y, int r, int g, int b, int a)
+{
+    uint8_t *d;
+    if (x < 0 || y < 0 || x >= v->pan_w || y >= v->pan_h || a <= 0)
+        return;
+    d = v->pan + ((size_t)y * v->pan_w + x) * 4;
+    d[0] = (uint8_t)((r * a + d[0] * (255 - a)) / 255);
+    d[1] = (uint8_t)((g * a + d[1] * (255 - a)) / 255);
+    d[2] = (uint8_t)((b * a + d[2] * (255 - a)) / 255);
+    d[3] = (uint8_t)(a + d[3] * (255 - a) / 255);
+}
+
+static void pan_text(ReelCore *v, int x, int y, const char *t, int r, int g, int b)
+{
+    for (; t && *t; t++, x += PANEL_FONT_W) {
+        unsigned c = (unsigned char)*t;
+        int i = c >= 32 && c < 127 ? (int)c - 32 : c >= 160 ? (int)c - 160 + 95 : '?' - 32;
+        const unsigned char *gl = panel_font[i];
+        for (int j = 0; j < PANEL_FONT_H; j++)
+            for (int k = 0; k < PANEL_FONT_W; k++)
+                pan_put(v, x + k, y + j, r, g, b, gl[j * PANEL_FONT_W + k]);
+    }
+}
+
+static void pan_box(ReelCore *v, int x, int y, int w, int h, int r, int g, int b, int a)
+{
+    for (int j = 0; j < h; j++)
+        for (int k = 0; k < w; k++)
+            pan_put(v, x + k, y + j, r, g, b, a);
+}
+
+int reelcore_set_panel(ReelCore *v, const ReelCorePanel *p)
+{
+    int lw = 0, vw = 0, w, h, rows = p ? FFMIN(p->rows, REELCORE_PANEL_ROWS) : 0;
+    if (rows <= 0) {
+        av_freep(&v->pan);
+        av_freep(&v->pan_yuv);
+        v->pan_w = v->pan_h = 0;
+        return 0;
+    }
+    for (int i = 0; i < rows; i++) {
+        int g = p->graph[i] && p->graph_n > 0 ? PAN_GRAPH_W + PAN_GAP : 0;
+        lw = FFMAX(lw, pan_textw(p->label[i]));
+        vw = FFMAX(vw, g + pan_textw(p->value[i]));
+    }
+    w = PAN_PAD + lw + PAN_GAP + vw + PAN_PAD;
+    h = PAN_PAD + rows * PAN_ROW + PAN_PAD - 3;
+    if (w != v->pan_w || h != v->pan_h || !v->pan) {
+        av_freep(&v->pan);
+        if (!(v->pan = av_malloc((size_t)w * h * 4)))
+            return AVERROR(ENOMEM);
+        v->pan_w = w;
+        v->pan_h = h;
+    }
+    memset(v->pan, 0, (size_t)w * h * 4);
+    pan_box(v, 0, 0, w, h, 0, 0, 0, PAN_BG);
+    for (int i = 0; i < rows; i++) {
+        int y = PAN_PAD + i * PAN_ROW, x = PAN_PAD + lw + PAN_GAP;
+        if (p->label[i])
+            pan_text(v, PAN_PAD + lw - pan_textw(p->label[i]), y, p->label[i], 255, 255, 255);
+        if (p->graph[i] && p->graph_n > 0) {
+            int gy = y + (PANEL_FONT_H - PAN_GRAPH_H) / 2, n = p->graph_n;
+            int r = p->graph_rgb[i] >> 16 & 255, g = p->graph_rgb[i] >> 8 & 255, b = p->graph_rgb[i] & 255;
+            pan_box(v, x, gy, PAN_GRAPH_W, PAN_GRAPH_H, 40, 40, 40, 255);
+            for (int k = 0; k < PAN_GRAPH_W; k++) {
+                float s = p->graph[i][k * n / PAN_GRAPH_W];
+                int bh = (int)(av_clipf(s, 0, 1) * PAN_GRAPH_H + 0.5f);
+                pan_box(v, x + k, gy + PAN_GRAPH_H - bh, 1, bh, r, g, b, 255);
+            }
+            x += PAN_GRAPH_W + PAN_GAP;
+        }
+        if (p->value[i])
+            pan_text(v, x, y, p->value[i], 230, 230, 230);
+    }
+    v->pan_k = p->yuv_scale > 0 ? p->yuv_scale : 1;
+    v->pan_yuv_c = -1;                        /* made again when next wanted */
+    return 0;
+}
+
+void reelcore_panel_size(const ReelCore *v, int *w, int *h)
+{
+    *w = v->pan ? v->pan_w : 0;
+    *h = v->pan ? v->pan_h : 0;
+}
+
+/* Over 32bpp pixels (R,G,B,x, or B,G,R,x with bgr), 1:1, at the top left. */
+static void panel_blend_rgb(ReelCore *v, uint8_t *p, int pitch, int w, int h, int bgr)
+{
+    int pw = FFMIN(v->pan_w, w - PAN_MARGIN), ph = FFMIN(v->pan_h, h - PAN_MARGIN);
+    for (int y = 0; y < ph; y++) {
+        const uint8_t *s = v->pan + (size_t)y * v->pan_w * 4;
+        uint8_t *d = p + (size_t)(y + PAN_MARGIN) * pitch + PAN_MARGIN * 4;
+        for (int x = 0; x < pw; x++, s += 4, d += 4) {
+            int a = 255 - s[3];
+            if (s[3] == 0)
+                continue;
+            d[0] = (uint8_t)(s[bgr ? 2 : 0] + d[0] * a / 255);
+            d[1] = (uint8_t)(s[1] + d[1] * a / 255);
+            d[2] = (uint8_t)(s[bgr ? 0 : 2] + d[2] * a / 255);
+        }
+    }
+}
+
+/* The panel as Y,Cb,Cr,A in the frame's colours (c: REELCORE_YUV_709/_FULL) */
+static int panel_yuv(ReelCore *v, int c)
+{
+    double kr = c & REELCORE_YUV_709 ? 0.2126 : 0.299, kb = c & REELCORE_YUV_709 ? 0.0722 : 0.114;
+    double ys = c & REELCORE_YUV_FULL ? 255 : 219, cs = c & REELCORE_YUV_FULL ? 255 : 224;
+    double yo = c & REELCORE_YUV_FULL ? 0 : 16;
+    if (v->pan_yuv && v->pan_yuv_c == c)
+        return 0;
+    av_freep(&v->pan_yuv);
+    if (!(v->pan_yuv = av_malloc((size_t)v->pan_w * v->pan_h * 4)))
+        return AVERROR(ENOMEM);
+    for (int i = 0; i < v->pan_w * v->pan_h; i++) {
+        const uint8_t *s = v->pan + (size_t)i * 4;
+        uint8_t *d = v->pan_yuv + (size_t)i * 4;
+        double a = s[3], r = a ? s[0] / a : 0, g = a ? s[1] / a : 0, b = a ? s[2] / a : 0;   /* 0..1 */
+        double yy = kr * r + (1 - kr - kb) * g + kb * b;
+        d[0] = (uint8_t)av_clip((int)(yo + yy * ys + 0.5), 0, 255);
+        d[1] = (uint8_t)av_clip((int)(128 + (b - yy) / (2 * (1 - kb)) * cs + 0.5), 0, 255);
+        d[2] = (uint8_t)av_clip((int)(128 + (r - yy) / (2 * (1 - kr)) * cs + 0.5), 0, 255);
+        d[3] = s[3];
+    }
+    v->pan_yuv_c = c;
+    return 0;
+}
+
+/* Into one row of plane p (0 Y, 1 Cb, 2 Cr) of a w-wide 4:2:0 picture, row
+   y of that plane: the panel scaled by pan_k at PAN_MARGIN (frame pixels). */
+static void panel_blend_row(ReelCore *v, uint8_t *row, int p, int y, int w)
+{
+    int sub = p ? 2 : 1, m = PAN_MARGIN / sub;
+    double k = v->pan_k;
+    int py = (int)((y * sub - PAN_MARGIN) / k), x1;
+    if (y < m || py < 0 || py >= v->pan_h)
+        return;
+    x1 = FFMIN(w / sub, m + (int)(v->pan_w * k / sub));
+    for (int x = m; x < x1; x++) {
+        int px = (int)((x * sub - PAN_MARGIN) / k);
+        const uint8_t *s;
+        if (px >= v->pan_w)
+            break;
+        s = v->pan_yuv + ((size_t)py * v->pan_w + px) * 4;
+        if (s[3])
+            row[x] = (uint8_t)((s[p] * s[3] + row[x] * (255 - s[3])) / 255);
+    }
+}
+
+/* Is row y of plane p (sub: 1 luma, 2 chroma) touched by the panel? */
+static int panel_rows(const ReelCore *v, int p, int y)
+{
+    int sub = p ? 2 : 1;
+    return v->pan && y * sub >= PAN_MARGIN && y * sub < PAN_MARGIN + v->pan_h * v->pan_k + sub;
+}
+
 static void fill_black(uint8_t *p, int pitch, int x, int y, int w, int h)
 {
     for (int j = 0; j < h; j++)
@@ -2435,8 +2612,13 @@ int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int
         fill_black(p, pitch, x + rw, y, w - x - rw, rh);
     }
     /* RGBA/BGRA: the fourth byte isn't shown, and these get swscale's NEON */
-    return convert(v, p + y * pitch + x * 4, pitch, rw, rh,
-                   bgr ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA, cx, cy, cw, ch);
+    {
+        int ret = convert(v, p + y * pitch + x * 4, pitch, rw, rh,
+                          bgr ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA, cx, cy, cw, ch);
+        if (ret == 0 && v->pan)
+            panel_blend_rgb(v, p + y * pitch + x * 4, pitch, rw, rh, bgr);
+        return ret;
+    }
 }
 
 /* ---------------------------------------------------------------- options */
@@ -2601,11 +2783,20 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
     t0 = av_gettime_relative();
     if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
         /* the decoder's own planes: row copies (the rows may be wider) */
+        uint8_t *tmp = v->pan && panel_yuv(v, c) == 0 ? av_malloc(w) : NULL;
         for (int p = 0; p < 3; p++) {
             int pw = p ? w / 2 : w, ph = p ? h / 2 : h;
-            for (int y = 0; y < ph; y++)
-                memcpy(planes[p] + (size_t)y * pitch[p], f->data[p] + (size_t)y * f->linesize[p], pw);
+            for (int y = 0; y < ph; y++) {
+                const uint8_t *src = f->data[p] + (size_t)y * f->linesize[p];
+                if (tmp && panel_rows(v, p, y)) {      /* blended in cached memory, then written once */
+                    memcpy(tmp, src, pw);
+                    panel_blend_row(v, tmp, p, y, pw);
+                    src = tmp;
+                }
+                memcpy(planes[p] + (size_t)y * pitch[p], src, pw);
+            }
         }
+        av_free(tmp);
     } else {
         /* anything else (10-bit, 4:2:2, 4:4:4, ...): to 4:2:0 at the same size */
         const uint8_t *src[4] = { f->data[0], f->data[1], f->data[2], f->data[3] };
@@ -2615,6 +2806,11 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
                                           SWS_POINT, NULL, NULL, NULL);
         if (!v->sws_yuv || sws_scale(v->sws_yuv, src, f->linesize, 0, h, d, dp) < 0)
             return AVERROR_EXTERNAL;
+        if (v->pan && panel_yuv(v, c) == 0)       /* (reads the rows back: slower, but rare) */
+            for (int p = 0; p < 3; p++)
+                for (int y = 0; y < (p ? h / 2 : h); y++)
+                    if (panel_rows(v, p, y))
+                        panel_blend_row(v, planes[p] + (size_t)y * pitch[p], p, y, p ? w / 2 : w);
     }
     v->t_convert += av_gettime_relative() - t0;
     v->conv_w = w;

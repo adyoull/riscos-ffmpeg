@@ -86,6 +86,13 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcode
 echo "== clock_test (30 and 60 fps against a sound clock moving in 46 ms steps)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/clock_test" "$O/c30_44k.mp4" "$O/c60_44k.mp4" 2>&1 | grep -v "reelcore: " || bad=1
 
+# the stats panel drawn into the picture (RGB and YV12)
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/panel_test.c" -o "$O/panel_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/panel_test" "$O/reelcore.o" \
+  "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/panel_test.o" $LIBS -lm 2>/dev/null
+echo "== panel_test (stats drawn into the picture)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/panel_test" "$O/c30_44k.mp4" 2>&1 | grep -v "reelcore: " || bad=1
+
 # RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
 echo "== riscos_name_test (holiday/mp4 as a RISC OS name, Unix names untouched)"
 gcc -O1 -g -fsanitize=address,undefined -I"$F/libavformat" "$HERE/riscos_name_test.c" -o "$O/riscos_name_test" &&

@@ -276,6 +276,30 @@ int reelcore_frame_size(const ReelCore *v, int *w, int *h);
 int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[3], int w, int h,
                          int *colour);
 
+/* A stats panel drawn into the picture (as YouTube's "Stats for nerds"):
+   drawn into it rather than over it, so it shows through a hardware
+   overlay too, which covers anything drawn on the screen. Rows of a label
+   (right-aligned) and a value; a row with a graph has graph_n samples
+   (0..1, oldest first) drawn as bars in graph_rgb (0xRRGGBB) before its
+   value. reelcore_draw_pixels() draws it at the top left of the picture
+   area 1:1; reelcore_draw_yuv420() draws it scaled by yuv_scale (frame
+   pixels per panel pixel: the overlay's scaling undone, so it shows about
+   the same size). NULL or rows 0: no panel. The text is copied; set it
+   again to change it (once a second is plenty). Latin-1 text. */
+#define REELCORE_PANEL_ROWS 14
+typedef struct ReelCorePanel {
+    int rows;
+    const char *label[REELCORE_PANEL_ROWS];
+    const char *value[REELCORE_PANEL_ROWS];
+    const float *graph[REELCORE_PANEL_ROWS];
+    unsigned graph_rgb[REELCORE_PANEL_ROWS];
+    int graph_n;
+    double yuv_scale;
+} ReelCorePanel;
+int reelcore_set_panel(ReelCore *v, const ReelCorePanel *p);
+/* Its size in panel pixels (0 x 0 without one). */
+void reelcore_panel_size(const ReelCore *v, int *w, int *h);
+
 /* For a layer on top (ffegl keeps its texture state here): one pointer per
    video, and a function that frees it, called by reelcore_close(). */
 void reelcore_attach(ReelCore *v, void *data, void (*release)(void *data));
