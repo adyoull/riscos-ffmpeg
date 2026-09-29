@@ -267,8 +267,11 @@ int reelcore_frame_size(const ReelCore *v, int *w, int *h);
 /* The current frame as planar 4:2:0, Y then Cb then Cr (RISC OS's "YV12",
    FFmpeg's yuv420p), for a hardware overlay: w x h pixels (even, at most
    the frame's size: normally reelcore_frame_size rounded down to even), no
-   scaling. yuv420p frames are copied row by row (write-only: fine for
-   uncached overlay memory); other formats go through swscale. *colour (may
+   scaling; or half the frame's size or less (w*2 <= width, h*2 <= height:
+   a 4K video into an HD-sized overlay), averaged. yuv420p frames are
+   copied row by row, or halved row by row with NEON (write-only: fine for
+   uncached overlay memory); other formats (and more than halving) go
+   through swscale. *colour (may
    be NULL): REELCORE_YUV_709 (else BT.601) | REELCORE_YUV_FULL (else video
    range), for the overlay's ModeFlags; planes NULL: only *colour. 0, or a
    negative AVERROR. */

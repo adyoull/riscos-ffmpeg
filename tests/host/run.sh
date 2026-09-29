@@ -90,8 +90,9 @@ echo "== clock_test (30 and 60 fps against a sound clock moving in 46 ms steps)"
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/panel_test.c" -o "$O/panel_test.o"
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/panel_test" "$O/reelcore.o" \
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/panel_test.o" $LIBS -lm 2>/dev/null
+ffmpeg -v error -y -f lavfi -i testsrc2=size=640x360:rate=25:duration=1 -c:v libx264 -preset ultrafast -pix_fmt yuv444p "$O/c444.mp4"
 echo "== panel_test (stats drawn into the picture)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/panel_test" "$O/c30_44k.mp4" 2>&1 | grep -v "reelcore: " || bad=1
+"$TOP/tests/qemu/aligntrap.sh" "$O/panel_test" "$O/c30_44k.mp4" "$O/c444.mp4" 2>&1 | grep -v "reelcore: " || bad=1
 
 # subtitles, chapters, turned pictures, frame steps
 printf '1\n00:00:01,000 --> 00:00:02,500\nHello <i>there</i>\n\n2\n00:00:03,000 --> 00:00:04,000\n\xe2\x80\x9cQuoted\xe2\x80\x9d \xe2\x80\x94 it\xe2\x80\x99s caf\xc3\xa9\nsecond line\n\n' > "$O/subs.srt"

@@ -114,6 +114,59 @@ int main(int argc, char **argv)
         }
     }
 
+    {   /* YV12 at half the frame's size (a 4K video into an HD-sized overlay):
+           each output pixel the rounded 2x2 average, as reelcore_halve_plane */
+        int fw, fh, hw, hh, bad = 0;
+        reelcore_set_panel(v, NULL);
+        reelcore_frame_size(v, &fw, &fh);
+        hw = fw / 2 & ~1; hh = fh / 2 & ~1;
+        {
+            uint8_t *full = malloc(fw * fh * 3 / 2), *got = malloc(hw * hh * 3 / 2), *want = malloc(hw * hh * 3 / 2);
+            uint8_t *pf[3] = { full, full + fw * fh, full + fw * fh * 5 / 4 };
+            uint8_t *pg[3] = { got, got + hw * hh, got + hw * hh * 5 / 4 };
+            uint8_t *pw_[3] = { want, want + hw * hh, want + hw * hh * 5 / 4 };
+            int ff[3] = { fw, fw / 2, fw / 2 }, hp[3] = { hw, hw / 2, hw / 2 };
+            reelcore_draw_yuv420(v, pf, ff, fw, fh, NULL);
+            CHECK(reelcore_draw_yuv420(v, pg, hp, hw, hh, NULL) == 0, "YV12 at half size refused");
+            for (int p = 0; p < 3; p++)
+                reelcore_halve_plane(pw_[p], hp[p], pf[p], ff[p], p ? hw / 2 : hw, p ? hh / 2 : hh);
+            bad = memcmp(got, want, hw * hh * 3 / 2) != 0;
+            printf("  YV12 halved: %dx%d from %dx%d%s\n", hw, hh, fw, fh, bad ? " (differs)" : ", the 2x2 averages");
+            CHECK(!bad, "YV12 halved isn't the 2x2 averages");
+            CHECK(reelcore_draw_yuv420(v, pg, hp, hw + 2, hh, NULL) == 0, "YV12 at just over half: refused");
+            free(full); free(got); free(want);
+        }
+    }
+
+    if (argc > 2) {   /* a 4:4:4 video at half size: luma the 2x2 averages, colour near */
+        ReelCore *q = reelcore_open(argv[2], 0);
+        CHECK(q != NULL, "can't open %s", argv[2]);
+        for (int i = 0; q && i < 200 && reelcore_update(q) != REELCORE_NEW_FRAME; i++)
+            fake_time += 0.01;
+        if (q) {
+            int fw, fh, hw, hh, bady, cdiff = 0;
+            reelcore_frame_size(q, &fw, &fh);
+            hw = fw / 2 & ~1; hh = fh / 2 & ~1;
+            uint8_t *full = malloc(fw * fh * 3 / 2), *got = malloc(hw * hh * 3 / 2), *want = malloc(hw * hh * 3 / 2);
+            uint8_t *pf[3] = { full, full + fw * fh, full + fw * fh * 5 / 4 };
+            uint8_t *pg[3] = { got, got + hw * hh, got + hw * hh * 5 / 4 };
+            uint8_t *pw_[3] = { want, want + hw * hh, want + hw * hh * 5 / 4 };
+            int ff[3] = { fw, fw / 2, fw / 2 }, hp[3] = { hw, hw / 2, hw / 2 };
+            reelcore_draw_yuv420(q, pf, ff, fw, fh, NULL);           /* (luma as it is; colour sampled) */
+            CHECK(reelcore_draw_yuv420(q, pg, hp, hw, hh, NULL) == 0, "4:4:4 at half size refused");
+            for (int p = 0; p < 3; p++)
+                reelcore_halve_plane(pw_[p], hp[p], pf[p], ff[p], p ? hw / 2 : hw, p ? hh / 2 : hh);
+            bady = memcmp(got, want, hw * hh) != 0;
+            for (int i = hw * hh; i < hw * hh * 3 / 2; i++)
+                cdiff += abs(got[i] - want[i]);
+            printf("  4:4:4 halved: %dx%d from %dx%d, luma %s, colour off by %.2f on average\n", hw, hh, fw, fh,
+                   bady ? "differs" : "the 2x2 averages", cdiff / (hw * hh / 2.0));
+            CHECK(!bady && cdiff / (hw * hh / 2.0) < 3, "4:4:4 halved wrong");
+            free(full); free(got); free(want);
+            reelcore_close(q);
+        }
+    }
+
     {   /* off again: exactly as before */
         reelcore_set_panel(v, NULL);
         reelcore_draw_pixels(v, b, W * 4, W, H, 0, REELCORE_STRETCH);

@@ -3696,7 +3696,7 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
 {
     AVFrame *f = v->cur;
     int64_t t0;
-    int c = 0, nl;
+    int c = 0, nl, half;
     Place pl[2];
     if (!f)
         return AVERROR(EAGAIN);
@@ -3719,14 +3719,25 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
                 pl[k++] = pl[i];
         nl = k;
     }
-    if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
-        /* the decoder's own planes: row copies (the rows may be wider) */
-        uint8_t *tmp = nl ? av_malloc(w) : NULL;
+    /* smaller than the frame (4K into an HD-sized overlay): halved */
+    half = w * 2 <= f->width && h * 2 <= f->height;
+    if ((f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) &&
+        (!half || (w * 4 > f->width && h * 4 > f->height))) {
+        /* the decoder's own planes: row copies (the rows may be wider), or
+           each output row the NEON average of two rows' 2x2 blocks */
+        uint8_t *tmp = nl || half ? av_malloc(w) : NULL;
+        if ((nl || half) && !tmp)
+            return AVERROR(ENOMEM);
         for (int p = 0; p < 3; p++) {
             int pw = p ? w / 2 : w, ph = p ? h / 2 : h;
             for (int y = 0; y < ph; y++) {
-                const uint8_t *src = f->data[p] + (size_t)y * f->linesize[p];
-                int touched = 0;
+                const uint8_t *src;
+                int touched = half;
+                if (half) {
+                    reelcore_halve_plane(tmp, pw, f->data[p] + (size_t)y * 2 * f->linesize[p], f->linesize[p], pw, 1);
+                    src = tmp;
+                } else
+                    src = f->data[p] + (size_t)y * f->linesize[p];
                 for (int i = 0; tmp && i < nl; i++)
                     if (layer_touches(&pl[i], p, y)) {
                         if (!touched)                  /* blended in cached memory, then written once */
@@ -3738,14 +3749,40 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
             }
         }
         av_free(tmp);
+    } else if ((f->format == AV_PIX_FMT_YUV444P || f->format == AV_PIX_FMT_YUVJ444P) && half &&
+               w * 4 > f->width && h * 4 > f->height) {
+        /* 4:4:4 (a mastering profile, e.g. a 4K trailer) into a half-size
+           overlay: luma halved once, colour halved twice, all NEON (swscale
+           took 176 ms a picture for 3996x1730 on a Pi 4) */
+        uint8_t *tmp = av_malloc((size_t)w * 3);
+        if (!tmp)
+            return AVERROR(ENOMEM);
+        for (int p = 0; p < 3; p++) {
+            int pw = p ? w / 2 : w, ph = p ? h / 2 : h;
+            for (int y = 0; y < ph; y++) {
+                if (!p)
+                    reelcore_halve_plane(tmp, pw, f->data[0] + (size_t)y * 2 * f->linesize[0], f->linesize[0], pw, 1);
+                else {                                 /* 4 rows -> 2 half rows -> 1 quarter row */
+                    reelcore_halve_plane(tmp + w, w, f->data[p] + (size_t)y * 4 * f->linesize[p], f->linesize[p], w, 2);
+                    reelcore_halve_plane(tmp, pw, tmp + w, w, pw, 1);
+                }
+                for (int i = 0; i < nl; i++)
+                    if (layer_touches(&pl[i], p, y))
+                        layer_blend_row(&pl[i], tmp, p, y, pw);
+                memcpy(planes[p] + (size_t)y * pitch[p], tmp, pw);
+            }
+        }
+        av_free(tmp);
     } else {
-        /* anything else (10-bit, 4:2:2, 4:4:4, ...): to 4:2:0 at the same size */
+        /* anything else (10-bit, 4:2:2, 4:4:4, ... or 8K): to 4:2:0 at w x h
+           (the same size: each pixel as it is; smaller: averaged) */
         const uint8_t *src[4] = { f->data[0], f->data[1], f->data[2], f->data[3] };
         uint8_t *d[4] = { planes[0], planes[1], planes[2], NULL };
         int dp[4] = { pitch[0], pitch[1], pitch[2], 0 };
-        v->sws_yuv = sws_getCachedContext(v->sws_yuv, w, h, f->format, w, h, AV_PIX_FMT_YUV420P,
-                                          SWS_POINT, NULL, NULL, NULL);
-        if (!v->sws_yuv || sws_scale(v->sws_yuv, src, f->linesize, 0, h, d, dp) < 0)
+        int how = !half ? SWS_POINT : w * 4 > f->width ? SWS_FAST_BILINEAR : SWS_BILINEAR;
+        v->sws_yuv = sws_getCachedContext(v->sws_yuv, f->width, f->height, f->format, w, h, AV_PIX_FMT_YUV420P,
+                                          how, NULL, NULL, NULL);
+        if (!v->sws_yuv || sws_scale(v->sws_yuv, src, f->linesize, 0, f->height, d, dp) < 0)
             return AVERROR_EXTERNAL;
         for (int i = 0; i < nl; i++)              /* (reads the rows back: slower, but rare) */
             for (int p = 0; p < 3; p++)
@@ -3756,7 +3793,7 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
     v->t_convert += av_gettime_relative() - t0;
     v->conv_w = w;
     v->conv_h = h;
-    v->halvings = 0;
+    v->halvings = half;
     return 0;
 }
 

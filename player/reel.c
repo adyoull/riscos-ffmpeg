@@ -1048,6 +1048,7 @@ static const char *const ov_names[OV_N] = {
     "VideoOverlay_RedrawWindow"
 };
 #define YV12_FOURCC 0x32315659
+#define OV_MAX_PIXELS (1920L * 1088 * 11 / 10)   /* the most an overlay is made with */
 
 static struct {
     int found;                          /* the SWIs were found */
@@ -1242,6 +1243,8 @@ static int ov_place(int w)
         return 0;
     x = pic.x0 + (((bw - rw) / 2) << S.xeig);           /* top left: can be outside (Fill, Original) */
     y = pic.y1 - (((bh - rh) / 2) << S.yeig);
+    if (ov.fw > 0)                     /* subtitles and the stats: drawn into the frame this much bigger */
+        reelcore_set_yuv_scale(S.v, (double)ov.fw / rw);   /* (the overlay's size: halved for 4K) */
     want[0] = w; want[1] = rw; want[2] = rh; want[3] = x; want[4] = y;
     want[5] = pic.x0; want[6] = pic.y0; want[7] = pic.x1; want[8] = pic.y1;
     if (!memcmp(want, ov.placed, sizeof(want)))
@@ -1259,11 +1262,6 @@ static int ov_place(int w)
     if (swi(ov.swi[OV_POSITION], &r))
         return -1;
     memcpy(ov.placed, want, sizeof(want));
-    {   /* subtitles and the stats panel: drawn into the frame this much bigger */
-        int fw, fh;
-        if (reelcore_frame_size(S.v, &fw, &fh) == 0 && rw > 0)
-            reelcore_set_yuv_scale(S.v, (double)fw / rw);
-    }
     lg("overlay: %dx%d pixels at %d,%d in window &%x", rw, rh, x, y, w);
     return 1;
 }
@@ -1286,6 +1284,14 @@ static int ov_show_frame(void)
     }
     fw &= ~1;
     fh &= ~1;
+    /* bigger than HD (4K): halved into the overlay (NEON), once or more,
+       to at most about 1920x1088's pixels. The screen shows no more than
+       that, and a full-size 4K overlay (3 buffers of 12 MB) ran the Pi's
+       GPU short: the screen kept going black (a 3996x1730 trailer). */
+    while ((long)fw * fh > OV_MAX_PIXELS || fw > 2048 || fh > 2048) {
+        fw = fw / 2 & ~1;
+        fh = fh / 2 & ~1;
+    }
     reelcore_draw_yuv420(S.v, NULL, NULL, 0, 0, &colour);
     mode = ov_mode_sig();
     if ((ov.id || ov.failed) && (ov.fw != fw || ov.fh != fh || ov.colour != colour || ov.mode != mode)) {

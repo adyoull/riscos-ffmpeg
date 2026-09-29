@@ -91,6 +91,21 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
     of 203.
   - Reel shows the hourglass while it decodes for more than 0.3 s, up to
     20 s.
+- **4K through the hardware overlay** (Pi report: a 3996x1730 trailer
+  kept blanking the screen, and didn't with Hardware acceleration off;
+  the log said "only 2 of 3 buffers (GPU memory)"):
+  - Reel makes the overlay at most about 1920x1088's pixels (and 2048
+    each way): bigger videos are halved (4K to 1998x864). That's a
+    quarter of the GPU memory and of the display's scaling work.
+  - `reelcore_draw_yuv420` takes a size of half the frame or less: yuv420p
+    is halved row by row with NEON (`reelcore_halve_plane`), and 4:4:4
+    has luma halved once and colour twice, all NEON (swscale's
+    conversion took 176 ms a picture at 3996x1730). Other formats go
+    through swscale scaling. Subtitles and the stats follow the overlay's
+    size.
+  - panel_test: halved YV12 is the 2x2 averages; 4:4:4 halved has luma
+    equal to the averages and colour within 1. A mutation (4:4:4 through
+    swscale) is caught.
 - **Turned videos:** a stream's display matrix (phone videos) turns the
   picture 90/180/270 degrees through the same filter graph as yadif
   (transpose, or hflip+vflip). The size is swapped for 90/270. Media info
