@@ -35,6 +35,25 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   above) where there's room, so it doesn't cover the picture and hide the
   overlay. Otherwise it goes where it always did. `info_open` also had a
   block of 8 words for Wimp_GetWindowState, which writes 9: fixed.
+- **No more late pictures from slow ones at 60 fps** (a Pi 4 ReelEGL log of
+  test60_720p_60s: 1–8 late a second in stretches, decoding 2x real time on
+  average).
+  - reelcore skipped a picture as late whenever the next one was due too.
+    A picture that took longer than 16.7 ms to decode left two due at
+    once, so one was thrown away. Now a picture is skipped only if the next
+    one was due more than a picture's time ago (at most 40 ms); otherwise
+    both are shown, one straight after the other.
+  - `fill()` decoded up to 8 pictures in a row before a due one was shown
+    (to fill up after a skip), which made the next ones late. It now stops
+    when a picture is due.
+  - Decoding ahead is by time: 0.13 s of pictures, 3 to 8 (8 at 60 fps, 4
+    at 30, 3 at 24/25; it was always 3). QMAX 12.
+- **Media info's "N in all"** late count starts again when the file is
+  played again from the end, or you seek to the start.
+- **clock_test:** a 60 fps clip with decoding taking time (6 ms, and 8
+  pictures a second at 24 ms): 0 late, up to 8 decoded ahead. Mutations
+  caught: the old skip rule (6–7 late), decoding in a row (20–32 late),
+  3 ahead.
 - **reel_test:** a new phase `P_OVLWAIT` holds the vsync counter still.
   Pictures wait without blocking or sleeping, none are drawn another way,
   and one is shown once the vsync comes. The fake overlay counts two

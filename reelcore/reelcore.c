@@ -44,7 +44,10 @@
 #include <kernel.h>
 #endif
 
-#define QMAX          8      /* decoded frames kept ahead of the clock */
+#define QMAX          12     /* room for decoded frames kept ahead of the clock */
+#define PICS_AHEAD    0.13   /* seconds of pictures decoded ahead: rides out a slow one */
+#define PICS_MIN      3      /* (as before, for 24-30 fps) */
+#define PICS_MAX      8      /* 60 fps; below QMAX, so a packet giving 2 never pushes one out */
 #define AUDIO_AHEAD   0.25   /* seconds of sound kept queued (SDL) */
 #define SSB_AHEAD     0.5    /* and with SharedSoundBuffer: rides out a busy desktop */
 #define SSB_BLOCK     2048   /* sample frames per StreamManager block */
@@ -1919,11 +1922,22 @@ static void check_late(ReelCore *v)
 
 /* Reads until there's a little sound queued and a video packet to decode,
    then decodes pictures until a few are ready. */
+/* How many pictures to keep decoded ahead: 0.13 s of them, 3 to 8. With
+   only 3, a 60 fps video had 50 ms in hand, and one slow picture (or the
+   desktop busy for a moment) made the next one late though decoding
+   averaged twice real time. */
+static int pics_wanted(const ReelCore *v)
+{
+    double rate = v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25;
+    int n = (int)ceil(PICS_AHEAD * rate);
+    return n < PICS_MIN ? PICS_MIN : n > PICS_MAX ? PICS_MAX : n;
+}
+
 static void fill(ReelCore *v)
 {
     for (int budget = READ_BUDGET; budget > 0 && !v->eof_demux; budget--) {
         int need_a = v->dev && !v->stalled && queued_audio(v) < v->ahead;
-        int need_v = v->qn < 3 && v->vpk_n == 0;
+        int need_v = v->qn < pics_wanted(v) && v->vpk_n == 0;
         int ret, kind;
         if (!need_a && !need_v)
             break;
@@ -1945,7 +1959,7 @@ static void fill(ReelCore *v)
     }
     /* after a seek, decode on to the seek point in one go (as before) */
     int budget = v->need_first ? READ_BUDGET : DECODE_BUDGET;
-    for (int n = 0; n < budget && v->qn < 3; n++) {
+    for (int n = 0; n < budget && v->qn < pics_wanted(v); n++) {
         if (!v->vpk_n && !v->eof_demux && v->need_first) {
             /* more packets on the way to the seek point */
             int kind, ret = next_packet(v, v->pkt, &kind);
@@ -1961,6 +1975,10 @@ static void fill(ReelCore *v)
                 continue;
             }
         }
+        /* a picture due now is shown first: decoding several in a row (to
+           fill up after a slow one) would make it late, and the next ... */
+        if (v->qn && !v->need_first && !v->paused && v->qpts[0] <= clock_now(v) + 0.005)
+            break;
         AVPacket *p = vpk_pop(v);
         if (p) {
             check_late(v);
@@ -2056,8 +2074,15 @@ int reelcore_update(ReelCore *v)
 
     now = clock_now(v);
     if (v->qn && v->qpts[0] <= now + 0.005) {
-        /* skip the frames that are already late */
-        while (v->qn > 1 && v->qpts[1] <= now) {
+        /* skip the frames that are already late: those whose next is due
+           more than a picture's time ago. A picture that took longer than
+           that to decode (at 60 fps, anything over 16.7 ms) leaves two due
+           at once; both are shown, one straight after the other, rather
+           than one being thrown away. Falling further behind still skips. */
+        double tol = v->fps > 0 ? 1 / (v->fps * (v->speed > 1 ? v->speed : 1)) : 0.04;
+        if (tol > 0.04)
+            tol = 0.04;
+        while (v->qn > 1 && v->qpts[1] <= now - tol) {
             take_frame(v);
             v->dropped++;
         }
@@ -2108,7 +2133,7 @@ static double reelcore_idle_time_play(ReelCore *v)
     if (v->need_first)
         return 0;
     /* pictures still to decode */
-    if (v->qn < 3 && (v->vpk_n || !v->eof_demux || !v->vflushed))
+    if (v->qn < pics_wanted(v) && (v->vpk_n || !v->eof_demux || !v->vflushed))
         return 0;
     /* the sound to top up (fill() keeps it at v->ahead) */
     if (v->dev && !v->stalled && !v->eof_demux && queued_audio(v) < v->ahead - IDLE_MAX - 0.05)

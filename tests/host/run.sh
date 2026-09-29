@@ -78,11 +78,13 @@ gcc -O1 -g -fsanitize=address,undefined -I"$TOP/player" "$TOP/player/sources.c" 
 # the sound clock in StreamManager's 2048-frame steps, a 30 fps video with 44.1 kHz sound
 ffmpeg -v error -y -f lavfi -i testsrc2=size=640x360:rate=30:duration=7 \
   -f lavfi -i sine=frequency=440:duration=7:sample_rate=44100 -c:v libx264 -preset ultrafast -c:a aac -ar 44100 "$O/c30_44k.mp4"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=60:duration=7 \
+  -f lavfi -i sine=frequency=440:duration=7:sample_rate=44100 -c:v libx264 -preset ultrafast -c:a aac -ar 44100 "$O/c60_44k.mp4"
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/clock_test.c" -o "$O/clock_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/clock_test" "$O/reelcore.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcodec_send_packet -o "$O/clock_test" "$O/reelcore.o" \
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/clock_test.o" $LIBS -lm 2>/dev/null
-echo "== clock_test (30 fps against a sound clock moving in 46 ms steps)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/clock_test" "$O/c30_44k.mp4" 2>&1 | grep -v "reelcore: " || bad=1
+echo "== clock_test (30 and 60 fps against a sound clock moving in 46 ms steps)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/clock_test" "$O/c30_44k.mp4" "$O/c60_44k.mp4" 2>&1 | grep -v "reelcore: " || bad=1
 
 # RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
 echo "== riscos_name_test (holiday/mp4 as a RISC OS name, Unix names untouched)"

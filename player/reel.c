@@ -237,6 +237,7 @@ static struct {
     unsigned draw_cs;                   /* ... and the time drawing them took */
     int ov_pending;                     /* a picture waiting for the overlay's next switch */
     unsigned ov_waited, ov_replaced;    /* for the stats: pictures that waited; replaced before shown */
+    unsigned late_base;                 /* reelcore's late count when played again from the start */
     int nosleep;                        /* Reel$NoSleep: poll flat out, as before 0.1.9 */
     int idle_cs;                        /* after a null: centiseconds we may sleep */
     unsigned slept_cs;                  /* for the stats: sleep asked for */
@@ -1951,6 +1952,7 @@ static void opened(ReelCore *v, const source_t *src)
     S.v = v;
     S.ended = 0;
     S.ab = 0;
+    S.late_base = 0;
     if (&S.cur != src) {
         source_free(&S.cur);
         source_copy(&S.cur, src);
@@ -2301,7 +2303,7 @@ static void info_stats(void)
         if (pn)
             snprintf(pace, sizeof(pace), "; evenly to %.1f ms", (st.pace_sum - info_prev.pace_sum) * 1000 / pn);
         snprintf(r[2].value, sizeof(r[2].value), "%.1f a second (the video: %.3g); %u late skipped (%u in all)%s",
-                 shown / dt, st.fps, late, st.late, pace);
+                 shown / dt, st.fps, late, st.late - S.late_base, pace);
     }
     if (dec && dtime > 0)
         snprintf(r[3].value, sizeof(r[3].value), "%.1f a second, %.1f ms each: %.2fx real time",
@@ -3117,6 +3119,14 @@ static void menu_select(const int *sel)
 
 /* ---- playback control ---------------------------------------------------------- */
 
+/* Played again from the start: Media info's "in all" starts again too */
+static void stats_restart(void)
+{
+    ReelCoreStats st;
+    reelcore_stats(S.v, &st);
+    S.late_base = st.late;
+}
+
 static void toggle_pause(void)
 {
     if (!S.v)
@@ -3125,6 +3135,7 @@ static void toggle_pause(void)
         S.ended = 0;
         reelcore_seek(S.v, 0);
         reelcore_pause(S.v, 0);
+        stats_restart();
     } else
         reelcore_pause(S.v, !reelcore_paused(S.v));
     lg("%s at %.2f", reelcore_paused(S.v) ? "pause" : "play", reelcore_position(S.v));
@@ -3149,6 +3160,8 @@ static void seek_by(double d)
     S.ended = 0;
     lg("seek %+.0f s to %.2f", d, p);
     reelcore_seek(S.v, p);
+    if (p == 0)
+        stats_restart();
     update_controls(1);
 }
 
@@ -3170,6 +3183,8 @@ static void click_track(int mouse_x)
     S.ended = 0;
     lg("seek (position bar) to %.2f", d * (wx - x0) / (x1 - x0));
     reelcore_seek(S.v, d * (wx - x0) / (x1 - x0));
+    if (wx == x0)
+        stats_restart();
     update_controls(1);
 }
 
