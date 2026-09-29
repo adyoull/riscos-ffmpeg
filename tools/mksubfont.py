@@ -9,7 +9,7 @@ DejaVu fonts: Bitstream Vera licence (third_party/dejavu/Licence)."""
 import sys
 from PIL import Image, ImageDraw, ImageFont
 
-SIZES = (22, 32, 46)
+SIZES = (16, 19, 22, 27, 32, 38, 46, 56)
 path = sys.argv[1] if len(sys.argv) > 1 else "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 outp = sys.argv[2] if len(sys.argv) > 2 else "reelcore/sub_font.h"
 chars = list(range(32, 127)) + list(range(160, 256))

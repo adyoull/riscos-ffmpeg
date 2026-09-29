@@ -80,36 +80,47 @@ int main(int argc, char **argv)
         }
     }
 
-    {   /* YV12 for the overlay, 1:1 and doubled */
+    {   /* YV12 for the overlay: 1:1, twice the size (a big frame shown
+           small) and half (a 720p frame full screen on 1920x1200: the
+           panel was drawn at 15 px and scaled down a pixel at a time,
+           unreadable). It must be drawn in a font of the size seen, not
+           scaled: about k times as wide, only where its layer is. */
         int fw, fh;
+        static const double ks[3] = { 1, 2, 0.5 };
         reelcore_frame_size(v, &fw, &fh);
         fw &= ~1; fh &= ~1;
-        for (int k = 1; k <= 2; k++) {
+        for (int ki = 0; ki < 3; ki++) {
+            double k = ks[ki];
             uint8_t *ya = malloc(fw * fh * 3 / 2), *yb = malloc(fw * fh * 3 / 2);
             uint8_t *pa[3] = { ya, ya + fw * fh, ya + fw * fh + fw * fh / 4 }, *pb[3] = { yb, yb + fw * fh, yb + fw * fh + fw * fh / 4 };
             int pitch[3] = { fw, fw / 2, fw / 2 }, inside = 0, outside = 0, bright = 0, n = 0, cdiff = 0;
+            int kw, kh, m = fw, my = fh;
             reelcore_set_panel(v, NULL);
             reelcore_draw_yuv420(v, pa, pitch, fw, fh, NULL);
             set(v, k);
             reelcore_draw_yuv420(v, pb, pitch, fw, fh, NULL);
+            reelcore_panel_size(v, &kw, &kh);
+            for (int y = 0; y < fh; y++)
+                for (int x = 0; x < fw; x++)
+                    if (ya[y * fw + x] != yb[y * fw + x]) {
+                        m = x < m ? x : m;
+                        my = y < my ? y : my;
+                    }
             for (int y = 0; y < fh; y++)
                 for (int x = 0; x < fw; x++) {
-                    int in = x >= 10 * k && x < 10 * k + pw * k && y >= 10 * k && y < 10 * k + ph * k, d = ya[y * fw + x] != yb[y * fw + x];
+                    int in = x >= m && x < m + kw && y >= my && y < my + kh, d = ya[y * fw + x] != yb[y * fw + x];
                     if (in) { inside += d; bright += yb[y * fw + x] > 200; n++; }
                     else outside += d;
                 }
             for (int i = fw * fh; i < fw * fh * 3 / 2; i++)
                 cdiff += ya[i] != yb[i];
-            printf("  YV12 x%d: %d of %d changed, %d bright; %d changed outside; %d chroma changed\n",
-                   k, inside, n, bright, outside, cdiff);
-            CHECK(outside == 0, "YV12 x%d: %d changed outside the panel", k, outside);
-            CHECK(inside > n * 8 / 10 && bright > 300 * k * k && cdiff > 1000, "YV12 x%d: the panel isn't there", k);
-            if (fw >= 20 + pw * 2 + 10) {       /* x2 reaches twice as far (its margin too) */
-                int far = 0;
-                for (int y = 10; y < 10 + ph; y++)
-                    far += ya[y * fw + 10 + pw + pw / 2] != yb[y * fw + 10 + pw + pw / 2];
-                CHECK(k == 1 ? far == 0 : far > ph / 2, "YV12 x%d: %d changed at 1.5x its width", k, far);
-            }
+            printf("  YV12 x%.1f: panel %dx%d at %d,%d; %d of %d changed, %d bright; %d changed outside; %d chroma changed\n",
+                   k, kw, kh, m, my, inside, n, bright, outside, cdiff);
+            CHECK(outside == 0, "YV12 x%.1f: %d changed outside the panel", k, outside);
+            CHECK(m == my && m >= 10 * k * 0.6 && m <= 10 * k * 1.4 + 1, "YV12 x%.1f: margin %d,%d", k, m, my);
+            CHECK(inside > n * 8 / 10 && bright > 300 * k * k && cdiff > 1000 * k * k, "YV12 x%.1f: the panel isn't there", k);
+            CHECK(k == 1 ? kw == pw && kh == ph : kw > pw * k * 0.75 && kw < pw * k * 1.25 && kh > ph * k * 0.7 && kh < ph * k * 1.4,
+                  "YV12 x%.1f: panel %dx%d, not about %.0fx%.0f", k, kw, kh, pw * k, ph * k);
             free(ya); free(yb);
         }
     }

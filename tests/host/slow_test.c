@@ -54,9 +54,11 @@ static void log_line(int level, const char *line)
 }
 
 /* plays clip for up to secs with pictures costing c (c2 from after2 s on) */
+static double hiccup_at = -1;               /* a stall this far in (going full screen, say) */
 static void play(const char *clip, int flags, double c, double c2, double after, double secs,
                  ReelCoreStats *st, unsigned *shown)
 {
+    int hiccuped = 0;
     ReelCore *v;
     double t0 = fake_time;
     int r = 0;
@@ -69,6 +71,10 @@ static void play(const char *clip, int flags, double c, double c2, double after,
     for (int i = 0; i < 40000 && r != REELCORE_END && fake_time - t0 < secs; i++) {
         if (fake_time - t0 > after)
             cost = c2;
+        if (hiccup_at >= 0 && !hiccuped && fake_time - t0 > hiccup_at) {
+            fake_time += 0.3;
+            hiccuped = 1;
+        }
         r = reelcore_update(v);
         if (r == REELCORE_NEW_FRAME)
             (*shown)++;
@@ -163,6 +169,18 @@ int main(int argc, char **argv)
         /* lighter after 2 s: on again (after 5 s off) */
         play(argv[2], 0, 0.048, 0.01, 2, 11, &st, &shown);
         CHECK(st.auto_fast_spells == 1 && !st.auto_fast, "lighter: deblocking not back on");
+        /* decoding easily (0.8 of the time) with a stall 1 s in: not off
+           for good (autofast1: a 1080p trailer full screen) */
+        hiccup_at = 1;
+        play(argv[2], REELCORE_LOOP, 0.032, 0.032, 99, 30, &st, &shown);
+        hiccup_at = -1;
+        CHECK(!st.auto_fast, "a stall: deblocking still off");
+        /* just too slow with it (0.046 s, 0.0345 without): tried again now
+           and then, less and less often, and not many frames skipped */
+        play(argv[2], REELCORE_LOOP, 0.046, 0.046, 99, 60, &st, &shown);
+        CHECK(st.auto_fast && st.auto_fast_spells >= 3 && st.auto_fast_spells <= 5,
+              "too slow: deblocking off %u times, now %s", st.auto_fast_spells, st.auto_fast ? "off" : "on");
+        CHECK(st.late < shown / 20, "too slow: %u late of %u", st.late, shown);
     }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;

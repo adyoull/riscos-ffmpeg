@@ -60,14 +60,23 @@
 #define LATE_KEYS     1.5    /* this far: decode only keyframes, */
 #define LATE_OK       0.05   /* until this close again */
 /* Deblocking turned off by itself: when pictures take longer to decode
-   than FAST_SLOW of the time between them (or they're LATE_FAST behind),
-   and on again only below FAST_EASY and after FAST_HOLD seconds off.
-   Deblocking is about a quarter of H.264 decoding, so back on, a video at
-   FAST_EASY comes to about 0.8 of the time: under FAST_SLOW, no see-saw. */
+   than FAST_SLOW of the time between them (or they're LATE_FAST behind
+   and take over FAST_BUSY: a hiccup on a video that decodes easily, going
+   full screen say, isn't the decoding's fault). On again after FAST_HOLD
+   seconds if they take under FAST_EASY (deblocking is about a quarter of
+   H.264 decoding: about 0.8 back on, under FAST_SLOW, no see-saw); and
+   since how much deblocking costs varies (Reel 0.1.20-autofast1: a 1080p
+   trailer full screen kept it off for good), tried on again every
+   FAST_PROBE seconds while decoding keeps up, the wait doubling (to
+   FAST_PROBE_MAX) each time it had to go straight off again. */
 #define FAST_SLOW     0.9
+#define FAST_BUSY     0.75
 #define FAST_EASY     0.6
 #define LATE_FAST     0.1
 #define FAST_HOLD     5.0
+#define FAST_PROBE    10.0
+#define FAST_PROBE_MAX 160.0
+#define FAST_REGRET   8.0    /* off again this soon after a try: the try failed */
 #define NET_AHEAD     10.0   /* network: seconds read ahead of the picture shown */
 #define NET_MAX_BYTES (32 << 20)  /* ... and at most this much */
 #define NET_LOW       3.0    /* below this, reelcore_update gives the reader time */
@@ -182,7 +191,9 @@ struct ReelCore {
     int fast;                          /* fast decoding: no deblocking filter */
     int auto_fast;                     /* too slow: deblocking off by itself (while fast is off) */
     unsigned auto_fast_spells;
-    double auto_fast_since;            /* clock_now when turned off (for FAST_HOLD) */
+    double auto_fast_since;            /* when turned off (real seconds; for FAST_HOLD) */
+    double auto_fast_on_at;            /* when it was last turned on again (-1 never) */
+    double auto_fast_probe;            /* seconds off before trying it on again */
     double dec_avg;                    /* moving average: seconds decoding a picture */
     int deint;                         /* REELCORE_DEINT_* */
     AVFilterGraph *dgraph;             /* buffer -> yadif -> buffersink, made when needed */
@@ -231,6 +242,13 @@ struct ReelCore {
     /* a layer's own state (reelcore's textures), released on close */
     void *attach;
     Layer pan;                             /* the stats panel */
+    /* what it shows (copied), so it can be made again at another size */
+    char *pan_label[REELCORE_PANEL_ROWS], *pan_value[REELCORE_PANEL_ROWS];
+    float *pan_graph[REELCORE_PANEL_ROWS];
+    unsigned pan_rgb[REELCORE_PANEL_ROWS];
+    int pan_rows, pan_graph_n;
+    int pan_font;                          /* panel_fonts[] it was made with */
+    double pan_dh, pan_k;                  /* where it was last drawn: display height, pixels a display pixel */
     double yuv_k;                          /* draw_yuv420: frame pixels per display pixel */
     /* subtitles */
     SubTrack sub_tracks[SUB_TRACKS];
@@ -250,6 +268,7 @@ struct ReelCore {
 static char last_error[256];
 
 static void layer_free(Layer *L);
+static void pan_forget(ReelCore *v);
 static void sub_close_track(ReelCore *v);
 static void sub_packet(ReelCore *v, AVPacket *pkt);
 static void sub_clear(ReelCore *v, int bitmaps_only);
@@ -1343,7 +1362,7 @@ void reelcore_close(ReelCore *v)
     tempo_close(v);
     sws_freeContext(v->sws);
     sws_freeContext(v->sws_yuv);
-    layer_free(&v->pan);
+    pan_forget(v);
     hist_clear(v);
     sub_close_track(v);
     av_free(v->sev);
@@ -2160,28 +2179,40 @@ static void set_deblock(ReelCore *v);
    time); on again once decoding has plenty to spare. */
 static void check_slow(ReelCore *v, double lag)
 {
-    double gap, now;
+    double gap, now, off_for;
     if (v->fast == REELCORE_FAST_ON || (v->flags & REELCORE_NO_AUTOFAST) || v->paused)
         return;
     gap = 1.0 / ((v->fps > 0 ? v->fps : 25) * v->speed);
-    now = clock_now(v);
+    now = av_gettime_relative() / 1e6;   /* (real time: the clock goes back at a loop or seek) */
+    if (v->auto_fast_probe <= 0)
+        v->auto_fast_probe = FAST_PROBE;
     if (!v->auto_fast) {
-        /* (behind with decoding not the reason, a busy desktop, say: left on) */
-        if (v->dec_avg > gap * FAST_SLOW || (lag > LATE_FAST && v->dec_avg > gap * 0.5)) {
+        if (v->dec_avg > gap * FAST_SLOW || (lag > LATE_FAST && v->dec_avg > gap * FAST_BUSY)) {
+            if (v->auto_fast_spells && now - v->auto_fast_on_at < FAST_REGRET)
+                v->auto_fast_probe = FFMIN(v->auto_fast_probe * 2, FAST_PROBE_MAX);   /* the try failed */
             v->auto_fast = 1;
             v->auto_fast_spells++;
             v->auto_fast_since = now;
+            av_log(NULL, AV_LOG_VERBOSE, "reelcore: decoding too slowly (%.1f ms a picture of %.1f, %.2f s behind): "
+                   "deblocking off\n", v->dec_avg * 1000, gap * 1000, lag);
             v->dec_avg *= 0.8;             /* (what it should come down to) */
             set_deblock(v);
-            av_log(NULL, AV_LOG_VERBOSE, "reelcore: decoding too slowly (%.1f ms a picture, %.2f s behind): "
-                   "deblocking off\n", v->dec_avg / 0.8 * 1000, lag);
         }
-    } else if (!v->skipping && lag < LATE_OK && v->dec_avg > 0 && v->dec_avg < gap * FAST_EASY &&
-               fabs(now - v->auto_fast_since) > FAST_HOLD) {
+        return;
+    }
+    off_for = now - v->auto_fast_since;
+    if (v->skipping || lag > LATE_OK || v->dec_avg <= 0)
+        return;
+    if ((v->dec_avg < gap * FAST_EASY && off_for > FAST_HOLD) ||
+        (v->dec_avg < gap * FAST_SLOW && off_for > v->auto_fast_probe)) {
+        int easy = v->dec_avg < gap * FAST_EASY;
+        if (easy)
+            v->auto_fast_probe = FAST_PROBE;
         v->auto_fast = 0;
+        v->auto_fast_on_at = now;
         set_deblock(v);
-        av_log(NULL, AV_LOG_VERBOSE, "reelcore: decoding keeps up (%.1f ms a picture): deblocking on\n",
-               v->dec_avg * 1000);
+        av_log(NULL, AV_LOG_VERBOSE, "reelcore: %s (%.1f ms a picture of %.1f): deblocking on\n",
+               easy ? "decoding keeps up" : "trying", v->dec_avg * 1000, gap * 1000);
     }
 }
 
@@ -2854,67 +2885,127 @@ static void layer_blend_row(const Place *pl, uint8_t *row, int p, int y, int w)
 
 #include "panel_font.h"
 
+/* Sizes at 15 px (panel_fonts[] has others: made at each font's size) */
 #define PAN_PAD     8
 #define PAN_GAP     12
-#define PAN_ROW     (PANEL_FONT_H + 3)
+#define PAN_LEAD    3                       /* between rows */
 #define PAN_GRAPH_W 200
 #define PAN_GRAPH_H 14
 #define PAN_BG      150                     /* the background's alpha: see-through black */
 #define PAN_MARGIN  10                      /* from the picture's top left corner */
+#define PAN_SIZE    15                      /* the font's size (px, as seen) up to ... */
+#define PAN_SIZE_H  900                     /* ... a picture this high on screen, then bigger with it */
+#define PAN_SIZE_MAX 30
 
-static int pan_textw(const char *t) { return t ? (int)strlen(t) * PANEL_FONT_W : 0; }
+static int pan_px(const PanelFont *f, int n) { return (n * f->size + PAN_SIZE / 2) / PAN_SIZE; }
 
-static void pan_text(Layer *L, int x, int y, const char *t, int r, int g, int b)
+static int pan_textw(const PanelFont *f, const char *t) { return t ? (int)strlen(t) * f->w : 0; }
+
+static void pan_text(Layer *L, const PanelFont *f, int x, int y, const char *t, int r, int g, int b)
 {
-    for (; t && *t; t++, x += PANEL_FONT_W) {
+    for (; t && *t; t++, x += f->w) {
         unsigned c = (unsigned char)*t;
         int i = c >= 32 && c < 127 ? (int)c - 32 : c >= 160 ? (int)c - 160 + 95 : '?' - 32;
-        const unsigned char *gl = panel_font[i];
-        for (int j = 0; j < PANEL_FONT_H; j++)
-            for (int k = 0; k < PANEL_FONT_W; k++)
-                layer_put(L, x + k, y + j, r, g, b, gl[j * PANEL_FONT_W + k]);
+        const unsigned char *gl = f->data + (size_t)i * f->w * f->h;
+        for (int j = 0; j < f->h; j++)
+            for (int k = 0; k < f->w; k++)
+                layer_put(L, x + k, y + j, r, g, b, gl[j * f->w + k]);
     }
+}
+
+/* The panel's font for a picture shown dh display pixels high, k frame
+   pixels a display pixel: drawn at the size it's seen, not drawn at one
+   size and scaled (a 720p picture full screen on 1920x1200 through the
+   overlay: k 0.67, and the 15 px text, pixels left out, was unreadable) */
+static int pan_font_for(double dh, double k)
+{
+    double want = PAN_SIZE * (dh > PAN_SIZE_H ? FFMIN(dh / PAN_SIZE_H, (double)PAN_SIZE_MAX / PAN_SIZE) : 1) * k;
+    int n = 0;
+    for (int i = 0; i < (int)FF_ARRAY_ELEMS(panel_fonts); i++)
+        if (panel_fonts[i].size <= want * 1.1)
+            n = i;
+    return n;
+}
+
+static void pan_build(ReelCore *v, int font)
+{
+    const PanelFont *f = &panel_fonts[font];
+    Layer *L = &v->pan;
+    int lw = 0, vw = 0, w, h, rows = v->pan_rows;
+    int pad = pan_px(f, PAN_PAD), gap = pan_px(f, PAN_GAP), row = f->h + pan_px(f, PAN_LEAD);
+    int gw = pan_px(f, PAN_GRAPH_W), gh = FFMAX(pan_px(f, PAN_GRAPH_H), 2);
+    v->pan_font = font;
+    if (rows <= 0) {
+        layer_free(L);
+        return;
+    }
+    for (int i = 0; i < rows; i++) {
+        int g = v->pan_graph[i] ? gw + gap : 0;
+        lw = FFMAX(lw, pan_textw(f, v->pan_label[i]));
+        vw = FFMAX(vw, g + pan_textw(f, v->pan_value[i]));
+    }
+    w = pad + lw + gap + vw + pad;
+    h = pad + rows * row + pad - pan_px(f, PAN_LEAD);
+    if (layer_alloc(L, w, h) < 0)
+        return;
+    layer_box(L, 0, 0, w, h, 0, 0, 0, PAN_BG);
+    for (int i = 0; i < rows; i++) {
+        int y = pad + i * row, x = pad + lw + gap;
+        if (v->pan_label[i])
+            pan_text(L, f, pad + lw - pan_textw(f, v->pan_label[i]), y, v->pan_label[i], 255, 255, 255);
+        if (v->pan_graph[i]) {
+            int gy = y + (f->h - gh) / 2, n = v->pan_graph_n;
+            int r = v->pan_rgb[i] >> 16 & 255, g = v->pan_rgb[i] >> 8 & 255, b = v->pan_rgb[i] & 255;
+            layer_box(L, x, gy, gw, gh, 40, 40, 40, 255);
+            for (int k = 0; k < gw; k++) {
+                float s = v->pan_graph[i][k * n / gw];
+                int bh = (int)(av_clipf(s, 0, 1) * gh + 0.5f);
+                layer_box(L, x + k, gy + gh - bh, 1, bh, r, g, b, 255);
+            }
+            x += gw + gap;
+        }
+        if (v->pan_value[i])
+            pan_text(L, f, x, y, v->pan_value[i], 230, 230, 230);
+    }
+}
+
+static void pan_forget(ReelCore *v)
+{
+    for (int i = 0; i < REELCORE_PANEL_ROWS; i++) {
+        av_freep(&v->pan_label[i]);
+        av_freep(&v->pan_value[i]);
+        av_freep(&v->pan_graph[i]);
+    }
+    v->pan_rows = 0;
+    layer_free(&v->pan);
 }
 
 int reelcore_set_panel(ReelCore *v, const ReelCorePanel *p)
 {
-    Layer *L = &v->pan;
-    int lw = 0, vw = 0, w, h, rows = p ? FFMIN(p->rows, REELCORE_PANEL_ROWS) : 0;
-    if (rows <= 0) {
-        layer_free(L);
+    int rows = p ? FFMIN(p->rows, REELCORE_PANEL_ROWS) : 0;
+    pan_forget(v);
+    if (rows <= 0)
         return 0;
-    }
-    for (int i = 0; i < rows; i++) {
-        int g = p->graph[i] && p->graph_n > 0 ? PAN_GRAPH_W + PAN_GAP : 0;
-        lw = FFMAX(lw, pan_textw(p->label[i]));
-        vw = FFMAX(vw, g + pan_textw(p->value[i]));
-    }
-    w = PAN_PAD + lw + PAN_GAP + vw + PAN_PAD;
-    h = PAN_PAD + rows * PAN_ROW + PAN_PAD - 3;
-    if (layer_alloc(L, w, h) < 0)
-        return AVERROR(ENOMEM);
-    layer_box(L, 0, 0, w, h, 0, 0, 0, PAN_BG);
-    for (int i = 0; i < rows; i++) {
-        int y = PAN_PAD + i * PAN_ROW, x = PAN_PAD + lw + PAN_GAP;
-        if (p->label[i])
-            pan_text(L, PAN_PAD + lw - pan_textw(p->label[i]), y, p->label[i], 255, 255, 255);
-        if (p->graph[i] && p->graph_n > 0) {
-            int gy = y + (PANEL_FONT_H - PAN_GRAPH_H) / 2, n = p->graph_n;
-            int r = p->graph_rgb[i] >> 16 & 255, g = p->graph_rgb[i] >> 8 & 255, b = p->graph_rgb[i] & 255;
-            layer_box(L, x, gy, PAN_GRAPH_W, PAN_GRAPH_H, 40, 40, 40, 255);
-            for (int k = 0; k < PAN_GRAPH_W; k++) {
-                float s = p->graph[i][k * n / PAN_GRAPH_W];
-                int bh = (int)(av_clipf(s, 0, 1) * PAN_GRAPH_H + 0.5f);
-                layer_box(L, x + k, gy + PAN_GRAPH_H - bh, 1, bh, r, g, b, 255);
-            }
-            x += PAN_GRAPH_W + PAN_GAP;
-        }
-        if (p->value[i])
-            pan_text(L, x, y, p->value[i], 230, 230, 230);
-    }
     if (p->yuv_scale > 0)
         v->yuv_k = p->yuv_scale;
-    return 0;
+    v->pan_graph_n = p->graph_n;
+    for (int i = 0; i < rows; i++) {
+        if ((p->label[i] && !(v->pan_label[i] = av_strdup(p->label[i]))) ||
+            (p->value[i] && !(v->pan_value[i] = av_strdup(p->value[i]))))
+            goto nomem;
+        if (p->graph[i] && p->graph_n > 0) {
+            if (!(v->pan_graph[i] = av_memdup(p->graph[i], sizeof(float) * p->graph_n)))
+                goto nomem;
+            v->pan_rgb[i] = p->graph_rgb[i];
+        }
+    }
+    v->pan_rows = rows;
+    /* made now at the size last drawn (reelcore_panel_size), again when drawn at another */
+    pan_build(v, pan_font_for(v->pan_dh > 0 ? v->pan_dh : 0, v->pan_k > 0 ? v->pan_k : 1));
+    return v->pan.rgba ? 0 : AVERROR(ENOMEM);
+nomem:
+    pan_forget(v);
+    return AVERROR(ENOMEM);
 }
 
 void reelcore_panel_size(const ReelCore *v, int *w, int *h)
@@ -2939,19 +3030,24 @@ static void sub_render(ReelCore *v, int dw, int dh);
 static int layers_place(ReelCore *v, Place *pl, int w, int h, double k)
 {
     int n = 0;
-    if (v->pan.rgba) {
-        pl[n] = (Place){ &v->pan, (int)(PAN_MARGIN * k), (int)(PAN_MARGIN * k), k, k };
-        n++;
+    if (v->pan_rows > 0) {                     /* drawn at the size it's seen */
+        int font = pan_font_for(h / k, k);
+        v->pan_dh = h / k;
+        v->pan_k = k;
+        if (font != v->pan_font || !v->pan.rgba)
+            pan_build(v, font);
+        if (v->pan.rgba) {
+            int m = pan_px(&panel_fonts[font], PAN_MARGIN);
+            pl[n++] = (Place){ &v->pan, m, m, 1, 1 };
+        }
     }
-    sub_render(v, (int)(w / k + 0.5), (int)(h / k + 0.5));
+    sub_render(v, w, h);                       /* text: at the frame's own size */
     if (v->sub_layer.rgba && v->sub_shown) {
         if (v->sub_bitmap) {                   /* where the subtitle's own canvas puts it */
             double sx = (double)w / v->sub_cw, sy = (double)h / v->sub_ch;
             pl[n] = (Place){ &v->sub_layer, (int)(v->sub_bx * sx), (int)(v->sub_by * sy), sx, sy };
-        } else {                               /* text: centred, near the bottom */
-            int lw = (int)(v->sub_layer.w * k + 0.5), lh = (int)(v->sub_layer.h * k + 0.5);
-            pl[n] = (Place){ &v->sub_layer, (w - lw) / 2, h - lh - (int)(h * 0.04), k, k };
-        }
+        } else                                 /* text: centred, near the bottom */
+            pl[n] = (Place){ &v->sub_layer, (w - v->sub_layer.w) / 2, h - v->sub_layer.h - (int)(h * 0.04), 1, 1 };
         n++;
     }
     return n;

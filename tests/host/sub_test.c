@@ -78,9 +78,9 @@ static void compare(ReelCore *v, const char *what, int want_text)
     free(b);
 }
 
-static void yv12(ReelCore *v, int k)
+static int yv12(ReelCore *v, int k)
 {
-    int fw, fh, on = 0, off = 0, bright = 0;
+    int fw, fh, on = 0, off = 0, bright = 0, rows = 0;
     unsigned char *a, *b;
     reelcore_frame_size(v, &fw, &fh);
     fw &= ~1; fh &= ~1;
@@ -94,15 +94,20 @@ static void yv12(ReelCore *v, int k)
         reelcore_draw_yuv420(v, pb, pitch, fw, fh, NULL);
         reelcore_show_subtitles(v, 1);
     }
-    for (int y = 0; y < fh; y++)
+    for (int y = 0; y < fh; y++) {
+        int any = 0;
         for (int x = 0; x < fw; x++) {
             int d = a[y * fw + x] != b[y * fw + x];
             if (y < fh / 2) off += d; else on += d;
             bright += d && a[y * fw + x] > 200;
+            any |= d;
         }
-    printf("  YV12, shown %dx: %d changed in the lower half, %d above, %d bright\n", k, on, off, bright);
+        rows += any;
+    }
+    printf("  YV12, shown %dx: %d changed in the lower half, %d above, %d bright, %d rows\n", k, on, off, bright, rows);
     CHECK(off == 0 && on > 100 && bright > 20, "YV12 %dx: subtitles not drawn right (%d, %d, %d)", k, on, off, bright);
     free(a); free(b);
+    return rows;
 }
 
 int main(int argc, char **argv)
@@ -128,8 +133,11 @@ int main(int argc, char **argv)
     text_at(v, 3.5, t, sizeof(t));
     CHECK(!strcmp(t, "\"Quoted\" - it's caf\xe9\nsecond line"), "at 3.5 s: '%s'", t);
     compare(v, "3.5 s, two lines", 1);
-    yv12(v, 1);
-    yv12(v, 2);
+    {   /* text drawn at the frame's own size however big it's shown (it was
+           drawn for the screen and scaled a pixel at a time: unreadable) */
+        int r1 = yv12(v, 1), r2 = yv12(v, 2);
+        CHECK(r1 == r2, "YV12: text %d rows high shown 1x, %d shown 2x (want the same)", r1, r2);
+    }
     reelcore_set_yuv_scale(v, 1);
     CHECK(reelcore_chapters(v) == 3, "%d chapters (want 3)", reelcore_chapters(v));
     reelcore_chapter_title(v, 1, t, sizeof(t));
