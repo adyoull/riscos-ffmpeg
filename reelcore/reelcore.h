@@ -344,9 +344,12 @@ int reelcore_chapter_title(const ReelCore *v, int i, char *buf, int size);
 int reelcore_chapter_at(const ReelCore *v, double pos);
 
 /* Paused: the next picture (REELCORE_NEW_FRAME; REELCORE_SAME_FRAME at
-   the end), or back one: reelcore_step_back seeks to the picture before,
-   and reelcore_update then gives it (REELCORE_NEW_FRAME, while still
-   paused). Playing again afterwards starts the sound from the picture
+   the end), or back one: reelcore_step_back returns REELCORE_NEW_FRAME
+   (done), or 0 when it has sought the picture before, and reelcore_update
+   then gives it (REELCORE_NEW_FRAME, while still
+   paused). The pictures just before are kept as they're decoded (up to
+   10), so further steps back return REELCORE_NEW_FRAME at once, without
+   a seek. Playing again afterwards starts the sound from the picture
    shown. */
 int reelcore_step(ReelCore *v);
 int reelcore_step_back(ReelCore *v);

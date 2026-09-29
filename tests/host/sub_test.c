@@ -180,19 +180,32 @@ int main(int argc, char **argv)
     /* 3. frame steps */
     reelcore_pause(v, 1);
     {
-        double p0 = reelcore_position(v), p1, p2;
+        double p0 = reelcore_position(v), p1, p2, p3, p4;
         CHECK(reelcore_step(v) == REELCORE_NEW_FRAME, "step: no new picture");
         p1 = reelcore_position(v);
         CHECK(fabs(p1 - p0 - 0.04) < 0.005, "step: %.3f -> %.3f (want +0.04)", p0, p1);
-        CHECK(reelcore_step_back(v) == 0, "step back refused");
-        for (int i = 0; i < 400 && reelcore_update(v) != REELCORE_NEW_FRAME; i++)
-            ;
+        /* back to the one just shown: kept, at once */
+        CHECK(reelcore_step_back(v) == REELCORE_NEW_FRAME && fabs(reelcore_position(v) - p0) < 0.005,
+              "step back after a step: %.3f (want %.3f at once)", reelcore_position(v), p0);
+        /* back again: nothing kept before it, so a seek and decoding from the key frame */
+        CHECK(reelcore_step_back(v) == 0, "step back with nothing kept: not a seek");
+        seeked(v);
         p2 = reelcore_position(v);
-        CHECK(fabs(p2 - p0) < 0.005 && reelcore_paused(v), "step back: %.3f (want %.3f, paused)", p2, p0);
-        printf("  steps: %.3f -> %.3f -> back to %.3f\n", p0, p1, p2);
+        CHECK(fabs(p2 - (p0 - 0.04)) < 0.005 && reelcore_paused(v), "step back: %.3f (want %.3f, paused)", p2, p0 - 0.04);
+        /* and again: the pictures before were kept on the way, so at once */
+        CHECK(reelcore_step_back(v) == REELCORE_NEW_FRAME, "a step back after the seek wasn't at once");
+        p3 = reelcore_position(v);
+        CHECK(fabs(p3 - (p0 - 0.08)) < 0.005, "kept step back: %.3f (want %.3f)", p3, p0 - 0.08);
+        CHECK(reelcore_step(v) == REELCORE_NEW_FRAME && fabs(reelcore_position(v) - p2) < 0.005,
+              "forward: %.3f (want %.3f)", reelcore_position(v), p2);
+        CHECK(reelcore_step(v) == REELCORE_NEW_FRAME && fabs(reelcore_position(v) - p0) < 0.005,
+              "forward: %.3f (want %.3f)", reelcore_position(v), p0);
+        p4 = reelcore_position(v);
+        printf("  steps: %.3f -> %.3f -> %.3f (kept) -> %.3f (sought) -> %.3f (kept) -> %.3f -> %.3f\n",
+               p0, p1, p0, p2, p3, p2, p4);
         reelcore_pause(v, 0);
-        play_to(v, p2 + 0.5);
-        CHECK(reelcore_position(v) >= p2 + 0.5 && reelcore_position(v) < p2 + 0.7, "playing on after steps: %.3f",
+        play_to(v, p4 + 0.5);
+        CHECK(reelcore_position(v) >= p4 + 0.5 && reelcore_position(v) < p4 + 0.7, "playing on after steps: %.3f",
               reelcore_position(v));
     }
     reelcore_close(v);
@@ -215,6 +228,25 @@ int main(int argc, char **argv)
     v = reelcore_open(argv[4], REELCORE_NO_ROTATE);
     if (v) {
         CHECK(reelcore_width(v) == 320, "REELCORE_NO_ROTATE: width %d", reelcore_width(v));
+        reelcore_close(v);
+    }
+    /* 5. a step back from 8 s in a clip with its key frame at 0 and
+       B-frames: the B-frames more than half a second before aren't decoded */
+    v = reelcore_open(argv[6], 0);
+    CHECK(v != NULL, "can't open %s", argv[6]);
+    if (v) {
+        ReelCoreStats a, b;
+        reelcore_seek(v, 8.0);
+        seeked(v);
+        reelcore_pause(v, 1);
+        reelcore_stats(v, &a);
+        CHECK(reelcore_step_back(v) == 0, "step back at 8 s");
+        seeked(v);
+        reelcore_stats(v, &b);
+        printf("  step back at 8 s (key frame at 0, B-frames): %u pictures decoded, now at %.3f\n",
+               b.decoded - a.decoded, reelcore_position(v));
+        CHECK(b.decoded - a.decoded < 120 && fabs(reelcore_position(v) - 7.96) < 0.005,
+              "step back at 8 s: %u decoded (want under 120 of 200), at %.3f", b.decoded - a.decoded, reelcore_position(v));
         reelcore_close(v);
     }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);

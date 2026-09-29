@@ -88,6 +88,8 @@ int __dynamic_da_max_size = 512 << 20;
 #define Wimp_OpenWindow        0x400C5
 #define Wimp_CloseWindow       0x400C6
 #define Wimp_Poll              0x400C7
+#define Hourglass_On           0x406C0
+#define Hourglass_Off          0x406C1
 #define Wimp_PollIdle          0x400E1
 #define Wimp_RedrawWindow      0x400C8
 #define Wimp_UpdateWindow      0x400C9
@@ -2960,16 +2962,32 @@ static void panel_toggle(void)
 /* ---- subtitles, chapters and frame steps ------------------------------------- */
 
 /* Paused (no null events): after a seek or step, the picture there, now */
+static void paused_redraw(void);
+
 static void paused_show(void)
 {
-    int w = S.fullscreen ? S.full : S.win, t0 = now_cs();
+    int t0 = now_cs(), glass = 0;
+    _kernel_swi_regs r;
     if (!S.v || !reelcore_paused(S.v))
         return;
-    while (now_cs() - t0 < 500) {       /* back to a key frame and on: at most 5 s */
-        int r = reelcore_update(S.v);
-        if (r == REELCORE_NEW_FRAME || r == REELCORE_END || r < 0)
+    while (now_cs() - t0 < 2000) {      /* back to a key frame and on: at most 20 s */
+        int ret = reelcore_update(S.v);
+        if (ret == REELCORE_NEW_FRAME || ret == REELCORE_END || ret < 0)
             break;
+        if (!glass && now_cs() - t0 > 30) {
+            swi(Hourglass_On, &r);      /* a long way from a key frame */
+            glass = 1;
+        }
     }
+    if (glass)
+        swi(Hourglass_Off, &r);
+    paused_redraw();
+}
+
+/* Paused: the picture reelcore has now, drawn */
+static void paused_redraw(void)
+{
+    int w = S.fullscreen ? S.full : S.win;
     if (w) {
         box_t pic = ov_pic_box(w);
         ov_hide();
@@ -3087,17 +3105,15 @@ static void frame_step(int dir)
             return;
     }
     if (dir > 0) {
-        if (reelcore_step(S.v) == REELCORE_NEW_FRAME) {
-            int w = S.fullscreen ? S.full : S.win;
-            if (w) {
-                box_t pic = ov_pic_box(w);
-                pic_refresh();
-                force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);
-            }
-            update_controls(1);
-        }
-    } else if (reelcore_step_back(S.v) == 0)
-        paused_show();
+        if (reelcore_step(S.v) == REELCORE_NEW_FRAME)
+            paused_redraw();
+    } else {
+        int r = reelcore_step_back(S.v);
+        if (r == REELCORE_NEW_FRAME)
+            paused_redraw();            /* kept from the last step back: at once */
+        else if (r == 0)
+            paused_show();              /* decoded from the key frame before */
+    }
 }
 
 /* ---- menus -------------------------------------------------------------------- */

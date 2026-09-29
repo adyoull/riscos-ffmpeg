@@ -102,12 +102,14 @@ ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=5 -f lavfi
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=5 -f lavfi -i sine=d=5:sample_rate=44100 \
   -c:v libx264 -preset ultrafast -c:a aac "$O/plain.mp4"
 ffmpeg -v error -y -display_rotation 90 -i "$O/plain.mp4" -c copy "$O/turned.mp4"
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=10 -c:v libx264 -preset veryfast -bf 3 \
+  -g 250 -keyint_min 250 -sc_threshold 0 -an "$O/gop.mp4"
 printf '[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\b1}Bold{\\b0} words,\\Nwith a comma\\hand space\n' > "$O/subs.ass"
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/sub_test.c" -o "$O/sub_test.o"
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/sub_test" "$O/reelcore.o" \
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/sub_test.o" $LIBS -lm 2>/dev/null
 echo "== sub_test (subtitles, chapters, turned pictures, frame steps)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/sub_test" "$O/subs.mkv" "$O/plain.mp4" "$O/subs.srt" "$O/turned.mp4" "$O/subs.ass" 2>&1 | grep -v "reelcore: " || bad=1
+"$TOP/tests/qemu/aligntrap.sh" "$O/sub_test" "$O/subs.mkv" "$O/plain.mp4" "$O/subs.srt" "$O/turned.mp4" "$O/subs.ass" "$O/gop.mp4" 2>&1 | grep -v "reelcore: " || bad=1
 
 # RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
 echo "== riscos_name_test (holiday/mp4 as a RISC OS name, Unix names untouched)"

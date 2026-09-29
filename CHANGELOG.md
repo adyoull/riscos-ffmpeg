@@ -78,6 +78,19 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   there. In Reel: `.` and `,`, which pause first. `paused_show()` shows
   the picture after a seek or step while paused (up to 5 s of decoding).
   Choosing a chapter while paused uses it too.
+- **Stepping back is quicker** (Pi report: frame stepping slow):
+  - The pictures before are kept (up to 10, `hist`): the ones decoded on
+    the way to a step back's seek (`bstep`), and each picture a step
+    forward leaves. The next steps back take one at once
+    (`reelcore_step_back` returns REELCORE_NEW_FRAME); only every 10th
+    decodes from the key frame.
+  - Every seek (not just steps) skips decoding non-reference pictures
+    (most B-frames) more than 0.5 s before its picture
+    (`skip_frame = AVDISCARD_NONREF`), restored when it's reached. From
+    8 s into a clip with its key frame at 0: 116 pictures decoded instead
+    of 203.
+  - Reel shows the hourglass while it decodes for more than 0.3 s, up to
+    20 s.
 - **Turned videos:** a stream's display matrix (phone videos) turns the
   picture 90/180/270 degrees through the same filter graph as yadif
   (transpose, or hflip+vflip). The size is swapped for 90/270. Media info

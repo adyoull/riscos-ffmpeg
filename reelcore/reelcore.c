@@ -46,6 +46,7 @@
 #endif
 
 #define QMAX          12     /* room for decoded frames kept ahead of the clock */
+#define HIST_N        10     /* pictures kept for stepping back */
 #define PICS_AHEAD    0.13   /* seconds of pictures decoded ahead: rides out a slow one */
 #define PICS_MIN      3      /* (as before, for 24-30 fps) */
 #define PICS_MAX      8      /* 60 fps; below QMAX, so a packet giving 2 never pushes one out */
@@ -171,6 +172,13 @@ struct ReelCore {
     int seen_interlaced;               /* AUTO: an interlaced picture has come */
     int rot;                           /* the file says turn the picture: 0, 90, 180, 270 clockwise */
     int stepped;                       /* paused and stepped: the sound needs a seek on playing */
+    /* the pictures just before the one shown while stepping, newest last:
+       a step back takes one at once instead of decoding from the key frame */
+    AVFrame *hist[HIST_N];
+    double hist_pts[HIST_N];
+    int hist_n;
+    int bstep;                         /* a step back's seek: keep the pictures before it */
+    int seek_skip;                     /* seeking: non-reference pictures well before it skipped */
     unsigned n_interlaced, n_deint;
     int64_t t_deint;                   /* microseconds */
     double ahead;                      /* seconds of sound to keep queued */
@@ -226,6 +234,7 @@ static void sub_clear(ReelCore *v, int bitmaps_only);
 static void sub_setup(ReelCore *v);
 static void fill(ReelCore *v);
 static void take_frame(ReelCore *v);
+static void hist_clear(ReelCore *v);
 
 /* The context the sound comes from */
 static AVFormatContext *actx(const ReelCore *v) { return v->afmt ? v->afmt : v->fmt; }
@@ -1310,6 +1319,7 @@ void reelcore_close(ReelCore *v)
     sws_freeContext(v->sws);
     sws_freeContext(v->sws_yuv);
     layer_free(&v->pan);
+    hist_clear(v);
     sub_close_track(v);
     av_free(v->sev);
     for (int i = 0; i < v->sub_n; i++)
@@ -1668,12 +1678,47 @@ static double frame_pts(AVFrame *f, AVStream *st, double fallback)
 }
 
 /* Queues a picture (a new reference to f) to be shown at pts. */
+static void hist_push(ReelCore *v, AVFrame *f, double pts)
+{
+    AVFrame *c = av_frame_clone(f);
+    if (!c)
+        return;
+    if (v->hist_n == HIST_N) {            /* the oldest goes */
+        av_frame_free(&v->hist[0]);
+        memmove(v->hist, v->hist + 1, (HIST_N - 1) * sizeof(v->hist[0]));
+        memmove(v->hist_pts, v->hist_pts + 1, (HIST_N - 1) * sizeof(v->hist_pts[0]));
+        v->hist_n--;
+    }
+    v->hist[v->hist_n] = c;
+    v->hist_pts[v->hist_n++] = pts;
+}
+
+static void hist_clear(ReelCore *v)
+{
+    for (int i = 0; i < v->hist_n; i++)
+        av_frame_free(&v->hist[i]);
+    v->hist_n = 0;
+}
+
+/* The decoder's own skipping (check_late), as it was before a seek */
+static void skip_restore(ReelCore *v)
+{
+    v->seek_skip = 0;
+    v->vdec->skip_frame = v->skipping == 2 ? AVDISCARD_NONKEY : v->skipping ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+}
+
 static void queue_picture(ReelCore *v, AVFrame *f, double pts)
 {
     if (v->seek_target >= 0) {
-        if (pts < v->seek_target - 0.001)
+        if (pts < v->seek_target - 0.001) {
+            if (v->bstep)
+                hist_push(v, f, pts);     /* stepping back: the ones before, for the next steps */
             return;                       /* before the seek point */
+        }
         v->seek_target = -1;
+        v->bstep = 0;
+        if (v->seek_skip)
+            skip_restore(v);
     }
     if (v->qn == QMAX) {                  /* full: the oldest goes */
         av_frame_free(&v->q[0]);
@@ -2096,6 +2141,17 @@ static void fill(ReelCore *v)
         AVPacket *p = vpk_pop(v);
         if (p) {
             check_late(v);
+            if (v->seek_target >= 0 && p->pts != AV_NOPTS_VALUE) {
+                /* on the way to a seek's picture: pictures nothing else is
+                   predicted from, and more than half a second before it,
+                   needn't be decoded at all (B-frames: about half) */
+                double t = p->pts * av_q2d(v->fmt->streams[v->vs]->time_base);
+                enum AVDiscard want = t < v->seek_target - 0.5 ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+                if (v->skipping == 0 && v->vdec->skip_frame != want) {
+                    v->vdec->skip_frame = want;
+                    v->seek_skip = 1;
+                }
+            }
             decode(v, v->vdec, p, 1);
             av_packet_free(&p);
         } else if (v->eof_demux && !v->vflushed) {
@@ -2283,6 +2339,7 @@ void reelcore_pause(ReelCore *v, int paused)
             v->stepped = 0;
             reelcore_seek(v, reelcore_position(v));
         }
+        hist_clear(v);
     }
 }
 
@@ -2339,6 +2396,10 @@ int reelcore_seek(ReelCore *v, double seconds)
     v->pace_t = 0;
     v->seek_target = v->aseek_target = seconds > 0 ? ts / (double)AV_TIME_BASE : -1;
     v->need_first = 1;
+    if (!v->bstep)
+        hist_clear(v);
+    if (v->seek_skip && v->seek_target < 0)
+        skip_restore(v);
     return 0;
 }
 
@@ -3380,6 +3441,8 @@ int reelcore_step(ReelCore *v)
     }
     if (!v->qn)
         return REELCORE_SAME_FRAME;
+    if (v->cur)
+        hist_push(v, v->cur, v->cur_pts);  /* (a step back again is at once) */
     take_frame(v);
     v->n_shown++;
     v->pause_pos = v->cur_pts;
@@ -3390,13 +3453,37 @@ int reelcore_step(ReelCore *v)
 int reelcore_step_back(ReelCore *v)
 {
     double d = v->fps > 0 ? 1 / v->fps : 0.04, pos;
+    int ret;
     if (!v->ready || !v->paused || !v->cur)
         return AVERROR(EINVAL);
+    if (v->need_first)
+        return AVERROR(EAGAIN);
+    while (v->hist_n && v->hist_pts[v->hist_n - 1] >= v->cur_pts - 0.001)
+        av_frame_free(&v->hist[--v->hist_n]);          /* (not before this one) */
+    if (v->hist_n && v->qn < QMAX) {
+        /* the picture before, kept: at once; the one shown goes back to the
+           front of the queue for a step forward */
+        memmove(v->q + 1, v->q, v->qn * sizeof(v->q[0]));
+        memmove(v->qpts + 1, v->qpts, v->qn * sizeof(v->qpts[0]));
+        v->q[0] = v->cur;
+        v->qpts[0] = v->cur_pts;
+        v->qn++;
+        v->cur = v->hist[--v->hist_n];
+        v->cur_pts = v->hist_pts[v->hist_n];
+        v->pause_pos = v->cur_pts;
+        v->stepped = 1;
+        return REELCORE_NEW_FRAME;
+    }
     pos = reelcore_position(v) - 1.5 * d;
     if (pos < 0)
         pos = 0;
     v->stepped = 1;
-    return reelcore_seek(v, pos);
+    hist_clear(v);
+    v->bstep = 1;                                      /* keep the ones before it this time */
+    ret = reelcore_seek(v, pos);
+    if (ret < 0)
+        v->bstep = 0;
+    return ret;
 }
 
 static void fill_black(uint8_t *p, int pitch, int x, int y, int w, int h)
