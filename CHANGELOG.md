@@ -3,6 +3,24 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next FFmpeg): -movflags +faststart on RISC OS
+
+- **Forum report:** converting big_buck_bunny_480p.mpg to MP4 (the Convert
+  window adds `-movflags +faststart`) failed at the end: "Unable to re-open
+  … output file for shifting data" and "This file is already open"
+  (&108C2). To move the index to the front, FFmpeg opens the output a
+  second time for reading while it is still open for writing, and RISC OS
+  refuses that.
+- **Patch 0020** (libavformat/mux_utils.c, `ff_format_shift_data`): on RISC
+  OS the output is closed, the data shifted along in place through one
+  read-write opening (from the end backwards, 256 KB at a time: the file
+  protocol's largest write; `truncate=0`), then opened again for writing
+  without truncating, at the end of the shifted data. Elsewhere only when
+  the second opening fails, or with `FFMPEG_SHIFT_IN_PLACE` set (tests).
+- **tests/qemu/faststart.sh** (in run-all.sh): MP4 (5 chunks), MOV and
+  M4A made in place are byte for byte what the usual way makes. Mutations
+  caught: opening with truncation (an empty file), 1 MB writes (EIO).
+
 ## Unreleased (next Reel): a steady clock, steered by the sound; 60 fps through the overlay
 
 - **reelcore's `clock_smooth()` is now a timer steered by the sound**

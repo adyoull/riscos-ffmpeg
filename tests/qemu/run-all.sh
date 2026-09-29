@@ -18,6 +18,7 @@ step "x264 checkasm (8 bit)" "$HERE/aligntrap.sh" "$S/x264-master/checkasm8"
 step "x264 checkasm (10 bit)" "$HERE/aligntrap.sh" "$S/x264-master/checkasm10"
 [ -d "$HERE/samples" ] || "$HERE/make-samples.sh"
 step "ffmpeg jobs" "$HERE/run.sh"
+step "faststart in place (patch 0020)" "$HERE/faststart.sh"
 step "host tests (egl output device, reelcore, ffegl)" "$HERE/../host/run.sh"
 [ $bad -eq 0 ] && echo "ALL PASSED" || echo "SOME FAILED"
 exit $bad
