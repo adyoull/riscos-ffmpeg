@@ -113,6 +113,15 @@ struct ReelCore {
     AVPacket **vpk;
     int vpk_head, vpk_n, vpk_cap;
     size_t vpk_bytes;
+    /* sound packets read but not decoded yet: decoded as the sound queue
+       needs them. Decoding each as it was read let a video skipping to
+       key frames (far behind: a 4K film on a Pi) race through the file
+       and push 15 s of sound at StreamManager, which refused it, and the
+       sound was given up */
+    AVPacket **apk;
+    int apk_head, apk_n, apk_cap;
+    size_t apk_bytes;
+    int aflushed;                      /* the sound decoder has been sent the end */
     int vflushed;                      /* the video decoder has been sent the end */
     int skipping;                      /* behind: non-reference frames aren't decoded */
     unsigned skip_spells;
@@ -235,6 +244,7 @@ static void sub_setup(ReelCore *v);
 static void fill(ReelCore *v);
 static void take_frame(ReelCore *v);
 static void hist_clear(ReelCore *v);
+static void apk_clear(ReelCore *v);
 
 /* The context the sound comes from */
 static AVFormatContext *actx(const ReelCore *v) { return v->afmt ? v->afmt : v->fmt; }
@@ -1304,6 +1314,8 @@ void reelcore_close(ReelCore *v)
     clear_queue(v);
     vpk_clear(v);
     av_freep(&v->vpk);
+    apk_clear(v);
+    av_freep(&v->apk);
     av_frame_free(&v->cur);
     av_frame_free(&v->frame);
     deint_close(v);
@@ -2010,6 +2022,70 @@ static void vpk_clear(ReelCore *v)
     v->vpk_head = 0;
 }
 
+static int apk_push(ReelCore *v, AVPacket *pkt)
+{
+    AVPacket *p;
+    if (v->apk_n == v->apk_cap) {
+        int cap = v->apk_cap ? v->apk_cap * 2 : 256;
+        AVPacket **q = av_malloc_array(cap, sizeof(*q));
+        if (!q)
+            return -1;
+        for (int i = 0; i < v->apk_n; i++)
+            q[i] = v->apk[(v->apk_head + i) % v->apk_cap];
+        av_free(v->apk);
+        v->apk = q;
+        v->apk_cap = cap;
+        v->apk_head = 0;
+    }
+    if (!(p = av_packet_alloc()))
+        return -1;
+    av_packet_move_ref(p, pkt);
+    v->apk[(v->apk_head + v->apk_n) % v->apk_cap] = p;
+    v->apk_n++;
+    v->apk_bytes += p->size;
+    return 0;
+}
+
+static AVPacket *apk_pop(ReelCore *v)
+{
+    AVPacket *p;
+    if (!v->apk_n)
+        return NULL;
+    p = v->apk[v->apk_head];
+    v->apk_head = (v->apk_head + 1) % v->apk_cap;
+    v->apk_n--;
+    v->apk_bytes -= p->size;
+    return p;
+}
+
+static void apk_clear(ReelCore *v)
+{
+    AVPacket *p;
+    while ((p = apk_pop(v)) != NULL)
+        av_packet_free(&p);
+    v->apk_head = 0;
+}
+
+static void decode(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video);
+
+/* Sound packets decoded while the sound queued is short of v->ahead (all
+   of them with no device, or a stalled one); at the end, the decoder's
+   flush once they're done */
+static void audio_drain(ReelCore *v)
+{
+    AVPacket *p;
+    if (!v->adec)
+        return;
+    while (v->apk_n && (!v->dev || v->stalled || queued_audio(v) < v->ahead) && (p = apk_pop(v)) != NULL) {
+        decode(v, v->adec, p, 0);
+        av_packet_free(&p);
+    }
+    if (v->eof_demux && !v->apk_n && !v->aflushed) {
+        v->aflushed = 1;
+        decode(v, v->adec, NULL, 0);
+    }
+}
+
 /* Sends pkt (NULL = flush) to a decoder and takes all it gives back. */
 static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video);
 
@@ -2091,7 +2167,7 @@ static int pics_wanted(const ReelCore *v)
 static void fill(ReelCore *v)
 {
     for (int budget = READ_BUDGET; budget > 0 && !v->eof_demux; budget--) {
-        int need_a = v->dev && !v->stalled && queued_audio(v) < v->ahead;
+        int need_a = v->dev && !v->stalled && queued_audio(v) < v->ahead && v->apk_n == 0;
         int need_v = v->qn < pics_wanted(v) && v->vpk_n == 0;
         int ret, kind;
         if (!need_a && !need_v)
@@ -2101,19 +2177,21 @@ static void fill(ReelCore *v)
         ret = next_packet(v, v->pkt, &kind);
         if (ret == AVERROR(EAGAIN))
             break;                         /* (the network: not here yet) */
-        if (ret < 0) {                     /* the end: flush the sound decoder now, */
-            v->eof_demux = 1;              /* the video's once its packets are done */
-            if (v->adec) decode(v, v->adec, NULL, 0); else v->eof_audio = 1;
+        if (ret < 0) {                     /* the end: the sound decoder flushed after its */
+            v->eof_demux = 1;              /* packets, the video's once its packets are done */
+            if (!v->adec) v->eof_audio = 1;
             break;
         }
         if (kind == 0)
             vpk_push(v, v->pkt);
-        else if (kind == 1 && v->adec)
-            decode(v, v->adec, v->pkt, 0);
-        else if (kind == 2)
+        else if (kind == 1 && v->adec) {
+            apk_push(v, v->pkt);
+            audio_drain(v);
+        } else if (kind == 2)
             sub_packet(v, v->pkt);
         av_packet_unref(v->pkt);
     }
+    audio_drain(v);
     /* after a seek, decode on to the seek point in one go (as before) */
     int budget = v->need_first ? READ_BUDGET : DECODE_BUDGET;
     for (int n = 0; n < budget && v->qn < pics_wanted(v); n++) {
@@ -2122,12 +2200,15 @@ static void fill(ReelCore *v)
             int kind, ret = next_packet(v, v->pkt, &kind);
             if (ret < 0 && ret != AVERROR(EAGAIN)) {
                 v->eof_demux = 1;
-                if (v->adec) decode(v, v->adec, NULL, 0); else v->eof_audio = 1;
+                if (!v->adec) v->eof_audio = 1;
+                audio_drain(v);
             } else if (ret >= 0) {
                 if (kind == 0)
                     vpk_push(v, v->pkt);
-                else if (kind == 1 && v->adec)
-                    decode(v, v->adec, v->pkt, 0);
+                else if (kind == 1 && v->adec) {
+                    apk_push(v, v->pkt);
+                    audio_drain(v);
+                }
                 else if (kind == 2)
                     sub_packet(v, v->pkt);
                 av_packet_unref(v->pkt);
@@ -2386,6 +2467,8 @@ int reelcore_seek(ReelCore *v, double seconds)
         tempo_open(v);                    /* and atempo */
     clear_queue(v);
     vpk_clear(v);
+    apk_clear(v);
+    v->aflushed = 0;
     deint_close(v);                       /* the pictures it held are from before */
     v->vflushed = 0;
     v->eof_demux = v->eof_video = v->eof_audio = 0;

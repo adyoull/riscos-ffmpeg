@@ -53,7 +53,9 @@ $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c 
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcodec_send_packet -o "$O/slow_test" "$O/reelcore.o" \
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/slow_test.o" $LIBS 2>/dev/null
 echo "== slow_test (decoding slower than real time)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/slow_test" "$SAMPLES/long_h264_aac_322_184.mp4" 2>&1 | grep -v "swscaler" || bad=1
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=12 -f lavfi -i sine=d=12:sample_rate=44100 \
+  -c:v libx264 -preset ultrafast -g 25 -c:a aac "$O/gop1s.mp4"
+"$TOP/tests/qemu/aligntrap.sh" "$O/slow_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$O/gop1s.mp4" 2>&1 | grep -v "swscaler" || bad=1
 
 # playback options: speed, fast decoding, sound tracks, picture modes
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/options_test.c" -o "$O/options_test.o"

@@ -91,6 +91,15 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
     of 203.
   - Reel shows the hourglass while it decodes for more than 0.3 s, up to
     20 s.
+- **The sound kept to its queue when the video falls far behind** (the
+  same 4K log: "StreamManager_AddBlock refused a block: Buffer full",
+  15 s queued, then "the sound device isn't playing; carrying on without
+  sound"). With the video at key frames only, reading raced ahead to find
+  them, and every sound packet read was decoded and queued at once. Sound
+  packets now wait as packets (`apk`, like the video's `vpk`) and are
+  decoded only while less than `ahead` is queued; the decoder's flush at
+  the end comes after them. slow_test has a heavy run (0.4 s a picture,
+  key frames every second): at most 0.27 s queued (0.65 s before).
 - **4K through the hardware overlay** (Pi report: a 3996x1730 trailer
   kept blanking the screen, and didn't with Hardware acceleration off;
   the log said "only 2 of 3 buffers (GPU memory)"):
