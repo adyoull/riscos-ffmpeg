@@ -560,9 +560,10 @@ int sources_from_file(const char *path, source_t *out, int max)
         }
     }
     fseek(f, 0, SEEK_END);
-    len = (size_t)ftell(f);
-    if (len > TEXT_MAX)
-        len = TEXT_MAX;
+    {
+        long end = ftell(f);                        /* (-1 past 2GB without large files) */
+        len = end < 0 || (unsigned long)end > TEXT_MAX ? TEXT_MAX : (size_t)end;
+    }
     fseek(f, 0, SEEK_SET);
     if (!(text = malloc(len + 1))) {
         fclose(f);

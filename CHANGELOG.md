@@ -3,7 +3,18 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next FFmpeg): -movflags +faststart on RISC OS
+## 5.1.10-riscos13 (2026-09-29): files over 2GB, MP4 files from the Convert window, and more options
+
+- **Files over 2GB** (up to 4GB-1, the RISC OS limit): linked with
+  **UnixLib 5.0.2** (github.com/adyoull/riscos-unixlib v5.0.2, tested on a
+  Pi with a 3GB file). FFmpeg's configure already builds with
+  `-D_FILE_OFFSET_BITS=64`; libavformat was rebuilt from clean against
+  5.0.2's headers (`sys/stat.h`, `sys/mman.h`, `unistd.h`), so its file
+  protocol seeks past 2GB (`lseek64`) and sees the 64-bit size
+  (`__unixlib_fstat64`). Up to riscos12, UnixLib 5.0.1 stopped at 2GB-1
+  (EOVERFLOW). build-apps.sh gives Reel, the front end and the examples
+  `-D_FILE_OFFSET_BITS=64` too. `tools/check-unixlib.sh` now also checks
+  that every program with FFmpeg's file protocol calls `__unixlib_fstat64`.
 
 - **Forum report:** converting big_buck_bunny_480p.mpg to MP4 (the Convert
   window adds `-movflags +faststart`) failed at the end: "Unable to re-open
@@ -27,7 +38,11 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   M4A made in place are byte for byte what the usual way makes. Mutations
   caught: opening with truncation (an empty file), 1 MB writes (EIO).
 
-## Unreleased (next Reel): a steady clock, steered by the sound; 60 fps through the overlay
+## Reel 0.1.20 (2026-09-29): files over 2GB, a steady clock, 60 fps, and stats on the picture
+
+- **Files over 2GB** play (up to 4GB-1): linked with UnixLib 5.0.2 and
+  FFmpeg riscos13's libraries (see riscos13). sources.c no longer takes
+  ftell's -1 as a length for a text file it can't measure.
 
 - **reelcore's `clock_smooth()` is now a timer steered by the sound**
   (0.1.19 snapped to each of the sound's readings). The clock is the

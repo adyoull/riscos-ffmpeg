@@ -27,11 +27,15 @@ Test-only (not in any release):
 Toolchain: GCCSDK GCC 10.2.0 Release 2 (riscos-warzone2100), built from
 GCCSDK 64c6f81 (`Warzone2100/dist/gccsdk-gcc10.2-x86_64-linux-env.tgz`, md5
 caea90c3cc14abb4387f2c8d2e009355), with its UnixLib replaced by
-**UnixLib 5.0.1** from github.com/adyoull/riscos-unixlib (release v5.0.1:
-`libunixlib.a` sha256 bf0e9709…a7a6 into
-`arm-riscos-gnueabihf/lib/`, and its two changed headers, `sched.h` and
-`unistd.h`, into `arm-riscos-gnueabihf/include/`), from riscos10 and Reel
-0.1.16. `tools/check-unixlib.sh` (run by package.sh) checks every program
+**UnixLib 5.0.2** from github.com/adyoull/riscos-unixlib (release v5.0.2:
+`libunixlib.a` sha256 bcd01280…2254 into `arm-riscos-gnueabihf/lib/`, and
+its changed headers, `sched.h`, `unistd.h`, `sys/stat.h` and
+`sys/mman.h`, from the tag, into `arm-riscos-gnueabihf/include/`), from
+riscos13 and Reel 0.1.20: files over 2GB (up to 4GB-1) for programs built
+with `-D_FILE_OFFSET_BITS=64`, which FFmpeg's configure adds and
+build-apps.sh gives the apps; FFmpeg was rebuilt from clean against the
+new headers. riscos10 to riscos12 and Reel 0.1.16 to 0.1.19 used UnixLib
+5.0.1 (sha256 bf0e9709…a7a6; sched.h and unistd.h). `tools/check-unixlib.sh` (run by package.sh) checks every program
 was linked with it. Its module PThreadTicker 0.01 is in
 `third_party/pthreadticker` and goes into each app. riscos3 to riscos9
 used the Warzone toolchain's own UnixLib (the ticker code copied to the
