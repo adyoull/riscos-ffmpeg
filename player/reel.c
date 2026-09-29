@@ -239,6 +239,7 @@ static struct {
     int ov_pending;                     /* a picture waiting for the overlay's next switch */
     unsigned ov_waited, ov_replaced;    /* for the stats: pictures that waited; replaced before shown */
     unsigned late_base, shown_base;     /* reelcore's counts when played again from the start */
+    int sub_last;                       /* the subtitle track V turns back on */
     int nosleep;                        /* Reel$NoSleep: poll flat out, as before 0.1.9 */
     int idle_cs;                        /* after a null: centiseconds we may sleep */
     unsigned slept_cs;                  /* for the stats: sleep asked for */
@@ -1256,6 +1257,11 @@ static int ov_place(int w)
     if (swi(ov.swi[OV_POSITION], &r))
         return -1;
     memcpy(ov.placed, want, sizeof(want));
+    {   /* subtitles and the stats panel: drawn into the frame this much bigger */
+        int fw, fh;
+        if (reelcore_frame_size(S.v, &fw, &fh) == 0 && rw > 0)
+            reelcore_set_yuv_scale(S.v, (double)fw / rw);
+    }
     lg("overlay: %dx%d pixels at %d,%d in window &%x", rw, rh, x, y, w);
     return 1;
 }
@@ -1710,6 +1716,7 @@ static void set_title(void)
 /* ---- the playlist ------------------------------------------------------------ */
 
 static void play_source(const source_t *src);
+static void list_arrived_list(const char *file);
 
 static void list_clear(void)
 {
@@ -1765,7 +1772,75 @@ static void list_add(const source_t *src, int n)
 
 /* A file dropped, double-clicked or given on the command line: a video,
    or text with web addresses in it (sources.c) */
+/* ---- subtitles: files beside the video, or dropped on the window ---------- */
+
+static const char *const sub_exts[] = { "srt", "ass", "ssa", "vtt" };
+
+/* Is this the name of a subtitle file (by its extension)? */
+static int is_subtitle_name(const char *path)
+{
+    const char *l = leaf(path), *e = strrchr(l, path[0] == '/' ? '.' : '/');
+    if (!e)
+        return 0;
+    for (unsigned i = 0; i < sizeof(sub_exts) / sizeof(sub_exts[0]); i++)
+        if (!strcasecmp(e + 1, sub_exts[i]))
+            return 1;
+    return 0;
+}
+
+static void subs_changed(void);
+static void chapter_seek(int c);
+static void toggle_pause(void);
+
+/* A file playing: its subtitle files, as mpv finds them (film/mkv:
+   film/srt, film/ass ...; Unix names film.srt); the first found is shown */
+static void subs_beside(const char *path)
+{
+    char cand[512];
+    const char *l = leaf(path), *e = strrchr(l, path[0] == '/' ? '.' : '/');
+    size_t base = e ? (size_t)(e - path) : strlen(path);
+    for (unsigned i = 0; i < sizeof(sub_exts) / sizeof(sub_exts[0]); i++) {
+        FILE *f;
+        snprintf(cand, sizeof(cand), "%.*s%c%s", (int)base, path, path[0] == '/' ? '.' : '/', sub_exts[i]);
+        if (!(f = fopen(cand, "rb")))
+            continue;
+        fclose(f);
+        if (reelcore_add_subtitle_file(S.v, cand) >= 0)
+            lg("subtitles: %s", cand);
+    }
+}
+
+/* A subtitle file dropped on Reel: shown with what's playing */
+static int subs_dropped(const char *path)
+{
+    char msg[300];
+    if (!is_subtitle_name(path))
+        return 0;
+    if (!S.v) {
+        snprintf(msg, sizeof(msg), "%s: play a video first, then drop its subtitles on it.", leaf(path));
+        report(msg);
+        return 1;
+    }
+    if (reelcore_add_subtitle_file(S.v, path) < 0) {
+        snprintf(msg, sizeof(msg), "%s: can't read subtitles from it.", leaf(path));
+        report(msg);
+        return 1;
+    }
+    lg("subtitles dropped: %s", path);
+    reelcore_show_subtitles(S.v, 1);
+    S.sub_last = reelcore_subtitle_track(S.v);
+    subs_changed();
+    return 1;
+}
+
 static void list_arrived(const char *file)
+{
+    if (subs_dropped(file))
+        return;
+    list_arrived_list(file);
+}
+
+static void list_arrived_list(const char *file)
 {
     static source_t found[LIST_MAX];
     int n = sources_from_file(file, found, LIST_MAX);
@@ -1961,6 +2036,9 @@ static void opened(ReelCore *v, const source_t *src)
     source_name(src, S.name, sizeof(S.name));
     source_key(src, S.file, sizeof(S.file));
     options_apply();
+    if (src->url && !src->audio_url && !reelcore_is_network(src->url))
+        subs_beside(src->url);
+    S.sub_last = reelcore_subtitle_track(v) >= 0 ? reelcore_subtitle_track(v) : 0;
     {
         char info[256];
         reelcore_info(v, info, sizeof(info));
@@ -2879,6 +2957,149 @@ static void panel_toggle(void)
     }
 }
 
+/* ---- subtitles, chapters and frame steps ------------------------------------- */
+
+/* Paused (no null events): after a seek or step, the picture there, now */
+static void paused_show(void)
+{
+    int w = S.fullscreen ? S.full : S.win, t0 = now_cs();
+    if (!S.v || !reelcore_paused(S.v))
+        return;
+    while (now_cs() - t0 < 500) {       /* back to a key frame and on: at most 5 s */
+        int r = reelcore_update(S.v);
+        if (r == REELCORE_NEW_FRAME || r == REELCORE_END || r < 0)
+            break;
+    }
+    if (w) {
+        box_t pic = ov_pic_box(w);
+        ov_hide();
+        pic_refresh();
+        force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);
+    }
+    update_controls(1);
+    if (S.info_open) {
+        info_stats();
+        info_update();
+    }
+}
+
+/* Subtitles on or off, or another track: paused, the picture is drawn
+   again (playing, the next picture has them) */
+static void subs_changed(void)
+{
+    int w = S.fullscreen ? S.full : S.win;
+    if (!S.v)
+        return;
+    if ((reelcore_paused(S.v) || S.ended) && w) {
+        box_t pic = ov_pic_box(w);
+        pic_refresh();
+        force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);
+    }
+}
+
+static void subs_set(int track)
+{
+    int was_paused;
+    if (!S.v || track >= reelcore_subtitle_tracks(S.v))
+        return;
+    was_paused = reelcore_paused(S.v);
+    if (reelcore_set_subtitle_track(S.v, track) < 0) {
+        report("Can't show those subtitles.");
+        return;
+    }
+    if (track >= 0) {
+        S.sub_last = track;
+        reelcore_show_subtitles(S.v, 1);
+    }
+    lg("subtitles: %s", track < 0 ? "off" : "on");
+    if (was_paused)
+        paused_show();                  /* (a track in the file is read again from here) */
+    subs_changed();
+}
+
+/* V: subtitles hidden, or shown again (the track stays chosen, as mpv's V) */
+static void subs_toggle(void)
+{
+    if (!S.v || !reelcore_subtitle_tracks(S.v))
+        return;
+    if (reelcore_subtitle_track(S.v) < 0) {
+        reelcore_show_subtitles(S.v, 1);
+        subs_set(S.sub_last);
+        return;
+    }
+    reelcore_show_subtitles(S.v, !reelcore_subtitles_shown(S.v));
+    lg("subtitles %s", reelcore_subtitles_shown(S.v) ? "shown" : "hidden");
+    subs_changed();
+}
+
+/* J: the next subtitle track (then none) */
+static void subs_next(void)
+{
+    int n = S.v ? reelcore_subtitle_tracks(S.v) : 0, t;
+    if (!n)
+        return;
+    t = reelcore_subtitle_track(S.v) + 1;
+    subs_set(t >= n ? -1 : t);
+}
+
+/* Page Up / Page Down: the next chapter, or the start of this one (the one
+   before, when within 2 s of its start), as mpv */
+static void chapter_go(int dir)
+{
+    int n = S.v ? reelcore_chapters(S.v) : 0, c;
+    double pos;
+    if (!n)
+        return;
+    pos = reelcore_position(S.v);
+    c = reelcore_chapter_at(S.v, pos);
+    if (dir > 0)
+        c++;
+    else if (c >= 0 && pos - reelcore_chapter_start(S.v, c) < 2)
+        c--;
+    if (c >= n)
+        return;
+    if (c < 0)
+        c = 0;
+    chapter_seek(c);
+}
+
+static void chapter_seek(int c)
+{
+    double p = reelcore_chapter_start(S.v, c);
+    if (p < 0)
+        return;
+    S.ended = 0;
+    lg("chapter %d at %.2f", c + 1, p);
+    reelcore_seek(S.v, p);
+    if (reelcore_paused(S.v))
+        paused_show();
+    update_controls(1);
+}
+
+/* . and ,: a picture forward or back, paused (a step pauses first) */
+static void frame_step(int dir)
+{
+    if (!S.v)
+        return;
+    if (!reelcore_paused(S.v)) {
+        toggle_pause();                 /* (pausing shows where it stopped) */
+        if (dir > 0)
+            return;
+    }
+    if (dir > 0) {
+        if (reelcore_step(S.v) == REELCORE_NEW_FRAME) {
+            int w = S.fullscreen ? S.full : S.win;
+            if (w) {
+                box_t pic = ov_pic_box(w);
+                pic_refresh();
+                force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);
+            }
+            update_controls(1);
+        }
+    } else if (reelcore_step_back(S.v) == 0)
+        paused_show();
+}
+
 /* ---- menus -------------------------------------------------------------------- */
 
 /* Menu items have indirected text, so they can be long (file names) */
@@ -2890,13 +3111,13 @@ typedef struct {
     int width, height, gap;
     item_t item[MENU_MAX];
 } menu_t;
-static menu_t menu, m_pic, m_speed, m_track, m_list, m_deint, m_size;
-static char menu_text[7][MENU_MAX][72];
+static menu_t menu, m_pic, m_speed, m_track, m_list, m_deint, m_size, m_subs, m_chap;
+static char menu_text[9][MENU_MAX][72];
 static int menu_is_bar;                 /* the open menu: 1 icon bar, 0 window */
 static int menu_x, menu_y;
 
 /* The window menu */
-enum { WM_INFO, WM_STATS, WM_FULL, WM_MINI, WM_ONTOP, WM_SIZE, WM_PIC, WM_DEINT, WM_SPEED, WM_TRACK, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_HWACCEL, WM_CLOSE, WM_N };
+enum { WM_INFO, WM_STATS, WM_FULL, WM_MINI, WM_ONTOP, WM_SIZE, WM_PIC, WM_DEINT, WM_SPEED, WM_TRACK, WM_SUBS, WM_CHAP, WM_LIST, WM_AB, WM_LOOP, WM_FAST, WM_VSYNC, WM_HWACCEL, WM_CLOSE, WM_N };
 
 static void menu_start(menu_t *m, const char *title)
 {
@@ -2977,6 +3198,32 @@ static void menu_open(int bar, int x, int y)
             menu_add(&m_track, 3, &k, t, reelcore_audio_track(S.v) == i, NULL, 0);
         }
         menu_end(&m_track, k);
+        menu_start(&m_subs, "Subtitles");
+        k = 0;
+        {
+            int st = S.v ? reelcore_subtitle_tracks(S.v) : 0;
+            menu_add(&m_subs, 7, &k, "None", !S.v || !reelcore_subtitles_shown(S.v), NULL, 0);
+            for (int i = 0; i < st && k < MENU_MAX; i++) {
+                char name[64];
+                reelcore_subtitle_track_name(S.v, i, name, sizeof(name));
+                snprintf(t, sizeof(t), "%d: %s", i + 1, name);
+                menu_add(&m_subs, 7, &k, t, reelcore_subtitles_shown(S.v) && reelcore_subtitle_track(S.v) == i, NULL, 0);
+            }
+        }
+        menu_end(&m_subs, k);
+        menu_start(&m_chap, "Chapters");
+        k = 0;
+        {
+            int nc = S.v ? reelcore_chapters(S.v) : 0, cur = nc ? reelcore_chapter_at(S.v, reelcore_position(S.v)) : -1;
+            for (int i = 0; i < nc && k < MENU_MAX; i++) {
+                char name[48], tm[16];
+                reelcore_chapter_title(S.v, i, name, sizeof(name));
+                format_time(tm, sizeof(tm), reelcore_chapter_start(S.v, i));
+                snprintf(t, sizeof(t), "%s  %s", tm, name);
+                menu_add(&m_chap, 8, &k, t, cur == i, NULL, 0);
+            }
+        }
+        menu_end(&m_chap, k);
         menu_start(&m_list, "Playlist");
         k = 0;
         for (int i = 0; i < S.list_n && i < MENU_MAX - 1; i++)
@@ -3002,6 +3249,12 @@ static void menu_open(int bar, int x, int y)
         snprintf(t, sizeof(t), "Speed (%s)", speed_names[S.speed_i]);
         menu_add(&menu, 0, &n, t, 0, &m_speed, 0);
         menu_add(&menu, 0, &n, "Sound track", 0, tracks > 1 ? &m_track : NULL, tracks < 2);
+        {
+            int st = S.v ? reelcore_subtitle_tracks(S.v) : 0, nc = S.v ? reelcore_chapters(S.v) : 0;
+            menu_add(&menu, 0, &n, "Subtitles", 0, st ? &m_subs : NULL, !st);
+            snprintf(t, sizeof(t), "Chapters (%d)", nc);
+            menu_add(&menu, 0, &n, nc ? t : "Chapters", 0, nc ? &m_chap : NULL, !nc);
+        }
         snprintf(t, sizeof(t), "Playlist (%d)", S.list_n);
         menu_add(&menu, 0, &n, t, 0, &m_list, 0);
         menu_add(&menu, 0, &n, S.ab == 0 ? "A-B repeat: set A" : S.ab == 1 ? "A-B repeat: set B" : "A-B repeat: off",
@@ -3317,6 +3570,14 @@ static void menu_select(const int *sel)
             if (sel[1] >= 0 && S.v && reelcore_set_audio_track(S.v, sel[1]) == 0)
                 lg("sound track %d", sel[1] + 1);
             break;
+        case WM_SUBS:
+            if (sel[1] >= 0 && S.v)
+                subs_set(sel[1] - 1);       /* (0: None) */
+            break;
+        case WM_CHAP:
+            if (sel[1] >= 0 && S.v)
+                chapter_seek(sel[1]);
+            break;
         case WM_LIST:
             if (sel[1] >= 0 && sel[1] < S.list_n && sel[1] < MENU_MAX - 1)
                 list_play(sel[1]);
@@ -3449,6 +3710,12 @@ static void key(int *b)
     case 'q': case 'Q': close_video(); return;
     case 'i': case 'I': info_toggle(); return;
     case 's': case 'S': panel_toggle(); return;
+    case 'v': case 'V': subs_toggle(); return;
+    case 'j': case 'J': subs_next(); return;
+    case '.': frame_step(1); return;
+    case ',': frame_step(-1); return;
+    case 0x19F: chapter_go(-1); return;             /* Page Up */
+    case 0x19E: chapter_go(1); return;              /* Page Down */
     case 'm': case 'M': set_mini(!mini); return;
     case 'd': case 'D': set_deint_i((S.deint_i + 1) % 3); return;
     case 'a': case 'A': ab_press(); return;

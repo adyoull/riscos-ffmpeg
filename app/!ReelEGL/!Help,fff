@@ -36,6 +36,10 @@ How it draws
   the screen's refresh) waits for it without holding up decoding;
   Media info's Drawing line counts those ("waited") and any a newer one
   replaced before it was shown ("replaced").
+- Subtitles (V, J, the Subtitles menu, subtitle files beside the video
+  or dropped on it), chapters (Page Up/Down, the Chapters menu), frame
+  steps (. and , while paused) and turned phone videos work as in Reel
+  (see its !Help); subtitles are drawn into the picture.
 - S (or Stats on the picture on the window menu) draws YouTube-style
   "Stats for nerds" figures into the picture, as in Reel (see its !Help):
   into the picture itself, so they show over a hardware overlay too.

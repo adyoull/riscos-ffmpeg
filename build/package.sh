@@ -118,6 +118,7 @@ for app in Reel ReelEGL; do
   cp "$TOP/reelcore/reelcore.c"  "$R/docs/source/c/reelcore,fff"
   cp "$TOP/reelcore/reelcore.h"  "$R/docs/source/h/reelcore,fff"
   cp "$TOP/reelcore/panel_font.h"  "$R/docs/source/h/panel_font,fff"
+  cp "$TOP/reelcore/sub_font.h"  "$R/docs/source/h/sub_font,fff"
   cp "$TOP/common/version.h"  "$R/docs/source/h/version,fff"
   cp "$TOP/common/proginfo.h"  "$R/docs/source/h/proginfo,fff"
   if [ "$app" = ReelEGL ]; then

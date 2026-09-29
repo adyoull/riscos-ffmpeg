@@ -46,6 +46,12 @@ Keys (click in the window first):
   Q             close the video
   I             the media info window on and off
   S             stats on the picture on and off (below)
+  V             subtitles hidden / shown again
+  J             the next subtitle track (after the last: none)
+  Page Down, Up the next chapter / back to the start of this one
+                (the one before, within 2 s of its start)
+  . (full stop) paused: the next picture (playing: pauses first)
+  , (comma)     paused: the picture before
 
 Resize the window by dragging the grip in its bottom right corner (the
 three diagonal lines), or choose a size from Window size on its menu; the
@@ -73,6 +79,10 @@ Menu on the window:
                       Remembered
   Speed >             0.5x to 2x; the sound keeps its pitch
   Sound track >       for files with more than one (e.g. languages)
+  Subtitles >         None, or a track: the file's own, and subtitle
+                      files (below)
+  Chapters >          the file's chapters, with where each starts:
+                      choose one to go there
   Playlist >          jump to a file; Clear the rest
   A-B repeat          as the A key
   Loop                play the file (or the playlist) again and again
@@ -214,6 +224,36 @@ display refusing the size or running short of memory, any error from the
 module. To turn it off: untick Hardware acceleration on the window menu,
 or *Set Reel$NoOverlay 1 (or *Set EGL$Overlay off, which turns overlays
 off for every program) before starting Reel.
+
+Subtitles
+---------
+Reel shows subtitles on the picture: white text with a black outline,
+centred near the bottom, sized to the picture (so they grow with the
+window and full screen), or the pictures of DVD, Blu-ray and DVB
+subtitles where they belong. Like the stats, they're drawn into the
+picture itself, so they show with hardware acceleration too.
+  - A file's own subtitles (MKV, MP4 and others: SubRip, ASS/SSA, MP4
+    text, WebVTT, DVD, Blu-ray PGS, DVB): a track the file marks as the
+    default (or forced) is shown at the start, as mpv does; others are
+    on the Subtitles menu, or J.
+  - Subtitle files: a file with the video's name and srt, ass, ssa or vtt
+    after the "/" (film/mkv: film/srt) is found and shown when the video
+    opens. Or drop a subtitle file on the window while the video plays.
+  - V hides them and shows them again.
+ASS/SSA styling (fonts, colours, positions, effects) isn't followed:
+their text is shown plainly, one line under another. Characters outside
+Latin-1 show as "?", except curly quotes, dashes and "..." which are
+shown plainly.
+
+Chapters, frame steps, turned videos
+------------------------------------
+Files with chapters (MKV, MP4, many films) list them on the Chapters
+menu; Page Down and Page Up go to the next and back. While paused, "."
+shows the next picture and "," the one before (going back decodes from
+the key frame before, so it can take a moment); Play carries on from
+the picture shown. Videos from phones that are stored sideways, with a
+note in the file saying which way up they go, are shown upright (Media
+info: Turned).
 
 Stats on the picture
 --------------------

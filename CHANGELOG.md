@@ -38,6 +38,67 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   M4A made in place are byte for byte what the usual way makes. Mutations
   caught: opening with truncation (an empty file), 1 MB writes (EIO).
 
+## Unreleased (next Reel): subtitles, chapters, frame steps, turned videos
+
+- **Subtitles, drawn into the picture** (so they show over the hardware
+  overlay), in reelcore:
+  - Tracks are the file's subtitle streams and subtitle files:
+    `reelcore_subtitle_tracks`/`_track_name`/`_track`,
+    `reelcore_set_subtitle_track`, `reelcore_add_subtitle_file`,
+    `reelcore_show_subtitles`, `reelcore_subtitle_text`. A stream marked
+    default or forced is shown at the start (as mpv).
+  - The chosen stream's packets are read with the rest (`pkt_kind` 2) and
+    decoded as they come. Choosing it again seeks to the picture shown. A
+    file is read whole.
+  - Text (SubRip, ASS/SSA, mov_text, WebVTT): ASS override blocks
+    dropped, \N and \h made plain, UTF-8 to Latin-1 (curly quotes,
+    dashes and ellipses made plain). It's drawn white with a round black
+    outline, centred near the bottom, wrapped to 92% of the width. The
+    font is DejaVu Sans Bold at 22, 32 or 46 px, chosen for about 5% of
+    the height shown (`reelcore/sub_font.h`, made by
+    `tools/mksubfont.py`).
+  - Pictures (DVD, PGS, DVB): palette to premultiplied RGBA, placed on
+    their canvas scaled to the picture; an empty one ends the one before.
+  - Events are kept in order of start, not doubled after a seek. Text is
+    kept (up to 8192 events); only the last 8 pictures are kept.
+- **Layers:** the stats panel and the subtitle share one "layer" code:
+  placed per draw with a scale, nearest pixel, blended in
+  `reelcore_draw_pixels` and in `reelcore_draw_yuv420`'s row copies.
+  `reelcore_set_yuv_scale()` (Reel sets it from the overlay's size) makes
+  both the size they'd be in the window. The panel's margin now scales
+  with it too.
+- **Chapters:** `reelcore_chapters`, `_chapter_start` (as
+  `reelcore_position`), `_chapter_title`, `_chapter_at`. Reel has a
+  Chapters menu (the time and the title of each), and Page Down / Page Up
+  (the next; back to this one's start, or the one before within 2 s).
+  Media info says how many.
+- **Frame steps:** `reelcore_step` (paused: the next picture) and
+  `reelcore_step_back` (a seek to 1.5 pictures before, exact). Playing
+  again after a step seeks to the picture shown, so the sound starts
+  there. In Reel: `.` and `,`, which pause first. `paused_show()` shows
+  the picture after a seek or step while paused (up to 5 s of decoding).
+  Choosing a chapter while paused uses it too.
+- **Turned videos:** a stream's display matrix (phone videos) turns the
+  picture 90/180/270 degrees through the same filter graph as yadif
+  (transpose, or hflip+vflip). The size is swapped for 90/270. Media info
+  has a Turned line. `REELCORE_NO_ROTATE` turns it off.
+- **Reel:**
+  - Subtitle files beside a local video (film/srt, /ass, /ssa, /vtt;
+    Unix film.srt) are added when it opens. A subtitle file dropped on
+    Reel is added to what's playing.
+  - V hides or shows the subtitles; J goes to the next track (then none).
+  - A Subtitles menu (None, then the tracks).
+  - Media info has a Subtitles section.
+- **Tests:**
+  - New `sub_test`: MKV with a default SubRip track and chapters, an .srt
+    added to an MP4, an ASS file, YV12 at 1x and 2x, frame steps, a
+    display matrix of 90 degrees.
+  - reel_test phases: a .srt dropped on the window (the text in the
+    picture), V twice, J, `.` `.` `,` and Space.
+  - panel_test's margin scales with the overlay.
+  - Mutations caught: no rotation, no override-tag stripping, no layers
+    in YV12.
+
 ## Reel 0.1.20 (2026-09-29): files over 2GB, a steady clock, 60 fps, and stats on the picture
 
 - **Files over 2GB** play (up to 4GB-1): linked with UnixLib 5.0.2 and

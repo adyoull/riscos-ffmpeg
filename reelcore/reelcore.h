@@ -44,6 +44,7 @@ typedef struct ReelCore ReelCore;
 #define REELCORE_LOOP       2   /* start again at the end */
 #define REELCORE_PAUSED     4   /* open paused (reelcore_pause(v, 0) starts it) */
 #define REELCORE_ASYNC      8   /* reelcore_open_source: return at once; see below */
+#define REELCORE_NO_ROTATE 16   /* show the picture as stored, not turned as the file says */
 
 /* reelcore_update results */
 #define REELCORE_SAME_FRAME 0   /* nothing new to show */
@@ -299,6 +300,56 @@ typedef struct ReelCorePanel {
 int reelcore_set_panel(ReelCore *v, const ReelCorePanel *p);
 /* Its size in panel pixels (0 x 0 without one). */
 void reelcore_panel_size(const ReelCore *v, int *w, int *h);
+
+/* reelcore_draw_yuv420 for a hardware overlay that the display scales: k
+   frame pixels are shown as one screen pixel (a 1280-wide video shown
+   640 wide: 2). Subtitles and the stats panel are drawn that much bigger
+   in the frame, so they show at the size they would in the window.
+   Default 1; ReelCorePanel.yuv_scale sets it too. */
+void reelcore_set_yuv_scale(ReelCore *v, double k);
+
+/* Subtitles, drawn into the picture (both reelcore_draw_pixels and
+   reelcore_draw_yuv420): white text with a black outline, centred near
+   the bottom, sized to the picture shown; or DVD / Blu-ray / DVB pictures
+   where they belong. Tracks: the file's subtitle streams (SubRip, ASS/SSA
+   as plain text, MP4 text, WebVTT, DVD, PGS, DVB), then files added.
+   One marked default or forced in the file is shown at the start, as mpv
+   does; else none. */
+int reelcore_subtitle_tracks(const ReelCore *v);
+/* The subtitle on screen now as text (Latin-1, lines apart by \n; a
+   picture subtitle: "[picture]"), "" for none. Returns its length. */
+int reelcore_subtitle_text(const ReelCore *v, char *buf, int size);
+/* Its name, e.g. "English (subrip)" or "File: film/srt". */
+int reelcore_subtitle_track_name(const ReelCore *v, int i, char *buf, int size);
+/* The track shown, or -1 for none. */
+int reelcore_subtitle_track(const ReelCore *v);
+/* Hides or shows the chosen track's subtitles, keeping the track (mpv's V):
+   quicker than choosing none and the track again, which reads it again. */
+void reelcore_show_subtitles(ReelCore *v, int on);
+int reelcore_subtitles_shown(const ReelCore *v);
+/* Shows track i (-1: none). A track in the file is read again from the
+   picture shown (a seek there); a file is read whole. */
+int reelcore_set_subtitle_track(ReelCore *v, int i);
+/* Adds a subtitle file (SubRip .srt, .ass/.ssa, WebVTT ...; any name
+   FFmpeg can open) as a track and shows it. Its times are from the
+   start of the video. Returns the track, or a negative AVERROR. */
+int reelcore_add_subtitle_file(ReelCore *v, const char *path);
+
+/* Chapters (MKV, MP4 ...): how many, where each starts (seconds, as
+   reelcore_position), its title (Latin-1; "Chapter N" if it has none),
+   and which one a position is in (-1: before the first). */
+int reelcore_chapters(const ReelCore *v);
+double reelcore_chapter_start(const ReelCore *v, int i);
+int reelcore_chapter_title(const ReelCore *v, int i, char *buf, int size);
+int reelcore_chapter_at(const ReelCore *v, double pos);
+
+/* Paused: the next picture (REELCORE_NEW_FRAME; REELCORE_SAME_FRAME at
+   the end), or back one: reelcore_step_back seeks to the picture before,
+   and reelcore_update then gives it (REELCORE_NEW_FRAME, while still
+   paused). Playing again afterwards starts the sound from the picture
+   shown. */
+int reelcore_step(ReelCore *v);
+int reelcore_step_back(ReelCore *v);
 
 /* For a layer on top (ffegl keeps its texture state here): one pointer per
    video, and a function that frees it, called by reelcore_close(). */

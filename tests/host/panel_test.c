@@ -94,7 +94,7 @@ int main(int argc, char **argv)
             reelcore_draw_yuv420(v, pb, pitch, fw, fh, NULL);
             for (int y = 0; y < fh; y++)
                 for (int x = 0; x < fw; x++) {
-                    int in = x >= 10 && x < 10 + pw * k && y >= 10 && y < 10 + ph * k, d = ya[y * fw + x] != yb[y * fw + x];
+                    int in = x >= 10 * k && x < 10 * k + pw * k && y >= 10 * k && y < 10 * k + ph * k, d = ya[y * fw + x] != yb[y * fw + x];
                     if (in) { inside += d; bright += yb[y * fw + x] > 200; n++; }
                     else outside += d;
                 }
@@ -104,7 +104,7 @@ int main(int argc, char **argv)
                    k, inside, n, bright, outside, cdiff);
             CHECK(outside == 0, "YV12 x%d: %d changed outside the panel", k, outside);
             CHECK(inside > n * 8 / 10 && bright > 300 * k * k && cdiff > 1000, "YV12 x%d: the panel isn't there", k);
-            if (fw >= 10 + pw * 2 + 10) {       /* x2 reaches twice as far */
+            if (fw >= 20 + pw * 2 + 10) {       /* x2 reaches twice as far (its margin too) */
                 int far = 0;
                 for (int y = 10; y < 10 + ph; y++)
                     far += ya[y * fw + 10 + pw + pw / 2] != yb[y * fw + 10 + pw + pw / 2];

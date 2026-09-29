@@ -87,7 +87,7 @@ static double ab_lo, ab_hi;
 static char choices_dir[64];
 
 /* the window menu (reel.c's WM_*) */
-enum { M_INFO, M_STATS, M_FULL, M_MINI, M_ONTOP, M_SIZE, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_HWACCEL, M_CLOSE };
+enum { M_INFO, M_STATS, M_FULL, M_MINI, M_ONTOP, M_SIZE, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_SUBS, M_CHAP, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_HWACCEL, M_CLOSE };
 static char title[64];
 static int *title_ptr;
 static int proginfo_made, proginfo_icons, bar_info_sub = -99;
@@ -170,7 +170,7 @@ static int script(int *b)
 enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
        P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PANEL, P_PANELOFF, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL,
        P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
-       P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
+       P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_SUBDROP, P_SUBHIDE, P_SUBSHOW, P_SUBNEXT, P_STEP, P_STEPPLAY, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
        P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_CLOSE2, P_QUIT };
 static int phase = -1, phase_step;
@@ -178,7 +178,7 @@ static int phase = -1, phase_step;
 static int next_is_null(void)
 {
     return phase == P_PLAY1 || phase == P_PLAY2 || phase == P_PLAY3 || phase == P_PLAYFULL || phase == P_PLAY4 ||
-           phase == P_PLAY5 || phase == P_PLAY6 || phase == P_INFOPLAY || phase == P_PANEL || phase == P_PANELOFF || phase == P_SPEEDPLAY || phase == P_AB ||
+           phase == P_PLAY5 || phase == P_PLAY6 || phase == P_SUBDROP || phase == P_SUBHIDE || phase == P_SUBSHOW || phase == P_SUBNEXT || phase == P_STEPPLAY || phase == P_INFOPLAY || phase == P_PANEL || phase == P_PANELOFF || phase == P_SPEEDPLAY || phase == P_AB ||
            phase == P_ABPLAY || phase == P_MINIPLAY || phase == P_ONTOP || phase == P_URLPLAY || phase == P_URLFILEPLAY ||
            phase == P_URLOPENING || phase == P_URLFILEOPENING || phase == P_OVLREFUSE || phase == P_OVLPLAY || phase == P_OVLWAIT ||
            phase == P_OVLCOVER || phase == P_OVLUNCOVER || phase == P_OVLRESUME || phase == P_OVLFEWER ||
@@ -671,6 +671,79 @@ static int next_event(int *b)
         case P_OPEN_VIDEO:
             if (phase_step++ == 0) { message(b, 5, 0, 0, 0xBF8, clip1); return 17; }    /* DataOpen, MPEG */
             CHECK(acks == 5, "video not claimed (%d acks)", acks);
+            break;
+        /* ---- subtitles: a file dropped on the window, V and J ---- */
+        case P_SUBDROP: {
+            char txt[200];
+            if (phase_step == 0) {
+                FILE *f = fopen("/tmp/reel_test_subs.srt", "w");
+                fputs("1\n00:00:00,000 --> 00:10:00,000\nA test subtitle\n\n", f);
+                fclose(f);
+                phase_step++;
+                message(b, 3, WIN, 1, 0xFFF, "/tmp/reel_test_subs.srt");   /* DataLoad */
+                return 18;
+            }
+            if (phase_step++ < 20) { fake_time += 0.02; return 0; }
+            reelcore_subtitle_text(v, txt, sizeof(txt));
+            CHECK(reelcore_subtitle_tracks(v) == 1 && reelcore_subtitle_track(v) == 0 && !strcmp(txt, "A test subtitle"),
+                  "subtitle file dropped: %d tracks, track %d, text '%s'", reelcore_subtitle_tracks(v),
+                  reelcore_subtitle_track(v), txt);
+            {   /* white text near the bottom of the picture, as reelcore draws it */
+                int w, h, rows, white = 0;
+                const uint8_t *px = reel_test_sprite(&w, &h, &rows);
+                for (int y = h * 2 / 3; px && y < h; y++)
+                    for (int x = 0; x < w; x++)
+                        white += px[(y * w + x) * 4] > 230 && px[(y * w + x) * 4 + 1] > 230 && px[(y * w + x) * 4 + 2] > 230;
+                CHECK(white > 50, "subtitle file dropped: no white text in the picture (%d)", white);
+                check_picture("subtitles");
+                printf("  subtitles dropped on the window: '%s', %d white pixels\n", txt, white);
+            }
+            break;
+        }
+        case P_SUBHIDE:
+            if (phase_step++ == 0) { key_event(b, WIN, 'v'); return 8; }
+            if (phase_step < 10) { fake_time += 0.02; return 0; }
+            CHECK(!reelcore_subtitles_shown(v) && reelcore_subtitle_track(v) == 0, "V: subtitles still shown");
+            check_picture("subtitles hidden");
+            break;
+        case P_SUBSHOW:
+            if (phase_step++ == 0) { key_event(b, WIN, 'v'); return 8; }
+            if (phase_step < 10) { fake_time += 0.02; return 0; }
+            CHECK(reelcore_subtitles_shown(v), "V again: subtitles not shown");
+            break;
+        case P_SUBNEXT:
+            if (phase_step++ == 0) { key_event(b, WIN, 'j'); return 8; }
+            if (phase_step < 10) { fake_time += 0.02; return 0; }
+            CHECK(reelcore_subtitle_track(v) == -1, "J: track %d (want none after the only one)", reelcore_subtitle_track(v));
+            reelcore_seek(v, 0.5);                                    /* (time for the phases after) */
+            break;
+        case P_STEP: {                                                /* . and ,: a picture forward and back */
+            static double p0, p1;
+            switch (phase_step++) {
+            case 0: fake_time += 0.3; return 0;
+            case 1: key_event(b, WIN, '.'); return 8;                 /* playing: pauses */
+            case 2:
+                CHECK(reelcore_paused(v), ". while playing: not paused");
+                p0 = reelcore_position(v);
+                key_event(b, WIN, '.'); return 8;                     /* the next picture */
+            case 3:
+                p1 = reelcore_position(v);
+                CHECK(fabs(p1 - p0 - 0.04) < 0.005 && reelcore_paused(v), ".: %.3f -> %.3f (want +0.04)", p0, p1);
+                check_picture("stepped forward");
+                key_event(b, WIN, ','); return 8;                     /* and back */
+            default:
+                CHECK(fabs(reelcore_position(v) - p0) < 0.005 && reelcore_paused(v), ",: %.3f (want %.3f)",
+                      reelcore_position(v), p0);
+                check_picture("stepped back");
+                printf("  frame steps: %.3f -> %.3f -> %.3f\n", p0, p1, reelcore_position(v));
+                break;
+            }
+            break;
+        }
+        case P_STEPPLAY:                                              /* Space: plays on from there */
+            if (phase_step++ == 0) { key_event(b, WIN, ' '); return 8; }
+            if (phase_step < 20) { fake_time += 0.02; return 0; }
+            CHECK(!reelcore_paused(v) && reelcore_position(v) > 0.3, "playing after steps: %.2f", reelcore_position(v));
             break;
         /* ---- the hardware overlay (a fake VideoOverlay) ---- */
         case P_OVLREFUSE: {                                           /* the module there, but Create refuses */

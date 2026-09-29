@@ -21,6 +21,7 @@
 #include "libavcodec/avcodec.h"
 #include "libavutil/avstring.h"
 #include "libavutil/channel_layout.h"
+#include "libavutil/display.h"
 #include "libavutil/imgutils.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/time.h"
@@ -62,6 +63,26 @@
 #define NET_LOW       3.0    /* below this, reelcore_update gives the reader time */
 
 struct Net;
+
+/* something drawn into the picture (the stats panel, a subtitle) */
+typedef struct {
+    uint8_t *rgba;                     /* premultiplied R,G,B,A, w x h */
+    uint8_t *yuv;                      /* the same as Y,Cb,Cr,A for yuv_c (made when wanted) */
+    int w, h, yuv_c;
+} Layer;
+typedef struct { const Layer *L; int x0, y0; double sx, sy; } Place;
+
+#define SUB_TRACKS  32
+#define SUB_MAX     8192               /* subtitle events kept */
+#define SUB_BITMAPS 8                  /* ... of them pictures (DVD, Blu-ray) */
+typedef struct {
+    double start, end;                 /* the picture's time (end: INFINITY = until the next) */
+    char *text;                        /* Latin-1, lines apart by \n; or: */
+    uint8_t *rgba;                     /* a picture, premultiplied, w x h ... */
+    int x, y, w, h, cw, ch;            /* ... at x, y on a cw x ch canvas */
+    unsigned id;
+} SubEvent;
+typedef struct { int stream; char *path; } SubTrack;   /* the file's stream, or a file */
 
 struct ReelCore {
     int flags;
@@ -146,6 +167,10 @@ struct ReelCore {
     AVFrame *dframe;
     int dg_w, dg_h, dg_fmt;            /* what it was made for */
     int deint_failed;                  /* couldn't be made: pictures go straight through */
+    int dg_yadif;                      /* the graph has yadif (it may only turn the picture) */
+    int seen_interlaced;               /* AUTO: an interlaced picture has come */
+    int rot;                           /* the file says turn the picture: 0, 90, 180, 270 clockwise */
+    int stepped;                       /* paused and stepped: the sound needs a seek on playing */
     unsigned n_interlaced, n_deint;
     int64_t t_deint;                   /* microseconds */
     double ahead;                      /* seconds of sound to keep queued */
@@ -175,14 +200,32 @@ struct ReelCore {
 
     /* a layer's own state (reelcore's textures), released on close */
     void *attach;
-    uint8_t *pan;                          /* the stats panel: premultiplied R,G,B,A */
-    uint8_t *pan_yuv;                      /* ... as Y,Cb,Cr (not premultiplied),A for pan_yuv_c */
-    int pan_w, pan_h, pan_yuv_c;
-    double pan_k;                          /* frame pixels per panel pixel (draw_yuv420) */
+    Layer pan;                             /* the stats panel */
+    double yuv_k;                          /* draw_yuv420: frame pixels per display pixel */
+    /* subtitles */
+    SubTrack sub_tracks[SUB_TRACKS];
+    int sub_n, sub_track;                  /* tracks; the one shown (-1 none) */
+    int sub_hidden;                        /* chosen but not shown (V) */
+    int sub_stream;                        /* its stream in the file (-1: a file of its own, or none) */
+    AVCodecContext *sdec;
+    SubEvent *sev;                         /* what it says when, in order of start */
+    int sev_n, sev_cap;
+    unsigned sub_ids;
+    Layer sub_layer;                       /* what's on screen now ... */
+    int sub_key, sub_shown, sub_bitmap;    /* ... made for this, shown?, a picture? */
+    int sub_bx, sub_by, sub_cw, sub_ch;    /* a picture: where, on what canvas */
     void (*attach_release)(void *);
 };
 
 static char last_error[256];
+
+static void layer_free(Layer *L);
+static void sub_close_track(ReelCore *v);
+static void sub_packet(ReelCore *v, AVPacket *pkt);
+static void sub_clear(ReelCore *v, int bitmaps_only);
+static void sub_setup(ReelCore *v);
+static void fill(ReelCore *v);
+static void take_frame(ReelCore *v);
 
 /* The context the sound comes from */
 static AVFormatContext *actx(const ReelCore *v) { return v->afmt ? v->afmt : v->fmt; }
@@ -784,6 +827,19 @@ static int setup_decoders(ReelCore *v)
         if (sar.num > 0 && sar.den > 0)
             v->w = (int)av_rescale(v->w, sar.num, sar.den);
     }
+    {   /* a phone video: the display matrix says how to turn it */
+        const int32_t *dm = (const int32_t *)av_stream_get_side_data(st, AV_PKT_DATA_DISPLAYMATRIX, NULL);
+        if (dm && !(v->flags & REELCORE_NO_ROTATE)) {
+            double r = -av_display_rotation_get(dm);
+            int d = (int)lrint(r - 360 * floor(r / 360)) % 360;
+            v->rot = d == 90 || d == 180 || d == 270 ? d : 0;
+            if (v->rot == 90 || v->rot == 270) {
+                int t = v->w;
+                v->w = v->h;
+                v->h = t;
+            }
+        }
+    }
     {
         AVRational fr = av_guess_frame_rate(v->fmt, st, NULL);
         v->fps = fr.num > 0 && fr.den > 0 ? av_q2d(fr) : 0;
@@ -806,6 +862,8 @@ static int setup_decoders(ReelCore *v)
         aud_pause(v, 0);
     timer_set(v, 0);
     v->ready = 1;
+    v->yuv_k = 1;
+    sub_setup(v);
     return 0;
 }
 
@@ -888,6 +946,8 @@ static int pkt_kind(const ReelCore *v, AVFormatContext *fc, const AVPacket *p)
         return 0;
     if (fc == actx(v) && p->stream_index == v->as)
         return 1;
+    if (fc == v->fmt && p->stream_index == v->sub_stream && v->sub_stream >= 0)
+        return 2;
     return -1;
 }
 
@@ -1249,8 +1309,11 @@ void reelcore_close(ReelCore *v)
     tempo_close(v);
     sws_freeContext(v->sws);
     sws_freeContext(v->sws_yuv);
-    av_free(v->pan);
-    av_free(v->pan_yuv);
+    layer_free(&v->pan);
+    sub_close_track(v);
+    av_free(v->sev);
+    for (int i = 0; i < v->sub_n; i++)
+        av_free(v->sub_tracks[i].path);
     for (int i = 0; i < REELCORE_HALVINGS; i++)
         av_free(v->half[i]);
     av_free(v->abuf);
@@ -1415,6 +1478,8 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
     info_bitrate(b, sizeof(b), fc->bit_rate);
     ADD("Bit rate\t%s\n", b);
     ADD("Streams\t%u\n", fc->nb_streams);
+    if (fc->nb_chapters)
+        ADD("Chapters\t%u\n", fc->nb_chapters);
 
     if (v->vs >= 0) {
         const AVStream *st = fc->streams[v->vs];
@@ -1439,6 +1504,9 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
                           p->field_order == AV_FIELD_TT || p->field_order == AV_FIELD_TB ? "interlaced, top field first" :
                           p->field_order == AV_FIELD_BB || p->field_order == AV_FIELD_BT ? "interlaced, bottom field first" :
                           v->n_interlaced ? "interlaced (the pictures say)" : "not given");
+        if (v->rot)
+            ADD("Turned\t%s (as the file says)\n", v->rot == 90 ? "90 degrees clockwise" :
+                v->rot == 180 ? "upside down" : "90 degrees anticlockwise");
         if (p->color_space == AVCOL_SPC_UNSPECIFIED && p->color_range == AVCOL_RANGE_UNSPECIFIED)
             ADD("Colours\tnot given (shown as BT.601, limited range)\n");
         else
@@ -1477,6 +1545,14 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
         if ((t = av_dict_get(st->metadata, "language", NULL, 0)))
             ADD("Language\t%s\n", t->value);
         ADD("Decoder\t%s\n", v->adec && v->adec->codec ? v->adec->codec->name : "?");
+    }
+    if (v->sub_n) {
+        ADD("#Subtitles\n");
+        for (int i = 0; i < v->sub_n; i++) {
+            char name[96];
+            reelcore_subtitle_track_name(v, i, name, sizeof(name));
+            ADD("Track %d\t%s%s\n", i + 1, name, i == v->sub_track ? " (shown)" : "");
+        }
     }
     ADD("#Sound output\n");
     if (!v->dev)
@@ -1622,10 +1698,10 @@ static void deint_close(ReelCore *v)
 
 /* buffer -> yadif (a picture a frame) -> buffersink, for f's size and
    format; times in microseconds. */
-static int deint_open(ReelCore *v, const AVFrame *f)
+static int deint_open(ReelCore *v, const AVFrame *f, int yadif)
 {
     char args[200];
-    AVFilterContext *y = NULL;
+    AVFilterContext *y = NULL, *last;
     AVRational sar = f->sample_aspect_ratio.num ? f->sample_aspect_ratio : (AVRational){ 1, 1 };
     deint_close(v);
     if (!(v->dgraph = avfilter_graph_alloc()) || !(v->dframe = av_frame_alloc()))
@@ -1635,22 +1711,45 @@ static int deint_open(ReelCore *v, const AVFrame *f)
              f->width, f->height, f->format, sar.num, sar.den);
     if (avfilter_graph_create_filter(&v->din, avfilter_get_by_name("buffer"), "in", args, NULL, v->dgraph) < 0)
         goto fail;
-    snprintf(args, sizeof(args), "mode=send_frame:parity=auto:deint=%s", v->deint == REELCORE_DEINT_ON ? "all" : "interlaced");
-    if (avfilter_graph_create_filter(&y, avfilter_get_by_name("yadif"), "yadif", args, NULL, v->dgraph) < 0 ||
-        avfilter_graph_create_filter(&v->dout, avfilter_get_by_name("buffersink"), "out", NULL, NULL, v->dgraph) < 0 ||
-        avfilter_link(v->din, 0, y, 0) < 0 || avfilter_link(y, 0, v->dout, 0) < 0 ||
-        avfilter_graph_config(v->dgraph, NULL) < 0)
+    last = v->din;
+    if (yadif) {
+        snprintf(args, sizeof(args), "mode=send_frame:parity=auto:deint=%s", v->deint == REELCORE_DEINT_ON ? "all" : "interlaced");
+        if (avfilter_graph_create_filter(&y, avfilter_get_by_name("yadif"), "yadif", args, NULL, v->dgraph) < 0 ||
+            avfilter_link(last, 0, y, 0) < 0)
+            goto fail;
+        last = y;
+    }
+    if (v->rot) {                         /* phone videos: turned as the file says */
+        static const char *const names[2] = { "r1", "r2" };
+        const char *f1 = v->rot == 180 ? "hflip" : "transpose", *f2 = v->rot == 180 ? "vflip" : NULL;
+        const char *a1 = v->rot == 90 ? "dir=clock" : v->rot == 270 ? "dir=cclock" : NULL;
+        for (int i = 0; i < 2; i++) {
+            AVFilterContext *r = NULL;
+            const char *fn = i ? f2 : f1;
+            if (!fn)
+                break;
+            if (avfilter_graph_create_filter(&r, avfilter_get_by_name(fn), names[i], i ? NULL : a1, NULL, v->dgraph) < 0 ||
+                avfilter_link(last, 0, r, 0) < 0)
+                goto fail;
+            last = r;
+        }
+    }
+    if (avfilter_graph_create_filter(&v->dout, avfilter_get_by_name("buffersink"), "out", NULL, NULL, v->dgraph) < 0 ||
+        avfilter_link(last, 0, v->dout, 0) < 0 || avfilter_graph_config(v->dgraph, NULL) < 0)
         goto fail;
     v->dg_w = f->width;
     v->dg_h = f->height;
     v->dg_fmt = f->format;
-    av_log(NULL, AV_LOG_VERBOSE, "reelcore: deinterlacing (yadif, %s) %dx%d %s\n",
-           v->deint == REELCORE_DEINT_ON ? "every picture" : "interlaced pictures", f->width, f->height,
+    v->dg_yadif = yadif;
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: %s%s%s %dx%d %s\n",
+           !yadif ? "" : v->deint == REELCORE_DEINT_ON ? "deinterlacing every picture (yadif)" : "deinterlacing interlaced pictures (yadif)",
+           yadif && v->rot ? ", " : "", !v->rot ? "" : v->rot == 90 ? "turned 90 degrees clockwise" :
+           v->rot == 180 ? "turned upside down" : "turned 90 degrees anticlockwise", f->width, f->height,
            av_get_pix_fmt_name(f->format));
     return 0;
 fail:
-    av_log(NULL, AV_LOG_WARNING, "reelcore: can't deinterlace (%s); pictures are shown as they are\n",
-           av_get_pix_fmt_name(f->format));
+    av_log(NULL, AV_LOG_WARNING, "reelcore: can't %s (%s); pictures are shown as they are\n",
+           yadif ? "deinterlace" : "turn the picture", av_get_pix_fmt_name(f->format));
     deint_close(v);
     v->deint_failed = 1;
     return -1;
@@ -1663,19 +1762,20 @@ static void deint_drain(ReelCore *v)
     double tb = av_q2d(av_buffersink_get_time_base(v->dout));
     while (av_buffersink_get_frame(v->dout, o) >= 0) {
         queue_picture(v, o, o->pts * tb);
-        v->n_deint++;
+        if (v->dg_yadif)
+            v->n_deint++;
         av_frame_unref(o);
     }
 }
 
 /* Gives yadif a picture (it gives back the one before: it needs the next
    to deinterlace). Returns -1 if the picture must be queued as it is. */
-static int deint_feed(ReelCore *v, AVFrame *f, double pts)
+static int deint_feed(ReelCore *v, AVFrame *f, double pts, int yadif)
 {
     int64_t t0 = av_gettime_relative(), keep_pts = f->pts;
     int ret;
-    if ((!v->dgraph || f->width != v->dg_w || f->height != v->dg_h || f->format != v->dg_fmt) &&
-        deint_open(v, f) < 0)
+    if ((!v->dgraph || f->width != v->dg_w || f->height != v->dg_h || f->format != v->dg_fmt ||
+         yadif != v->dg_yadif) && deint_open(v, f, yadif) < 0)
         return -1;
     f->pts = llrint(pts * 1e6);
     ret = av_buffersrc_add_frame_flags(v->din, f, AV_BUFFERSRC_FLAG_KEEP_REF);
@@ -1695,11 +1795,15 @@ static void got_video(ReelCore *v, AVFrame *f)
     v->n_decoded++;
     if (f->interlaced_frame)
         v->n_interlaced++;
-    /* AUTO: the graph is made at the first interlaced picture, then kept */
-    if (!v->deint_failed && (v->deint == REELCORE_DEINT_ON ||
-                             (v->deint == REELCORE_DEINT_AUTO && (f->interlaced_frame || v->dgraph))) &&
-        deint_feed(v, f, pts) == 0)
-        return;
+    if (f->interlaced_frame)
+        v->seen_interlaced = 1;
+    /* AUTO: yadif from the first interlaced picture on; and the picture
+       turned when the file says (both in one graph) */
+    {
+        int yadif = v->deint == REELCORE_DEINT_ON || (v->deint == REELCORE_DEINT_AUTO && v->seen_interlaced);
+        if (!v->deint_failed && (yadif || v->rot) && deint_feed(v, f, pts, yadif) == 0)
+            return;
+    }
     queue_picture(v, f, pts);
 }
 
@@ -1961,6 +2065,8 @@ static void fill(ReelCore *v)
             vpk_push(v, v->pkt);
         else if (kind == 1 && v->adec)
             decode(v, v->adec, v->pkt, 0);
+        else if (kind == 2)
+            sub_packet(v, v->pkt);
         av_packet_unref(v->pkt);
     }
     /* after a seek, decode on to the seek point in one go (as before) */
@@ -1977,6 +2083,8 @@ static void fill(ReelCore *v)
                     vpk_push(v, v->pkt);
                 else if (kind == 1 && v->adec)
                     decode(v, v->adec, v->pkt, 0);
+                else if (kind == 2)
+                    sub_packet(v, v->pkt);
                 av_packet_unref(v->pkt);
                 continue;
             }
@@ -2171,6 +2279,10 @@ void reelcore_pause(ReelCore *v, int paused)
             timer_set(v, v->pause_pos);
         if (v->dev)
             aud_pause(v, 0);
+        if (v->stepped) {                   /* stepped while paused: the sound from here */
+            v->stepped = 0;
+            reelcore_seek(v, reelcore_position(v));
+        }
     }
 }
 
@@ -2205,6 +2317,10 @@ int reelcore_seek(ReelCore *v, double seconds)
     avcodec_flush_buffers(v->vdec);
     if (v->adec)
         avcodec_flush_buffers(v->adec);
+    if (v->sdec) {
+        avcodec_flush_buffers(v->sdec);
+        sub_clear(v, 1);                  /* pictures come again; text is kept (and not doubled) */
+    }
     if (v->dev && !v->stalled)
         aud_clear(v);
     if (v->swr)
@@ -2390,6 +2506,151 @@ static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPi
     }
 }
 
+/* ------------------------------------------ layers drawn into the picture */
+
+/* A layer is premultiplied R,G,B,A (and, made when first wanted, the same
+   as Y,Cb,Cr,A in the frame's colours for reelcore_draw_yuv420). It is
+   drawn into the picture rather than over it, so it shows through a
+   hardware overlay too, which covers anything drawn on the screen. Two:
+   the stats panel and the subtitle. Each draw places it: its top left
+   corner (x0, y0) and scale (sx, sy: destination pixels per layer pixel),
+   nearest pixel. */
+
+static void layer_free(Layer *L)
+{
+    av_freep(&L->rgba);
+    av_freep(&L->yuv);
+    L->w = L->h = 0;
+}
+
+static int layer_alloc(Layer *L, int w, int h)
+{
+    if (w != L->w || h != L->h || !L->rgba) {
+        av_freep(&L->rgba);
+        if (!(L->rgba = av_malloc((size_t)w * h * 4))) {
+            L->w = L->h = 0;
+            return AVERROR(ENOMEM);
+        }
+        L->w = w;
+        L->h = h;
+    }
+    memset(L->rgba, 0, (size_t)w * h * 4);
+    L->yuv_c = -1;                             /* made again when next wanted */
+    return 0;
+}
+
+/* src over the layer's pixel, alpha a (0-255), colour r,g,b */
+static void layer_put(Layer *L, int x, int y, int r, int g, int b, int a)
+{
+    uint8_t *d;
+    if (x < 0 || y < 0 || x >= L->w || y >= L->h || a <= 0)
+        return;
+    d = L->rgba + ((size_t)y * L->w + x) * 4;
+    d[0] = (uint8_t)((r * a + d[0] * (255 - a)) / 255);
+    d[1] = (uint8_t)((g * a + d[1] * (255 - a)) / 255);
+    d[2] = (uint8_t)((b * a + d[2] * (255 - a)) / 255);
+    d[3] = (uint8_t)(a + d[3] * (255 - a) / 255);
+}
+
+static void layer_box(Layer *L, int x, int y, int w, int h, int r, int g, int b, int a)
+{
+    for (int j = 0; j < h; j++)
+        for (int k = 0; k < w; k++)
+            layer_put(L, x + k, y + j, r, g, b, a);
+}
+
+/* 16.16 fixed point: layer pixels per destination pixel */
+static int layer_step(double s) { return s > 0 ? (int)(65536 / s) : 65536; }
+
+/* Over 32bpp pixels (R,G,B,x, or B,G,R,x with bgr), w x h */
+static void layer_blend_rgb(const Place *pl, uint8_t *p, int pitch, int w, int h, int bgr)
+{
+    const Layer *L = pl->L;
+    int x0 = pl->x0, y0 = pl->y0, ix = layer_step(pl->sx), iy = layer_step(pl->sy);
+    int xa = FFMAX(0, x0), ya = FFMAX(0, y0);
+    int xb = FFMIN(w, x0 + (int)(L->w * pl->sx + 0.5)), yb = FFMIN(h, y0 + (int)(L->h * pl->sy + 0.5));
+    for (int y = ya; y < yb; y++) {
+        int ly = (int)(((int64_t)(y - y0) * iy) >> 16);
+        const uint8_t *row;
+        uint8_t *d = p + (size_t)y * pitch + (size_t)xa * 4;
+        if (ly >= L->h)
+            break;
+        row = L->rgba + (size_t)ly * L->w * 4;
+        for (int x = xa; x < xb; x++, d += 4) {
+            int lx = (int)(((int64_t)(x - x0) * ix) >> 16);
+            const uint8_t *s;
+            int a;
+            if (lx >= L->w)
+                break;
+            s = row + lx * 4;
+            if (!s[3])
+                continue;
+            a = 255 - s[3];
+            d[0] = (uint8_t)(s[bgr ? 2 : 0] + d[0] * a / 255);
+            d[1] = (uint8_t)(s[1] + d[1] * a / 255);
+            d[2] = (uint8_t)(s[bgr ? 0 : 2] + d[2] * a / 255);
+        }
+    }
+}
+
+/* The layer as Y,Cb,Cr,A in the frame's colours (c: REELCORE_YUV_709/_FULL) */
+static int layer_yuv(Layer *L, int c)
+{
+    double kr = c & REELCORE_YUV_709 ? 0.2126 : 0.299, kb = c & REELCORE_YUV_709 ? 0.0722 : 0.114;
+    double ys = c & REELCORE_YUV_FULL ? 255 : 219, cs = c & REELCORE_YUV_FULL ? 255 : 224;
+    double yo = c & REELCORE_YUV_FULL ? 0 : 16;
+    if (L->yuv && L->yuv_c == c)
+        return 0;
+    av_freep(&L->yuv);
+    if (!(L->yuv = av_malloc((size_t)L->w * L->h * 4)))
+        return AVERROR(ENOMEM);
+    for (int i = 0; i < L->w * L->h; i++) {
+        const uint8_t *s = L->rgba + (size_t)i * 4;
+        uint8_t *d = L->yuv + (size_t)i * 4;
+        double a = s[3], r = a ? s[0] / a : 0, g = a ? s[1] / a : 0, b = a ? s[2] / a : 0;   /* 0..1 */
+        double yy = kr * r + (1 - kr - kb) * g + kb * b;
+        d[0] = (uint8_t)av_clip((int)(yo + yy * ys + 0.5), 0, 255);
+        d[1] = (uint8_t)av_clip((int)(128 + (b - yy) / (2 * (1 - kb)) * cs + 0.5), 0, 255);
+        d[2] = (uint8_t)av_clip((int)(128 + (r - yy) / (2 * (1 - kr)) * cs + 0.5), 0, 255);
+        d[3] = s[3];
+    }
+    L->yuv_c = c;
+    return 0;
+}
+
+/* Does the layer touch row y of plane p (0 Y, 1 Cb, 2 Cr) of a 4:2:0 picture? */
+static int layer_touches(const Place *pl, int p, int y)
+{
+    int sub = p ? 2 : 1, fy = y * sub;
+    return fy + sub > pl->y0 && fy < pl->y0 + pl->L->h * pl->sy;
+}
+
+/* Into row y of plane p, w pixels wide (that plane's pixels) */
+static void layer_blend_row(const Place *pl, uint8_t *row, int p, int y, int w)
+{
+    const Layer *L = pl->L;
+    int sub = p ? 2 : 1, ix = layer_step(pl->sx), iy = layer_step(pl->sy);
+    int fy = y * sub, ly, xa, xb;
+    if (fy < pl->y0)
+        fy = pl->y0;                           /* (a chroma row half in: its lower half) */
+    ly = (int)(((int64_t)(fy - pl->y0) * iy) >> 16);
+    if (ly < 0 || ly >= L->h)
+        return;
+    xa = FFMAX(0, (pl->x0 + sub - 1) / sub);
+    xb = FFMIN(w, (pl->x0 + (int)(L->w * pl->sx + 0.5)) / sub);
+    for (int x = xa; x < xb; x++) {
+        int lx = (int)(((int64_t)(x * sub - pl->x0) * ix) >> 16);
+        const uint8_t *s;
+        if (lx < 0)
+            continue;
+        if (lx >= L->w)
+            break;
+        s = L->yuv + ((size_t)ly * L->w + lx) * 4;
+        if (s[3])
+            row[x] = (uint8_t)((s[p] * s[3] + row[x] * (255 - s[3])) / 255);
+    }
+}
+
 /* ---------------------------------------------------------- the stats panel */
 
 #include "panel_font.h"
@@ -2404,20 +2665,7 @@ static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPi
 
 static int pan_textw(const char *t) { return t ? (int)strlen(t) * PANEL_FONT_W : 0; }
 
-/* src over the panel's pixel, alpha a (0-255), colour r,g,b */
-static void pan_put(ReelCore *v, int x, int y, int r, int g, int b, int a)
-{
-    uint8_t *d;
-    if (x < 0 || y < 0 || x >= v->pan_w || y >= v->pan_h || a <= 0)
-        return;
-    d = v->pan + ((size_t)y * v->pan_w + x) * 4;
-    d[0] = (uint8_t)((r * a + d[0] * (255 - a)) / 255);
-    d[1] = (uint8_t)((g * a + d[1] * (255 - a)) / 255);
-    d[2] = (uint8_t)((b * a + d[2] * (255 - a)) / 255);
-    d[3] = (uint8_t)(a + d[3] * (255 - a) / 255);
-}
-
-static void pan_text(ReelCore *v, int x, int y, const char *t, int r, int g, int b)
+static void pan_text(Layer *L, int x, int y, const char *t, int r, int g, int b)
 {
     for (; t && *t; t++, x += PANEL_FONT_W) {
         unsigned c = (unsigned char)*t;
@@ -2425,24 +2673,16 @@ static void pan_text(ReelCore *v, int x, int y, const char *t, int r, int g, int
         const unsigned char *gl = panel_font[i];
         for (int j = 0; j < PANEL_FONT_H; j++)
             for (int k = 0; k < PANEL_FONT_W; k++)
-                pan_put(v, x + k, y + j, r, g, b, gl[j * PANEL_FONT_W + k]);
+                layer_put(L, x + k, y + j, r, g, b, gl[j * PANEL_FONT_W + k]);
     }
-}
-
-static void pan_box(ReelCore *v, int x, int y, int w, int h, int r, int g, int b, int a)
-{
-    for (int j = 0; j < h; j++)
-        for (int k = 0; k < w; k++)
-            pan_put(v, x + k, y + j, r, g, b, a);
 }
 
 int reelcore_set_panel(ReelCore *v, const ReelCorePanel *p)
 {
+    Layer *L = &v->pan;
     int lw = 0, vw = 0, w, h, rows = p ? FFMIN(p->rows, REELCORE_PANEL_ROWS) : 0;
     if (rows <= 0) {
-        av_freep(&v->pan);
-        av_freep(&v->pan_yuv);
-        v->pan_w = v->pan_h = 0;
+        layer_free(L);
         return 0;
     }
     for (int i = 0; i < rows; i++) {
@@ -2452,113 +2692,711 @@ int reelcore_set_panel(ReelCore *v, const ReelCorePanel *p)
     }
     w = PAN_PAD + lw + PAN_GAP + vw + PAN_PAD;
     h = PAN_PAD + rows * PAN_ROW + PAN_PAD - 3;
-    if (w != v->pan_w || h != v->pan_h || !v->pan) {
-        av_freep(&v->pan);
-        if (!(v->pan = av_malloc((size_t)w * h * 4)))
-            return AVERROR(ENOMEM);
-        v->pan_w = w;
-        v->pan_h = h;
-    }
-    memset(v->pan, 0, (size_t)w * h * 4);
-    pan_box(v, 0, 0, w, h, 0, 0, 0, PAN_BG);
+    if (layer_alloc(L, w, h) < 0)
+        return AVERROR(ENOMEM);
+    layer_box(L, 0, 0, w, h, 0, 0, 0, PAN_BG);
     for (int i = 0; i < rows; i++) {
         int y = PAN_PAD + i * PAN_ROW, x = PAN_PAD + lw + PAN_GAP;
         if (p->label[i])
-            pan_text(v, PAN_PAD + lw - pan_textw(p->label[i]), y, p->label[i], 255, 255, 255);
+            pan_text(L, PAN_PAD + lw - pan_textw(p->label[i]), y, p->label[i], 255, 255, 255);
         if (p->graph[i] && p->graph_n > 0) {
             int gy = y + (PANEL_FONT_H - PAN_GRAPH_H) / 2, n = p->graph_n;
             int r = p->graph_rgb[i] >> 16 & 255, g = p->graph_rgb[i] >> 8 & 255, b = p->graph_rgb[i] & 255;
-            pan_box(v, x, gy, PAN_GRAPH_W, PAN_GRAPH_H, 40, 40, 40, 255);
+            layer_box(L, x, gy, PAN_GRAPH_W, PAN_GRAPH_H, 40, 40, 40, 255);
             for (int k = 0; k < PAN_GRAPH_W; k++) {
                 float s = p->graph[i][k * n / PAN_GRAPH_W];
                 int bh = (int)(av_clipf(s, 0, 1) * PAN_GRAPH_H + 0.5f);
-                pan_box(v, x + k, gy + PAN_GRAPH_H - bh, 1, bh, r, g, b, 255);
+                layer_box(L, x + k, gy + PAN_GRAPH_H - bh, 1, bh, r, g, b, 255);
             }
             x += PAN_GRAPH_W + PAN_GAP;
         }
         if (p->value[i])
-            pan_text(v, x, y, p->value[i], 230, 230, 230);
+            pan_text(L, x, y, p->value[i], 230, 230, 230);
     }
-    v->pan_k = p->yuv_scale > 0 ? p->yuv_scale : 1;
-    v->pan_yuv_c = -1;                        /* made again when next wanted */
+    if (p->yuv_scale > 0)
+        v->yuv_k = p->yuv_scale;
     return 0;
 }
 
 void reelcore_panel_size(const ReelCore *v, int *w, int *h)
 {
-    *w = v->pan ? v->pan_w : 0;
-    *h = v->pan ? v->pan_h : 0;
+    *w = v->pan.rgba ? v->pan.w : 0;
+    *h = v->pan.rgba ? v->pan.h : 0;
 }
 
-/* Over 32bpp pixels (R,G,B,x, or B,G,R,x with bgr), 1:1, at the top left. */
-static void panel_blend_rgb(ReelCore *v, uint8_t *p, int pitch, int w, int h, int bgr)
+void reelcore_set_yuv_scale(ReelCore *v, double k)
 {
-    int pw = FFMIN(v->pan_w, w - PAN_MARGIN), ph = FFMIN(v->pan_h, h - PAN_MARGIN);
-    for (int y = 0; y < ph; y++) {
-        const uint8_t *s = v->pan + (size_t)y * v->pan_w * 4;
-        uint8_t *d = p + (size_t)(y + PAN_MARGIN) * pitch + PAN_MARGIN * 4;
-        for (int x = 0; x < pw; x++, s += 4, d += 4) {
-            int a = 255 - s[3];
-            if (s[3] == 0)
-                continue;
-            d[0] = (uint8_t)(s[bgr ? 2 : 0] + d[0] * a / 255);
-            d[1] = (uint8_t)(s[1] + d[1] * a / 255);
-            d[2] = (uint8_t)(s[bgr ? 0 : 2] + d[2] * a / 255);
+    v->yuv_k = k > 0 ? k : 1;
+}
+
+/* -------------------------------------------------------------- subtitles */
+
+static void sub_render(ReelCore *v, int dw, int dh);
+
+/* Where the layers go in a w x h destination whose picture is shown
+   k display pixels a destination pixel... (k: destination pixels per
+   display pixel: 1 when drawn at the display's size, reelcore_set_yuv_scale's
+   for an overlay). Returns how many. */
+static int layers_place(ReelCore *v, Place *pl, int w, int h, double k)
+{
+    int n = 0;
+    if (v->pan.rgba) {
+        pl[n] = (Place){ &v->pan, (int)(PAN_MARGIN * k), (int)(PAN_MARGIN * k), k, k };
+        n++;
+    }
+    sub_render(v, (int)(w / k + 0.5), (int)(h / k + 0.5));
+    if (v->sub_layer.rgba && v->sub_shown) {
+        if (v->sub_bitmap) {                   /* where the subtitle's own canvas puts it */
+            double sx = (double)w / v->sub_cw, sy = (double)h / v->sub_ch;
+            pl[n] = (Place){ &v->sub_layer, (int)(v->sub_bx * sx), (int)(v->sub_by * sy), sx, sy };
+        } else {                               /* text: centred, near the bottom */
+            int lw = (int)(v->sub_layer.w * k + 0.5), lh = (int)(v->sub_layer.h * k + 0.5);
+            pl[n] = (Place){ &v->sub_layer, (w - lw) / 2, h - lh - (int)(h * 0.04), k, k };
+        }
+        n++;
+    }
+    return n;
+}
+
+#include "sub_font.h"
+
+/* UTF-8 (as FFmpeg's text subtitle decoders give) to Latin-1, with ASS's
+   override blocks ({\i1} ...) dropped and \N, \n, \h made plain */
+static void sub_plain(char *out, size_t size, const char *in)
+{
+    size_t n = 0;
+    while (*in && n + 4 < size) {
+        unsigned c = (unsigned char)*in;
+        if (c == '{' && strchr(in, '}')) {
+            in = strchr(in, '}') + 1;
+            continue;
+        }
+        if (c == '\\' && (in[1] == 'N' || in[1] == 'n')) {
+            out[n++] = '\n';
+            in += 2;
+            continue;
+        }
+        if (c == '\\' && in[1] == 'h') {
+            out[n++] = ' ';
+            in += 2;
+            continue;
+        }
+        if (c == '\r') {
+            in++;
+            continue;
+        }
+        if (c < 0x80) {
+            out[n++] = (char)c;
+            in++;
+            continue;
+        }
+        {
+            unsigned u = 0;
+            int len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+            u = len == 1 ? c : c & (0x3F >> (len - 1));
+            for (int i = 1; i < len; i++) {
+                if ((in[i] & 0xC0) != 0x80) {
+                    len = i;
+                    break;
+                }
+                u = u << 6 | (in[i] & 0x3F);
+            }
+            in += len;
+            if (u >= 0xA0 && u <= 0xFF)
+                out[n++] = (char)u;
+            else if (u == 0x2018 || u == 0x2019 || u == 0x2032)
+                out[n++] = '\'';
+            else if (u == 0x201C || u == 0x201D || u == 0x2033)
+                out[n++] = '"';
+            else if (u == 0x2013 || u == 0x2014 || u == 0x2012)
+                out[n++] = '-';
+            else if (u == 0x2026) {
+                out[n++] = '.'; out[n++] = '.'; out[n++] = '.';
+            } else if (u == 0x266A || u == 0x266B)
+                out[n++] = '#';
+            else if (u >= 0x80)
+                out[n++] = '?';
         }
     }
+    out[n] = 0;
+    while (n && (out[n - 1] == '\n' || out[n - 1] == ' '))
+        out[--n] = 0;
 }
 
-/* The panel as Y,Cb,Cr,A in the frame's colours (c: REELCORE_YUV_709/_FULL) */
-static int panel_yuv(ReelCore *v, int c)
+static void sub_event_free(SubEvent *e)
 {
-    double kr = c & REELCORE_YUV_709 ? 0.2126 : 0.299, kb = c & REELCORE_YUV_709 ? 0.0722 : 0.114;
-    double ys = c & REELCORE_YUV_FULL ? 255 : 219, cs = c & REELCORE_YUV_FULL ? 255 : 224;
-    double yo = c & REELCORE_YUV_FULL ? 0 : 16;
-    if (v->pan_yuv && v->pan_yuv_c == c)
-        return 0;
-    av_freep(&v->pan_yuv);
-    if (!(v->pan_yuv = av_malloc((size_t)v->pan_w * v->pan_h * 4)))
-        return AVERROR(ENOMEM);
-    for (int i = 0; i < v->pan_w * v->pan_h; i++) {
-        const uint8_t *s = v->pan + (size_t)i * 4;
-        uint8_t *d = v->pan_yuv + (size_t)i * 4;
-        double a = s[3], r = a ? s[0] / a : 0, g = a ? s[1] / a : 0, b = a ? s[2] / a : 0;   /* 0..1 */
-        double yy = kr * r + (1 - kr - kb) * g + kb * b;
-        d[0] = (uint8_t)av_clip((int)(yo + yy * ys + 0.5), 0, 255);
-        d[1] = (uint8_t)av_clip((int)(128 + (b - yy) / (2 * (1 - kb)) * cs + 0.5), 0, 255);
-        d[2] = (uint8_t)av_clip((int)(128 + (r - yy) / (2 * (1 - kr)) * cs + 0.5), 0, 255);
-        d[3] = s[3];
+    av_freep(&e->text);
+    av_freep(&e->rgba);
+}
+
+static void sub_clear(ReelCore *v, int bitmaps_only)
+{
+    int j = 0;
+    for (int i = 0; i < v->sev_n; i++) {
+        if (!bitmaps_only || v->sev[i].rgba)
+            sub_event_free(&v->sev[i]);
+        else
+            v->sev[j++] = v->sev[i];
     }
-    v->pan_yuv_c = c;
+    v->sev_n = j;
+    v->sub_key = -1;
+}
+
+/* Keeps an event (taking its text or bitmap), in order of start */
+static void sub_add(ReelCore *v, SubEvent *e)
+{
+    int i;
+    for (i = 0; i < v->sev_n; i++) {
+        SubEvent *o = &v->sev[i];
+        if (fabs(o->start - e->start) < 0.001 && e->text && o->text && !strcmp(o->text, e->text)) {
+            sub_event_free(e);                /* already have it (read again after a seek) */
+            return;
+        }
+    }
+    if (e->rgba) {                            /* a picture subtitle ends the one before */
+        for (i = 0; i < v->sev_n; i++)
+            if (v->sev[i].rgba && v->sev[i].start < e->start && v->sev[i].end > e->start)
+                v->sev[i].end = e->start;
+    }
+    if (v->sev_n == v->sev_cap) {
+        int drop = e->rgba ? -1 : 0;
+        if (v->sev_cap < SUB_MAX) {
+            SubEvent *n = av_realloc_array(v->sev, v->sev_cap ? v->sev_cap * 2 : 64, sizeof(*n));
+            if (n) {
+                v->sev = n;
+                v->sev_cap = v->sev_cap ? v->sev_cap * 2 : 64;
+                drop = -2;
+            }
+        }
+        if (drop != -2) {                      /* full: the oldest goes */
+            sub_event_free(&v->sev[0]);
+            memmove(v->sev, v->sev + 1, (v->sev_n - 1) * sizeof(*v->sev));
+            v->sev_n--;
+        }
+    }
+    {
+        int bitmaps = 0;                      /* only a few pictures are kept */
+        for (i = 0; i < v->sev_n; i++)
+            bitmaps += v->sev[i].rgba != NULL;
+        if (e->rgba && bitmaps >= SUB_BITMAPS)
+            for (i = 0; i < v->sev_n; i++)
+                if (v->sev[i].rgba) {
+                    sub_event_free(&v->sev[i]);
+                    memmove(v->sev + i, v->sev + i + 1, (v->sev_n - i - 1) * sizeof(*v->sev));
+                    v->sev_n--;
+                    break;
+                }
+    }
+    for (i = v->sev_n; i > 0 && v->sev[i - 1].start > e->start; i--)
+        ;
+    memmove(v->sev + i + 1, v->sev + i, (v->sev_n - i) * sizeof(*v->sev));
+    e->id = ++v->sub_ids;
+    v->sev[i] = *e;
+    v->sev_n++;
+    v->sub_key = -1;
+}
+
+/* A decoded AVSubtitle into events; offset: added to its times (an
+   external file's times are from 0; the video's may not be) */
+static void sub_decoded(ReelCore *v, AVSubtitle *sub, double offset, int cw, int ch)
+{
+    double base = sub->pts != AV_NOPTS_VALUE ? sub->pts / (double)AV_TIME_BASE + offset : 0;
+    double start = base + sub->start_display_time / 1000.0;
+    double end = sub->end_display_time && sub->end_display_time != UINT32_MAX ?
+                 base + sub->end_display_time / 1000.0 : INFINITY;
+    int bx0 = INT_MAX, by0 = INT_MAX, bx1 = 0, by1 = 0;
+    char text[1024] = "";
+    size_t tn = 0;
+    if (!sub->num_rects) {                    /* nothing: ends the picture before */
+        for (int i = 0; i < v->sev_n; i++)
+            if (v->sev[i].rgba && v->sev[i].start <= start && v->sev[i].end > start)
+                v->sev[i].end = start;
+        v->sub_key = -1;
+        return;
+    }
+    for (unsigned r = 0; r < sub->num_rects; r++) {
+        AVSubtitleRect *rc = sub->rects[r];
+        if (rc->type == SUBTITLE_BITMAP && rc->w > 0 && rc->h > 0) {
+            bx0 = FFMIN(bx0, rc->x); by0 = FFMIN(by0, rc->y);
+            bx1 = FFMAX(bx1, rc->x + rc->w); by1 = FFMAX(by1, rc->y + rc->h);
+        } else if (rc->type == SUBTITLE_ASS && rc->ass) {
+            const char *t = rc->ass;
+            for (int commas = 0; *t && commas < 8; t++)   /* ReadOrder,Layer,Style,Name,MarginL,R,V,Effect, */
+                if (*t == ',')
+                    commas++;
+            if (tn && tn + 1 < sizeof(text))
+                text[tn++] = '\n';
+            sub_plain(text + tn, sizeof(text) - tn, t);
+            tn = strlen(text);
+        } else if (rc->type == SUBTITLE_TEXT && rc->text) {
+            if (tn && tn + 1 < sizeof(text))
+                text[tn++] = '\n';
+            sub_plain(text + tn, sizeof(text) - tn, rc->text);
+            tn = strlen(text);
+        }
+    }
+    if (bx1 > bx0 && by1 > by0) {
+        SubEvent e = { 0 };
+        int w = bx1 - bx0, h = by1 - by0;
+        e.start = start;
+        e.end = end;
+        e.x = bx0; e.y = by0; e.w = w; e.h = h;
+        e.cw = cw > 0 ? cw : FFMAX(bx1, v->cur ? v->cur->width : 720);
+        e.ch = ch > 0 ? ch : FFMAX(by1, v->cur ? v->cur->height : 576);
+        if (!(e.rgba = av_mallocz((size_t)w * h * 4)))
+            return;
+        for (unsigned r = 0; r < sub->num_rects; r++) {
+            AVSubtitleRect *rc = sub->rects[r];
+            const uint32_t *pal = (const uint32_t *)rc->data[1];
+            if (rc->type != SUBTITLE_BITMAP || !pal)
+                continue;
+            for (int y = 0; y < rc->h; y++)
+                for (int x = 0; x < rc->w; x++) {
+                    uint32_t c = pal[rc->data[0][y * rc->linesize[0] + x]];   /* 0xAARRGGBB */
+                    unsigned a = c >> 24;
+                    uint8_t *d = e.rgba + ((size_t)(rc->y - by0 + y) * w + (rc->x - bx0 + x)) * 4;
+                    d[0] = (uint8_t)((c >> 16 & 255) * a / 255);
+                    d[1] = (uint8_t)((c >> 8 & 255) * a / 255);
+                    d[2] = (uint8_t)((c & 255) * a / 255);
+                    d[3] = (uint8_t)a;
+                }
+        }
+        sub_add(v, &e);
+    }
+    if (tn) {
+        SubEvent e = { 0 };
+        e.start = start;
+        e.end = end;
+        if (!(e.text = av_strdup(text)))
+            return;
+        sub_add(v, &e);
+    }
+}
+
+/* A packet of the chosen subtitle stream, as it's read */
+static void sub_packet(ReelCore *v, AVPacket *pkt)
+{
+    AVSubtitle sub;
+    int got = 0;
+    if (!v->sdec || pkt->stream_index != v->sub_stream)
+        return;
+    if (avcodec_decode_subtitle2(v->sdec, &sub, &got, pkt) >= 0 && got) {
+        sub_decoded(v, &sub, 0, v->sdec->width, v->sdec->height);
+        avsubtitle_free(&sub);
+    }
+}
+
+/* The events on screen at t: a text one may run until the next starts */
+static double sub_end(const ReelCore *v, int i)
+{
+    const SubEvent *e = &v->sev[i];
+    if (isfinite(e->end))
+        return e->end;
+    for (int j = i + 1; j < v->sev_n; j++)
+        if (v->sev[j].start > e->start && !v->sev[j].rgba == !e->rgba)
+            return FFMIN(v->sev[j].start, e->start + 10);
+    return e->start + 10;
+}
+
+/* The glyph for Latin-1 character c */
+static const SubGlyph *sub_glyph(const SubFont *f, unsigned c)
+{
+    int i = c >= 32 && c < 127 ? (int)c - 32 : c >= 160 ? (int)c - 160 + 95 : '?' - 32;
+    return &f->g[i];
+}
+
+static int sub_textw(const SubFont *f, const char *t, int n)
+{
+    int w = 0;
+    for (int i = 0; i < n; i++)
+        w += sub_glyph(f, (unsigned char)t[i])->adv;
+    return w;
+}
+
+/* Text into the subtitle layer: white with a black outline, each line
+   centred, long lines wrapped at spaces to fit dw */
+static void sub_render_text(ReelCore *v, const char *text, int dw, int dh)
+{
+    const SubFont *f = &sub_fonts[0];
+    int maxw, lines = 0, starts[64], lens[64], widest = 0, b, w, h, r;
+    uint8_t *cov, *dil;
+    double want = dh * 0.052;                 /* about 5% of the picture's height */
+    for (unsigned i = 0; i < sizeof(sub_fonts) / sizeof(sub_fonts[0]); i++)
+        if (sub_fonts[i].size <= want * 1.15)
+            f = &sub_fonts[i];
+    r = FFMAX(2, f->size / 12);                /* the outline */
+    b = r + 1;
+    maxw = FFMAX(dw * 92 / 100 - 2 * b, f->size * 4);
+    for (const char *p = text; *p && lines < 64;) {  /* lines, wrapped */
+        const char *nl = strchr(p, '\n');
+        int n = nl ? (int)(nl - p) : (int)strlen(p);
+        while (n > 0 && lines < 64) {
+            int take = n;
+            if (sub_textw(f, p, n) > maxw) {
+                int sp = -1, w0 = 0;
+                for (int i = 0; i < n; i++) {
+                    w0 += sub_glyph(f, (unsigned char)p[i])->adv;
+                    if (w0 > maxw)
+                        break;
+                    if (p[i] == ' ')
+                        sp = i;
+                }
+                take = sp > 0 ? sp : FFMAX(1, n / 2);
+            }
+            starts[lines] = (int)(p - text);
+            lens[lines] = take;
+            widest = FFMAX(widest, sub_textw(f, p, take));
+            lines++;
+            p += take;
+            n -= take;
+            while (n > 0 && *p == ' ') {
+                p++;
+                n--;
+            }
+        }
+        p = nl ? nl + 1 : p + strlen(p);
+    }
+    if (!lines || !widest) {
+        layer_free(&v->sub_layer);
+        return;
+    }
+    w = widest + 2 * b;
+    h = lines * f->line + 2 * b;
+    cov = av_mallocz((size_t)w * h);
+    dil = av_mallocz((size_t)w * h);
+    if (!cov || !dil || layer_alloc(&v->sub_layer, w, h) < 0) {
+        av_free(cov);
+        av_free(dil);
+        layer_free(&v->sub_layer);
+        return;
+    }
+    for (int l = 0; l < lines; l++) {
+        const char *t = text + starts[l];
+        int x = b + (widest - sub_textw(f, t, lens[l])) / 2, y = b + l * f->line;
+        for (int i = 0; i < lens[l]; i++) {
+            const SubGlyph *g = sub_glyph(f, (unsigned char)t[i]);
+            const unsigned char *d = f->data + g->off;
+            for (int j = 0; j < g->h; j++)
+                for (int k = 0; k < g->w; k++) {
+                    int px = x + g->x + k, py = y + g->y + j;
+                    if (px >= 0 && py >= 0 && px < w && py < h && d[j * g->w + k] > cov[py * w + px])
+                        cov[py * w + px] = d[j * g->w + k];
+                }
+            x += g->adv;
+        }
+    }
+    for (int y = 0; y < h; y++)                /* the outline: coverage spread by r, round */
+        for (int x = 0; x < w; x++) {
+            int m = 0;
+            for (int dy = -r; dy <= r && m < 255; dy++) {
+                int yy = y + dy;
+                if (yy < 0 || yy >= h)
+                    continue;
+                for (int dx = -r; dx <= r; dx++) {
+                    int xx = x + dx;
+                    if (xx >= 0 && xx < w && dx * dx + dy * dy <= r * r + r && cov[yy * w + xx] > m)
+                        m = cov[yy * w + xx];
+                }
+            }
+            dil[y * w + x] = (uint8_t)m;
+        }
+    for (int i = 0; i < w * h; i++) {          /* white over black: premultiplied */
+        uint8_t *d = v->sub_layer.rgba + (size_t)i * 4;
+        d[0] = d[1] = d[2] = cov[i];
+        d[3] = FFMAX(dil[i], cov[i]);
+    }
+    av_free(cov);
+    av_free(dil);
+}
+
+/* The subtitle layer for the current picture's time, made again when what's
+   on screen (or the picture's size, for text) changes */
+static void sub_render(ReelCore *v, int dw, int dh)
+{
+    char text[2048];
+    size_t tn = 0;
+    int key, bitmap = -1;
+    double t;
+    if (v->sub_track < 0 || v->sub_hidden || !v->cur || !v->sev_n) {
+        v->sub_shown = 0;
+        return;
+    }
+    t = v->cur_pts;
+    key = dh * 7919 + dw;
+    text[0] = 0;
+    for (int i = 0; i < v->sev_n && v->sev[i].start <= t + 0.001; i++) {
+        if (t >= sub_end(v, i))
+            continue;
+        key = key * 31 + v->sev[i].id;
+        if (v->sev[i].rgba)
+            bitmap = i;                        /* the latest picture */
+        else if (v->sev[i].text && tn + strlen(v->sev[i].text) + 2 < sizeof(text)) {
+            if (tn)
+                text[tn++] = '\n';
+            strcpy(text + tn, v->sev[i].text);
+            tn += strlen(v->sev[i].text);
+        }
+    }
+    if (bitmap < 0 && !tn) {
+        v->sub_shown = 0;
+        return;
+    }
+    v->sub_shown = 1;
+    if (key == v->sub_key)
+        return;
+    v->sub_key = key;
+    if (bitmap >= 0) {
+        const SubEvent *e = &v->sev[bitmap];
+        if (layer_alloc(&v->sub_layer, e->w, e->h) == 0)
+            memcpy(v->sub_layer.rgba, e->rgba, (size_t)e->w * e->h * 4);
+        v->sub_bitmap = 1;
+        v->sub_bx = e->x; v->sub_by = e->y; v->sub_cw = e->cw; v->sub_ch = e->ch;
+    } else {
+        v->sub_bitmap = 0;
+        sub_render_text(v, text, dw, dh);
+    }
+}
+
+/* ---- subtitle tracks: the file's streams, then files added ---- */
+
+static void sub_close_track(ReelCore *v)
+{
+    if (v->sub_stream >= 0 && v->fmt && v->sub_stream < (int)v->fmt->nb_streams)
+        v->fmt->streams[v->sub_stream]->discard = AVDISCARD_ALL;
+    v->sub_stream = -1;
+    avcodec_free_context(&v->sdec);
+    sub_clear(v, 0);
+    layer_free(&v->sub_layer);
+    v->sub_shown = 0;
+}
+
+/* Reads a whole subtitle file into events */
+static int sub_read_file(ReelCore *v, const char *path)
+{
+    AVFormatContext *fc = NULL;
+    AVCodecContext *dec = NULL;
+    AVPacket *pkt = av_packet_alloc();
+    double offset = v->fmt && v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time / (double)AV_TIME_BASE : 0;
+    int s, ret, n = 0;
+    if (!pkt)
+        return AVERROR(ENOMEM);
+    if ((ret = avformat_open_input(&fc, path, NULL, NULL)) < 0 ||
+        (ret = avformat_find_stream_info(fc, NULL)) < 0 ||
+        (ret = s = av_find_best_stream(fc, AVMEDIA_TYPE_SUBTITLE, -1, -1, NULL, 0)) < 0 ||
+        !(dec = open_decoder(fc->streams[s]))) {
+        av_log(NULL, AV_LOG_WARNING, "reelcore: can't read subtitles from %s\n", path);
+        av_packet_free(&pkt);
+        avformat_close_input(&fc);
+        return ret < 0 ? ret : AVERROR_DECODER_NOT_FOUND;
+    }
+    while (av_read_frame(fc, pkt) >= 0) {
+        if (pkt->stream_index == s) {
+            AVSubtitle sub;
+            int got = 0;
+            if (avcodec_decode_subtitle2(dec, &sub, &got, pkt) >= 0 && got) {
+                sub_decoded(v, &sub, offset, dec->width, dec->height);
+                avsubtitle_free(&sub);
+                n++;
+            }
+        }
+        av_packet_unref(pkt);
+    }
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: %d subtitles from %s\n", n, path);
+    av_packet_free(&pkt);
+    avcodec_free_context(&dec);
+    avformat_close_input(&fc);
     return 0;
 }
 
-/* Into one row of plane p (0 Y, 1 Cb, 2 Cr) of a w-wide 4:2:0 picture, row
-   y of that plane: the panel scaled by pan_k at PAN_MARGIN (frame pixels). */
-static void panel_blend_row(ReelCore *v, uint8_t *row, int p, int y, int w)
+/* The text on screen at the current picture (pictures: "[picture]") */
+int reelcore_subtitle_text(const ReelCore *v, char *buf, int size)
 {
-    int sub = p ? 2 : 1, m = PAN_MARGIN / sub;
-    double k = v->pan_k;
-    int py = (int)((y * sub - PAN_MARGIN) / k), x1;
-    if (y < m || py < 0 || py >= v->pan_h)
-        return;
-    x1 = FFMIN(w / sub, m + (int)(v->pan_w * k / sub));
-    for (int x = m; x < x1; x++) {
-        int px = (int)((x * sub - PAN_MARGIN) / k);
-        const uint8_t *s;
-        if (px >= v->pan_w)
-            break;
-        s = v->pan_yuv + ((size_t)py * v->pan_w + px) * 4;
-        if (s[3])
-            row[x] = (uint8_t)((s[p] * s[3] + row[x] * (255 - s[3])) / 255);
+    int n = 0;
+    buf[0] = 0;
+    if (v->sub_track < 0 || !v->cur)
+        return 0;
+    for (int i = 0; i < v->sev_n && v->sev[i].start <= v->cur_pts + 0.001; i++) {
+        if (v->cur_pts >= sub_end(v, i))
+            continue;
+        n += snprintf(buf + n, n < size ? size - n : 0, "%s%s", n ? "\n" : "",
+                      v->sev[i].text ? v->sev[i].text : "[picture]");
+    }
+    return n;
+}
+
+int reelcore_subtitle_tracks(const ReelCore *v) { return v->ready ? v->sub_n : 0; }
+
+void reelcore_show_subtitles(ReelCore *v, int on) { v->sub_hidden = !on; }
+int reelcore_subtitles_shown(const ReelCore *v) { return v->sub_track >= 0 && !v->sub_hidden; }
+int reelcore_subtitle_track(const ReelCore *v) { return v->sub_track; }
+
+int reelcore_subtitle_track_name(const ReelCore *v, int i, char *buf, int size)
+{
+    const SubTrack *t;
+    if (!v->ready || i < 0 || i >= v->sub_n)
+        return AVERROR(EINVAL);
+    t = &v->sub_tracks[i];
+    if (t->path) {                       /* the leaf: RISC OS after the last '.', Unix the last '/' */
+        const char *leaf = strrchr(t->path, t->path[0] == '/' ? '/' : '.');
+        return snprintf(buf, size, "File: %s", leaf ? leaf + 1 : t->path);
+    } else {
+        AVStream *st = v->fmt->streams[t->stream];
+        AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL, 0);
+        AVDictionaryEntry *title = av_dict_get(st->metadata, "title", NULL, 0);
+        return snprintf(buf, size, "%s%s%s%s(%s)%s", title ? title->value : "", title && lang ? ", " : "",
+                        lang ? lang->value : "", title || lang ? " " : "",
+                        avcodec_get_name(st->codecpar->codec_id),
+                        st->disposition & AV_DISPOSITION_FORCED ? ", forced" : "");
     }
 }
 
-/* Is row y of plane p (sub: 1 luma, 2 chroma) touched by the panel? */
-static int panel_rows(const ReelCore *v, int p, int y)
+int reelcore_set_subtitle_track(ReelCore *v, int i)
 {
-    int sub = p ? 2 : 1;
-    return v->pan && y * sub >= PAN_MARGIN && y * sub < PAN_MARGIN + v->pan_h * v->pan_k + sub;
+    if (!v->ready)
+        return AVERROR(EAGAIN);
+    if (i >= v->sub_n)
+        return AVERROR(EINVAL);
+    if (i == v->sub_track)
+        return 0;
+    sub_close_track(v);
+    v->sub_track = i < 0 ? -1 : i;
+    if (i < 0)
+        return 0;
+    if (v->sub_tracks[i].path)
+        return sub_read_file(v, v->sub_tracks[i].path);
+    {
+        AVStream *st = v->fmt->streams[v->sub_tracks[i].stream];
+        if (!(v->sdec = open_decoder(st))) {
+            v->sub_track = -1;
+            return AVERROR_DECODER_NOT_FOUND;
+        }
+        v->sub_stream = v->sub_tracks[i].stream;
+        st->discard = AVDISCARD_DEFAULT;
+    }
+    /* its packets from here: read from the picture shown again */
+    if (v->cur && !v->need_first)
+        return reelcore_seek(v, reelcore_position(v));
+    return 0;
+}
+
+int reelcore_add_subtitle_file(ReelCore *v, const char *path)
+{
+    int i, ret;
+    if (!v->ready)
+        return AVERROR(EAGAIN);
+    for (i = 0; i < v->sub_n; i++)
+        if (v->sub_tracks[i].path && !strcmp(v->sub_tracks[i].path, path))
+            break;
+    if (i == v->sub_n) {
+        if (v->sub_n == SUB_TRACKS || !(v->sub_tracks[i].path = av_strdup(path)))
+            return AVERROR(ENOMEM);
+        v->sub_tracks[i].stream = -1;
+        v->sub_n++;
+    }
+    v->sub_track = -2;                          /* (so it's read again even if chosen) */
+    sub_close_track(v);
+    v->sub_track = i;
+    if ((ret = sub_read_file(v, path)) < 0) {
+        av_freep(&v->sub_tracks[i].path);
+        memmove(v->sub_tracks + i, v->sub_tracks + i + 1, (v->sub_n - i - 1) * sizeof(*v->sub_tracks));
+        v->sub_n--;
+        v->sub_track = -1;
+        return ret;
+    }
+    return i;
+}
+
+/* At setup: the file's subtitle streams; one marked default or forced is
+   chosen (as mpv does), else none */
+static void sub_setup(ReelCore *v)
+{
+    int pick = -1;
+    v->sub_track = -1;
+    v->sub_stream = -1;
+    for (unsigned s = 0; s < v->fmt->nb_streams && v->sub_n < SUB_TRACKS; s++) {
+        AVStream *st = v->fmt->streams[s];
+        if (st->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE || !avcodec_find_decoder(st->codecpar->codec_id))
+            continue;
+        if (pick < 0 && st->disposition & (AV_DISPOSITION_DEFAULT | AV_DISPOSITION_FORCED))
+            pick = v->sub_n;
+        v->sub_tracks[v->sub_n].stream = s;
+        v->sub_tracks[v->sub_n].path = NULL;
+        v->sub_n++;
+    }
+    if (pick >= 0)
+        reelcore_set_subtitle_track(v, pick);
+}
+
+/* ---------------------------------------------------------------- chapters */
+
+int reelcore_chapters(const ReelCore *v) { return v->ready ? (int)v->fmt->nb_chapters : 0; }
+
+double reelcore_chapter_start(const ReelCore *v, int i)
+{
+    const AVChapter *c;
+    double start = v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time / (double)AV_TIME_BASE : 0;
+    if (!v->ready || i < 0 || i >= (int)v->fmt->nb_chapters)
+        return -1;
+    c = v->fmt->chapters[i];
+    return FFMAX(0, c->start * av_q2d(c->time_base) - start);
+}
+
+int reelcore_chapter_title(const ReelCore *v, int i, char *buf, int size)
+{
+    AVDictionaryEntry *t;
+    if (!v->ready || i < 0 || i >= (int)v->fmt->nb_chapters)
+        return AVERROR(EINVAL);
+    t = av_dict_get(v->fmt->chapters[i]->metadata, "title", NULL, 0);
+    if (t) {
+        char plain[256];
+        sub_plain(plain, sizeof(plain), t->value);   /* (UTF-8 to Latin-1) */
+        return snprintf(buf, size, "%s", plain);
+    }
+    return snprintf(buf, size, "Chapter %d", i + 1);
+}
+
+int reelcore_chapter_at(const ReelCore *v, double pos)
+{
+    int n = reelcore_chapters(v), c = -1;
+    for (int i = 0; i < n; i++)
+        if (reelcore_chapter_start(v, i) <= pos + 0.05)
+            c = i;
+    return c;
+}
+
+/* ----------------------------------------------------------- frame steps */
+
+int reelcore_step(ReelCore *v)
+{
+    if (!v->ready || !v->paused)
+        return AVERROR(EINVAL);
+    if (v->need_first)
+        return reelcore_update(v);
+    for (int tries = 0; !v->qn && tries < 200; tries++) {
+        int before = v->n_decoded;
+        fill(v);
+        if (!v->qn && v->eof_demux && v->vflushed && v->n_decoded == before && !v->vpk_n)
+            break;
+    }
+    if (!v->qn)
+        return REELCORE_SAME_FRAME;
+    take_frame(v);
+    v->n_shown++;
+    v->pause_pos = v->cur_pts;
+    v->stepped = 1;
+    return REELCORE_NEW_FRAME;
+}
+
+int reelcore_step_back(ReelCore *v)
+{
+    double d = v->fps > 0 ? 1 / v->fps : 0.04, pos;
+    if (!v->ready || !v->paused || !v->cur)
+        return AVERROR(EINVAL);
+    pos = reelcore_position(v) - 1.5 * d;
+    if (pos < 0)
+        pos = 0;
+    v->stepped = 1;
+    return reelcore_seek(v, pos);
 }
 
 static void fill_black(uint8_t *p, int pitch, int x, int y, int w, int h)
@@ -2615,8 +3453,12 @@ int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int
     {
         int ret = convert(v, p + y * pitch + x * 4, pitch, rw, rh,
                           bgr ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA, cx, cy, cw, ch);
-        if (ret == 0 && v->pan)
-            panel_blend_rgb(v, p + y * pitch + x * 4, pitch, rw, rh, bgr);
+        if (ret == 0) {
+            Place pl[2];
+            int n = layers_place(v, pl, rw, rh, 1);
+            for (int i = 0; i < n; i++)
+                layer_blend_rgb(&pl[i], p + y * pitch + x * 4, pitch, rw, rh, bgr);
+        }
         return ret;
     }
 }
@@ -2767,7 +3609,8 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
 {
     AVFrame *f = v->cur;
     int64_t t0;
-    int c = 0;
+    int c = 0, nl;
+    Place pl[2];
     if (!f)
         return AVERROR(EAGAIN);
     if (f->colorspace == AVCOL_SPC_BT709)            /* as convert() decides */
@@ -2781,19 +3624,30 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
     if (w < 2 || h < 2 || w > f->width || h > f->height)
         return AVERROR(EINVAL);
     t0 = av_gettime_relative();
+    {
+        int k = 0;
+        nl = layers_place(v, pl, w, h, v->yuv_k > 0 ? v->yuv_k : 1);
+        for (int i = 0; i < nl; i++)
+            if (layer_yuv((Layer *)pl[i].L, c) == 0)
+                pl[k++] = pl[i];
+        nl = k;
+    }
     if (f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) {
         /* the decoder's own planes: row copies (the rows may be wider) */
-        uint8_t *tmp = v->pan && panel_yuv(v, c) == 0 ? av_malloc(w) : NULL;
+        uint8_t *tmp = nl ? av_malloc(w) : NULL;
         for (int p = 0; p < 3; p++) {
             int pw = p ? w / 2 : w, ph = p ? h / 2 : h;
             for (int y = 0; y < ph; y++) {
                 const uint8_t *src = f->data[p] + (size_t)y * f->linesize[p];
-                if (tmp && panel_rows(v, p, y)) {      /* blended in cached memory, then written once */
-                    memcpy(tmp, src, pw);
-                    panel_blend_row(v, tmp, p, y, pw);
-                    src = tmp;
-                }
-                memcpy(planes[p] + (size_t)y * pitch[p], src, pw);
+                int touched = 0;
+                for (int i = 0; tmp && i < nl; i++)
+                    if (layer_touches(&pl[i], p, y)) {
+                        if (!touched)                  /* blended in cached memory, then written once */
+                            memcpy(tmp, src, pw);
+                        touched = 1;
+                        layer_blend_row(&pl[i], tmp, p, y, pw);
+                    }
+                memcpy(planes[p] + (size_t)y * pitch[p], touched ? tmp : src, pw);
             }
         }
         av_free(tmp);
@@ -2806,11 +3660,11 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
                                           SWS_POINT, NULL, NULL, NULL);
         if (!v->sws_yuv || sws_scale(v->sws_yuv, src, f->linesize, 0, h, d, dp) < 0)
             return AVERROR_EXTERNAL;
-        if (v->pan && panel_yuv(v, c) == 0)       /* (reads the rows back: slower, but rare) */
+        for (int i = 0; i < nl; i++)              /* (reads the rows back: slower, but rare) */
             for (int p = 0; p < 3; p++)
                 for (int y = 0; y < (p ? h / 2 : h); y++)
-                    if (panel_rows(v, p, y))
-                        panel_blend_row(v, planes[p] + (size_t)y * pitch[p], p, y, p ? w / 2 : w);
+                    if (layer_touches(&pl[i], p, y))
+                        layer_blend_row(&pl[i], planes[p] + (size_t)y * pitch[p], p, y, p ? w / 2 : w);
     }
     v->t_convert += av_gettime_relative() - t0;
     v->conv_w = w;
