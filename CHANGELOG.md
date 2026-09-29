@@ -3,6 +3,29 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## 5.1.10-riscos12 (2026-09-29): RISC OS names in the current directory
+
+- **`ffmpeg -i holiday/mp4 small/mp4` now means the files holiday/mp4 and
+  small/mp4 in the current directory**, as in the rest of RISC OS. UnixLib
+  reads a name with no filing system, disc or directory prefix as a Unix
+  one, so before this it opened the file "mp4" in a directory "holiday".
+  (A forum report of ffmpeg "doing nothing" on the command line, with
+  names written the way !Help showed them.)
+  - FFmpeg patch 0019 (`libavformat/riscos_filename.h`, `file.c`):
+    `ff_riscos_relative_name()` recognises these names. The rules: one
+    `/`; no `.` after it; no prefix (a filing system, `:`, `$ @ ^ % & < \`);
+    and after the `/`, an extension of a format FFmpeg knows (from any
+    muxer or demuxer). Such a name is opened as `@.holiday/mp4`, which
+    UnixLib leaves alone.
+  - `Films.holiday/mp4` works the same way. Unix names (`clip.mp4`,
+    `dir/clip.mp4`, `videos/clip`) and full RISC OS names are unchanged.
+  - It applies to opening, checking, deleting and renaming files, in
+    ffmpeg, ffprobe and ffplay alike.
+- !Help: how names are read, with examples of each kind, and when to
+  start a name with `@.`.
+- Tests: `tests/host/riscos_name_test.c` (24 names, host gcc with the
+  sanitizers).
+
 ## Reel 0.1.18 (2026-09-28): hardware acceleration (video overlays)
 
 - **Hardware acceleration** on the window menu (on by default, saved in

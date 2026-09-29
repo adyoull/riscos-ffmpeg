@@ -75,6 +75,11 @@ echo "== sources_test (web addresses and yt-dlp's output in text)"
 gcc -O1 -g -fsanitize=address,undefined -I"$TOP/player" "$TOP/player/sources.c" "$HERE/sources_test.c" -o "$O/sources_test" &&
   "$O/sources_test" || bad=1
 
+# RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
+echo "== riscos_name_test (holiday/mp4 as a RISC OS name, Unix names untouched)"
+gcc -O1 -g -fsanitize=address,undefined -I"$F/libavformat" "$HERE/riscos_name_test.c" -o "$O/riscos_name_test" &&
+  "$O/riscos_name_test" || bad=1
+
 # reelcore from the network (its reader thread) and from two inputs (video and sound apart)
 NS=$O/netsamples; mkdir -p "$NS"
 cp "$SAMPLES/long_h264_aac_322_184.mp4" "$NS/"

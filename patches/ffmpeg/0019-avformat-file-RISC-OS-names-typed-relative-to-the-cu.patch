@@ -1,0 +1,181 @@
+From e65d85c037e19a4008915aa831ccf6b0cfc10545 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Tue, 29 Sep 2026 09:23:31 +0100
+Subject: [PATCH] avformat/file: RISC OS names typed relative to the current
+ directory (holiday/mp4)
+
+UnixLib reads a name with no prefix as a Unix one, so holiday/mp4 became
+the file mp4 in the directory holiday. When a name has one '/', no '.'
+after it, no filing system or directory prefix, and what follows the '/'
+is an extension of a format FFmpeg knows, it is a RISC OS name: open
+@.holiday/mp4, which UnixLib leaves alone. Unix names (clip.mp4,
+dir/clip.mp4, videos/clip) are unchanged.
+---
+ libavformat/file.c            | 43 +++++++++++++++++++++++
+ libavformat/riscos_filename.h | 66 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 109 insertions(+)
+ create mode 100644 libavformat/riscos_filename.h
+
+diff --git a/libavformat/file.c b/libavformat/file.c
+index 98c9e81..0afcf3c 100644
+--- a/libavformat/file.c
++++ b/libavformat/file.c
+@@ -39,6 +39,39 @@
+ #include <stdlib.h>
+ #include "os_support.h"
+ #include "url.h"
++#ifdef __riscos__
++#include <ctype.h>
++#include "riscos_filename.h"
++
++/* Is ext the file extension of a format FFmpeg knows (either way)? */
++static int riscos_known_ext(const char *ext)
++{
++    const AVOutputFormat *o;
++    const AVInputFormat *i;
++    void *it = NULL;
++    char low[9];
++    size_t n;
++    for (n = 0; ext[n] && n < sizeof(low) - 1; n++)
++        low[n] = tolower((unsigned char)ext[n]);
++    low[n] = 0;
++    while ((o = av_muxer_iterate(&it)))
++        if (o->extensions && av_match_name(low, o->extensions))
++            return 1;
++    it = NULL;
++    while ((i = av_demuxer_iterate(&it)))
++        if (i->extensions && av_match_name(low, i->extensions))
++            return 1;
++    return 0;
++}
++
++/* "holiday/mp4" typed in the current directory: see riscos_filename.h */
++#define RISCOS_NAME_BUF(buf) char buf[1024]
++#define RISCOS_NAME(name, buf) \
++    (name = ff_riscos_relative_name(name, buf, sizeof(buf), riscos_known_ext))
++#else
++#define RISCOS_NAME_BUF(buf) int buf av_unused
++#define RISCOS_NAME(name, buf) ((void)0)
++#endif
+ 
+ /* Some systems may not have S_ISFIFO */
+ #ifndef S_ISFIFO
+@@ -140,7 +173,9 @@ static int file_check(URLContext *h, int mask)
+ {
+     int ret = 0;
+     const char *filename = h->filename;
++    RISCOS_NAME_BUF(rbuf);
+     av_strstart(filename, "file:", &filename);
++    RISCOS_NAME(filename, rbuf);
+ 
+     {
+ #if HAVE_ACCESS && defined(R_OK)
+@@ -172,7 +207,9 @@ static int file_delete(URLContext *h)
+ #if HAVE_UNISTD_H
+     int ret;
+     const char *filename = h->filename;
++    RISCOS_NAME_BUF(rbuf);
+     av_strstart(filename, "file:", &filename);
++    RISCOS_NAME(filename, rbuf);
+ 
+     ret = rmdir(filename);
+     if (ret < 0 && (errno == ENOTDIR
+@@ -194,8 +231,12 @@ static int file_move(URLContext *h_src, URLContext *h_dst)
+ {
+     const char *filename_src = h_src->filename;
+     const char *filename_dst = h_dst->filename;
++    RISCOS_NAME_BUF(rbuf_src);
++    RISCOS_NAME_BUF(rbuf_dst);
+     av_strstart(filename_src, "file:", &filename_src);
+     av_strstart(filename_dst, "file:", &filename_dst);
++    RISCOS_NAME(filename_src, rbuf_src);
++    RISCOS_NAME(filename_dst, rbuf_dst);
+ 
+     if (rename(filename_src, filename_dst) < 0)
+         return AVERROR(errno);
+@@ -209,8 +250,10 @@ static int file_open(URLContext *h, const char *filename, int flags)
+     int access;
+     int fd;
+     struct stat st;
++    RISCOS_NAME_BUF(rbuf);
+ 
+     av_strstart(filename, "file:", &filename);
++    RISCOS_NAME(filename, rbuf);
+ 
+     if (flags & AVIO_FLAG_WRITE && flags & AVIO_FLAG_READ) {
+         access = O_CREAT | O_RDWR;
+diff --git a/libavformat/riscos_filename.h b/libavformat/riscos_filename.h
+new file mode 100644
+index 0000000..a3b80fe
+--- /dev/null
++++ b/libavformat/riscos_filename.h
+@@ -0,0 +1,66 @@
++/*
++ * RISC OS file names typed without a filing system or directory prefix
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#ifndef AVFORMAT_RISCOS_FILENAME_H
++#define AVFORMAT_RISCOS_FILENAME_H
++
++#include <stddef.h>
++#include <string.h>
++
++/*
++ * UnixLib (the C library) turns Unix style names into RISC OS ones:
++ * "clip.mp4" becomes clip/mp4, "dir/clip.mp4" dir.clip/mp4. Names it sees
++ * as RISC OS ones (a filing system, disc or path variable prefix, or one
++ * starting with $ @ ^ % & < \) are left alone. So a RISC OS name typed
++ * relative to the current directory, "holiday/mp4", is read as the Unix
++ * name "holiday/mp4": the file "mp4" in the directory "holiday". People
++ * on RISC OS mean the file holiday/mp4, as everywhere else in RISC OS.
++ *
++ * ff_riscos_relative_name() spots such names and puts "@." in front
++ * ("@.holiday/mp4": the current directory), which UnixLib leaves alone:
++ * the name has one '/', no '.' after it, no prefix, and what follows the
++ * '/' is a file extension FFmpeg knows (known_ext). A '.' before the '/'
++ * is a RISC OS directory ("Films.holiday/mp4"). Unix names still work:
++ * "clip.mp4", "dir/clip.mp4", "a/b/c" and "videos/clip" (not an
++ * extension) are unchanged. Returns buf holding the new name, or name.
++ */
++static inline const char *ff_riscos_relative_name(const char *name, char *buf, size_t size,
++                                                  int (*known_ext)(const char *ext))
++{
++    const char *slash = strrchr(name, '/'), *ext;
++    size_t n = strlen(name);
++
++    if (!name[0] || strchr("/$@^%&<\\.:", name[0]) || strchr(name, ':') || !slash ||
++        strchr(name, '/') != slash || strchr(slash, '.') || n + 3 > size)
++        return name;
++    ext = slash + 1;
++    if (!ext[0] || strlen(ext) > 8 || slash == name)
++        return name;
++    for (const char *p = ext; *p; p++)
++        if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9')))
++            return name;
++    if (!known_ext(ext))
++        return name;
++    memcpy(buf, "@.", 2);
++    memcpy(buf + 2, name, n + 1);
++    return buf;
++}
++
++#endif /* AVFORMAT_RISCOS_FILENAME_H */
+-- 
+2.43.0
+

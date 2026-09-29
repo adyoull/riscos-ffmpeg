@@ -1,4 +1,4 @@
-!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                   riscos11
+!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                   riscos12
 ===================================================================
 
 FFmpeg converts, plays and inspects audio and video. This is FFmpeg
@@ -77,10 +77,22 @@ it once. That sets up the commands. Then open a TaskWindow (Ctrl-F12):
   ffmpeg -i holiday/mp4 -c:v libx264 -crf 23 -c:a aac small/mp4
   ffmpeg -i song/flac -c:a libmp3lame -b:a 192k song/mp3
 
-File names can be RISC OS style (ADFS::HardDisc4.$.Films.clip/mkv,
-<Obey$Dir>.clip/mp4) or Unix style (clip.mp4). The extension after "/"
-or "." picks the output format. New files get their filetype from
-MimeMap.
+File names can be RISC OS style or Unix style:
+  - full RISC OS names: ADFS::HardDisc4.$.Films.clip/mkv, $.Films.clip/mkv,
+    <Obey$Dir>.clip/mp4, Films:clip/mp4;
+  - RISC OS names in the current directory (*Dir, or the TaskWindow's):
+    holiday/mp4, Films.holiday/mp4, @.holiday/mp4;
+  - Unix style: clip.mp4, films/clip.mp4.
+The extension after "/" or "." picks the output format. New files get
+their filetype from MimeMap.
+How a short name is read: the C library (UnixLib) takes a name with no
+filing system, disc or directory prefix as a Unix name, so on its own it
+would read holiday/mp4 as the file "mp4" in a directory "holiday". Since
+riscos12, FFmpeg sees that a name like holiday/mp4 (one "/", a format's
+extension after it, nothing before it) is a RISC OS name and opens
+@.holiday/mp4. A Unix name with a "/" and no extension (videos/clip) is
+still Unix. If in doubt, give the full name, or start it with @. (the
+current directory).
 
 ffplay keys: Q or Escape quit, F full screen, P or Space pause,
 Left/Right seek 10 s, Up/Down seek 1 min, M mute, 9/0 volume,
