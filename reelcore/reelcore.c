@@ -112,10 +112,19 @@ struct ReelCore {
     int audio_clock;                   /* the sound is the clock */
     int stalled;                       /* the sound device stopped playing: no sound now */
     char audio_note[96];               /* why there's no sound, for reelcore_info */
-    /* the sound clock between its steps (clock_smooth) */
+    /* the clock: the system timer, steered by the sound (clock_smooth) */
     int sm_valid;
-    double sm_raw, sm_last, sm_step;   /* the last raw reading, what we said, a step's size */
-    int64_t sm_t;                      /* when the raw reading last moved */
+    double sm_raw, sm_last, sm_step;   /* the last sound reading, what we said, a step's size */
+    double sm_base;                    /* the clock at sm_t */
+    int64_t sm_t, sm_prev;             /* when sm_base was set; the last look at the sound */
+    double sm_err_sum;                 /* |sound - clock| at each step, and how many */
+    unsigned sm_err_n;
+    /* how evenly the pictures come (reelcore_stats' pace_*) */
+    int64_t pace_t;                    /* when the last picture was handed out ... */
+    double pace_pts;                   /* ... and its time in the file */
+    unsigned pace_seq;                 /* n_shown + dropped then: the next must follow it */
+    double pace_sum;
+    unsigned pace_n;
     double stall_clock;                /* the sound clock when it last moved ... */
     int64_t stall_since;               /* ... and when that was */
     double latency;                    /* the device's own buffer, seconds */
@@ -489,39 +498,65 @@ static void audio_stalled(ReelCore *v, double c)
     timer_set(v, c);
 }
 
-/* The sound clock only moves when the device says more has been played,
-   and StreamManager says so a whole block (2048 sample frames: 46 ms at
-   44.1 kHz) at a time. Pictures due every 33 ms against a clock moving in
-   46 ms steps: at each step the next picture is already due as well, so the
-   one before is thrown away as late (about 21 of 30 a second shown, 23 of
-   25 at 48 kHz; seen on a Pi 4). So between steps the clock runs on by
-   itself from where the last step put it (a step comes when that block
-   has just finished playing), never further than one and a half steps
-   past the last reading (the sound has stopped: so does the clock), and
-   never backwards. */
+/* The clock pictures are shown by: the system timer, steered by the sound.
+
+   The sound is the reference (the sound hardware plays at its own rate,
+   and the pictures must keep to it), but the device only says how much it
+   has played now and then: StreamManager a whole block (2048 sample
+   frames, 46 ms at 44.1 kHz) at a time. Pictures timed by those steps come
+   in bursts, and at 30 fps and more some were skipped as late (Reel
+   0.1.18: 21-26 of 30 a second on a Pi 4). So the clock is the system
+   timer (sm_base + time since sm_t, at the playback speed). Each time the
+   sound's reading moves, where the sound really is is taken as that
+   reading plus half the time since we last looked (the step came some time
+   in between), and the clock moves a quarter of the way towards it: small
+   errors (our lateness in looking, the timer and the sound hardware
+   running at slightly different rates) are taken out gradually, and the
+   pictures stay evenly spaced. More than 100 ms apart (a seek, a hiccup):
+   the clock jumps to the sound. It never runs more than one and a half
+   steps past the last reading (if the sound stops, so does the clock), and
+   never goes backwards. It starts again after a seek, a resume or a change
+   of speed. The stall check (clock_now) uses the raw readings. */
+#define SM_GAIN    0.25
+#define SM_RESYNC  0.1
+
 static double clock_smooth(ReelCore *v, double c, int64_t now)
 {
-    double e, cap;
-    if (!v->sm_valid || c < v->sm_raw - 0.0005 || c > v->sm_raw + 0.0005) {
-        if (v->sm_valid && c > v->sm_raw) {
+    double pred, cap;
+    if (!v->sm_valid) {
+        v->sm_valid = 1;
+        v->sm_raw = v->sm_base = v->sm_last = c;
+        v->sm_t = v->sm_prev = now;
+        return c;
+    }
+    pred = v->sm_base + (now - v->sm_t) / 1e6 * v->speed;
+    if (c > v->sm_raw + 0.0005 || c < v->sm_raw - 0.0005) {
+        double m = c + (now - v->sm_prev) / 2e6 * v->speed, e;
+        if (c > v->sm_raw) {
             double step = c - v->sm_raw;          /* learn the step's size */
             if (step < 0.25)
                 v->sm_step = v->sm_step > 0 ? 0.75 * v->sm_step + 0.25 * step : step;
         }
-        if (!v->sm_valid || c < v->sm_raw)
-            v->sm_last = c;                       /* a new start: no history */
-        v->sm_raw = c;
+        e = m - pred;
+        if (c < v->sm_raw || e > SM_RESYNC || e < -SM_RESYNC) {
+            pred = m;                             /* too far out: start from the sound */
+            v->sm_last = m;
+        } else
+            pred += SM_GAIN * e;
+        v->sm_err_sum += fabs(e);
+        v->sm_err_n++;
+        v->sm_base = pred;
         v->sm_t = now;
-        v->sm_valid = 1;
+        v->sm_raw = c;
     }
-    e = v->sm_raw + (now - v->sm_t) / 1e6 * v->speed;
-    cap = v->sm_raw + 1.5 * (v->sm_step > 0.005 ? v->sm_step : 0.05);
-    if (e > cap)
-        e = cap;
-    if (e < v->sm_last)
-        e = v->sm_last;
-    v->sm_last = e;
-    return e;
+    v->sm_prev = now;
+    cap = v->sm_raw + 1.5 * (v->sm_step > 0.005 ? v->sm_step : 0.05) * (v->speed > 1 ? v->speed : 1);
+    if (pred > cap)
+        pred = cap;
+    if (pred < v->sm_last)
+        pred = v->sm_last;
+    v->sm_last = pred;
+    return pred;
 }
 
 static double clock_now(ReelCore *v)
@@ -1276,6 +1311,10 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
               : v->audio_clock && v->audio_end >= 0 ? v->audio_end - (st->sound_queued + v->latency) * v->speed
               : (av_gettime_relative() - v->t0) / 1e6 * v->speed;
     st->fps = v->fps;
+    st->pace_sum = v->pace_sum;
+    st->pace_n = v->pace_n;
+    st->sync_err_sum = v->sm_err_sum;
+    st->sync_err_n = v->sm_err_n;
     st->decoded = v->n_decoded;
     st->shown = v->n_shown;
     st->late = v->dropped;
@@ -1937,6 +1976,25 @@ static void fill(ReelCore *v)
         v->eof_audio = v->eof_demux;
 }
 
+/* How evenly pictures are handed out: for each that follows the one
+   before (none skipped between), the difference between the real time
+   since that one and the time between them in the file. */
+static void pace_note(ReelCore *v)
+{
+    int64_t now = av_gettime_relative();
+    unsigned seq = v->n_shown + v->dropped;
+    if (v->pace_t && seq == v->pace_seq + 1 && v->cur_pts > v->pace_pts) {
+        double want = (v->cur_pts - v->pace_pts) / v->speed, got = (now - v->pace_t) / 1e6;
+        if (want < 0.5) {
+            v->pace_sum += fabs(got - want);
+            v->pace_n++;
+        }
+    }
+    v->pace_t = now;
+    v->pace_pts = v->cur_pts;
+    v->pace_seq = seq;
+}
+
 static void take_frame(ReelCore *v)
 {
     av_frame_free(&v->cur);
@@ -2004,6 +2062,7 @@ int reelcore_update(ReelCore *v)
             v->dropped++;
         }
         take_frame(v);
+        pace_note(v);
         v->n_shown++;
         return REELCORE_NEW_FRAME;
     }
@@ -2076,6 +2135,7 @@ void reelcore_pause(ReelCore *v, int paused)
         v->paused = 0;
         v->stall_since = 0;                 /* the device needs a moment to start again */
         v->sm_valid = 0;                    /* and the smoothed clock starts again */
+        v->pace_t = 0;
         if (!v->audio_clock || v->audio_end < 0)
             timer_set(v, v->pause_pos);
         if (v->dev)
@@ -2129,6 +2189,7 @@ int reelcore_seek(ReelCore *v, double seconds)
     v->audio_clock = v->dev != 0 && !v->stalled;
     v->stall_since = 0;
     v->sm_valid = 0;
+    v->pace_t = 0;
     v->seek_target = v->aseek_target = seconds > 0 ? ts / (double)AV_TIME_BASE : -1;
     v->need_first = 1;
     return 0;

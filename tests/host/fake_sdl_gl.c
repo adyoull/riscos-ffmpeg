@@ -18,13 +18,15 @@ int fake_audio_stall;                   /* the device opens but never plays */
 double fake_queued_total;               /* bytes ever queued */
 static double played, last_t;           /* bytes played, at fake time last_t */
 static int bps = 48000 * 4;
+double fake_audio_rate = 1.0;           /* the sound hardware's rate against the timer's */
+double fake_audio_seconds(void) { return bps ? played / bps : 0; }
 
 int64_t __wrap_av_gettime_relative(void) { return (int64_t)(fake_time * 1e6); }
 
 static void advance(void)
 {
     if (!fake_audio_paused && !fake_audio_stall && fake_time > last_t) {
-        played += (fake_time - last_t) * bps;
+        played += (fake_time - last_t) * bps * fake_audio_rate;
         if (played > fake_queued_total) played = fake_queued_total;
     }
     last_t = fake_time;

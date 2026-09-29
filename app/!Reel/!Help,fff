@@ -206,6 +206,17 @@ module. To turn it off: untick Hardware acceleration on the window menu,
 or *Set Reel$NoOverlay 1 (or *Set EGL$Overlay off, which turns overlays
 off for every program) before starting Reel.
 
+Keeping time
+------------
+The sound is what Reel keeps time by: the sound hardware plays at its own
+rate, and the pictures have to keep to it. But the sound system only says
+how far it has got every 46 ms or so (a block at a time), less often than
+the pictures come (every 33 ms at 30 fps, 17 ms at 60). So Reel runs a
+clock of its own from the computer's timer, which is smooth, and steers
+it gently towards the sound each time the sound reports, so the two never
+drift apart. Media info shows both: how evenly the pictures come, and how
+closely the clock follows the sound.
+
 Carrying on where you stopped
 -----------------------------
 Reel remembers where you stopped each file (the last 100). Open one
@@ -235,10 +246,14 @@ Media info
 A window (it stays open while you watch; I or the window menu) with,
 at the top, "stats for nerds", updated every second while playing:
 
-  Position, Clock   where the picture is, and the clock it follows (the
-                    sound, or a timer), with how far apart they are
-  Pictures shown    a second, against the video's own frame rate, and
-                    how many were skipped as late
+  Position, Clock   where the picture is, and the sound's clock, with
+                    how far apart they are (the sound only reports its
+                    progress every 46 ms or so, so this wobbles); then
+                    how closely Reel's own clock follows the sound: the
+                    lip sync
+  Pictures shown    a second, against the video's own frame rate; how
+                    many were skipped as late; and how evenly they came
+                    (the average error in the time between two pictures)
   Decoded           pictures decoded a second, the time each took, and
                     how many times faster than real time that is
   Decoding load     the share of the time spent decoding

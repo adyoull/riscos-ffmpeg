@@ -3,6 +3,34 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next Reel): a steady clock, steered by the sound
+
+- **reelcore's `clock_smooth()` is now a timer steered by the sound**
+  (0.1.19 snapped to each of the sound's readings). The clock is the
+  system timer.
+  - Each time the sound's reading moves, where the sound really is is
+    taken as the reading plus half the time since the last look (the step
+    came somewhere in between).
+  - The clock moves a quarter of the way there, and jumps if they're more
+    than 100 ms apart.
+  - As before, it never runs more than 1.5 steps past the last reading and
+    never goes backwards.
+
+  Pictures come evenly, and a sound device running at a slightly different
+  rate from the timer is followed.
+- **`ReelCoreStats`:** `pace_sum`/`pace_n` (how evenly pictures are handed
+  out) and `sync_err_sum`/`sync_err_n` (the clock against the sound at
+  each step). Media info shows both: "evenly to N ms" on Pictures shown,
+  and "steered to within N ms of it" on Clock. !Help has a "Keeping time"
+  section.
+- **clock_test:** sound reported in 2048-frame blocks, a 30 fps clip at
+  44.1 kHz.
+  - Pictures evenly spaced to 0.4 ms, the sound followed to within 0.5 ms,
+    including with the sound hardware 1% fast.
+  - Sleeping as Reel does: 3.7 ms, 3.6 ms.
+  - Mutations caught: the raw clock (29 late, 16 ms uneven), and the timer
+    without steering (25 ms drift with the sound 1% fast).
+
 ## Reel 0.1.19 (2026-09-29): 30 fps video shows all 30 pictures
 
 - **The fix:** 30 fps video with 44.1 kHz sound showed only 21–26 pictures

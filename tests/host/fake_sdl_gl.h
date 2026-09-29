@@ -1,6 +1,8 @@
 #ifndef FAKE_SDL_GL_H
 #define FAKE_SDL_GL_H
 extern double fake_time, fake_queued_total;
+extern double fake_audio_rate;          /* 1.0: the sound plays exactly at the timer's rate */
+double fake_audio_seconds(void);        /* seconds of sound played so far */
 extern int fake_audio_fail, fake_audio_open, fake_audio_paused, fake_audio_stall;
 extern unsigned char *fake_tex;
 extern int fake_tex_w, fake_tex_h, fake_tex_images, fake_tex_subimages;

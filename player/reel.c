@@ -2264,11 +2264,24 @@ static void info_stats(void)
     format_time(dur, sizeof(dur), reelcore_duration(S.v));
     snprintf(r[0].value, sizeof(r[0].value), "%s of %s (%.2f s)%s", pos, dur, st.position,
              st.clock_source == 2 ? ", paused" : S.ended ? ", ended" : "");
-    snprintf(r[1].value, sizeof(r[1].value), "%.2f s, from the %s; picture %+d ms", st.clock,
-             st.clock_source == 1 ? "sound" : st.clock_source == 2 ? "pause position" : "timer",
-             (int)((st.position - st.clock) * 1000));
-    snprintf(r[2].value, sizeof(r[2].value), "%.1f a second (the video: %.3g); %u late skipped (%u in all)",
-             shown / dt, st.fps, late, st.late);
+    {
+        unsigned sn = st.sync_err_n - info_prev.sync_err_n;
+        char sync[48] = "";
+        if (st.clock_source == 1 && sn)
+            snprintf(sync, sizeof(sync), "; steered to within %.1f ms of it",
+                     (st.sync_err_sum - info_prev.sync_err_sum) * 1000 / sn);
+        snprintf(r[1].value, sizeof(r[1].value), "%.2f s, from the %s; picture %+d ms%s", st.clock,
+                 st.clock_source == 1 ? "sound" : st.clock_source == 2 ? "pause position" : "timer",
+                 (int)((st.position - st.clock) * 1000), sync);
+    }
+    {
+        unsigned pn = st.pace_n - info_prev.pace_n;
+        char pace[48] = "";
+        if (pn)
+            snprintf(pace, sizeof(pace), "; evenly to %.1f ms", (st.pace_sum - info_prev.pace_sum) * 1000 / pn);
+        snprintf(r[2].value, sizeof(r[2].value), "%.1f a second (the video: %.3g); %u late skipped (%u in all)%s",
+                 shown / dt, st.fps, late, st.late, pace);
+    }
     if (dec && dtime > 0)
         snprintf(r[3].value, sizeof(r[3].value), "%.1f a second, %.1f ms each: %.2fx real time",
                  dec / dt, dtime * 1000 / dec, st.fps > 0 ? (dec / st.fps) / dtime : 0);

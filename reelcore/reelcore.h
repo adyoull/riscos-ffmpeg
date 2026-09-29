@@ -164,6 +164,16 @@ typedef struct ReelCoreStats {
     unsigned deinterlaced;            /* pictures that came out of the deinterlacer */
     double deinterlace_time;          /* seconds spent deinterlacing */
     int halvings;                     /* the last conversion halved the picture this many times first */
+    /* how evenly pictures are handed out: running totals of |real time
+       between two pictures - their time apart in the file| (seconds), for
+       each picture that followed the one before; the mean is pace_sum /
+       pace_n (take the difference of two readings for a recent mean) */
+    double pace_sum;
+    unsigned pace_n;
+    /* how far the clock pictures follow was from the sound each time the
+       sound's reading moved (running totals, seconds): the lip sync */
+    double sync_err_sum;
+    unsigned sync_err_n;
 } ReelCoreStats;
 void reelcore_stats(const ReelCore *v, ReelCoreStats *st);
 
