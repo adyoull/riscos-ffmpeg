@@ -3,6 +3,29 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel 0.1.19 (2026-09-29): 30 fps video shows all 30 pictures
+
+- **The fix:** 30 fps video with 44.1 kHz sound showed only 21–26 pictures
+  a second on a Pi 4, with 5–9 skipped as "late", although decoding kept
+  up easily (2.2x real time) and Reel slept 40% of the time. The same
+  happened in Reel and ReelEGL, with and without the overlay.
+- **The cause:** the sound is the clock, and StreamManager reports what
+  has been played a whole block (2048 sample frames) at a time. At
+  44.1 kHz that's a 46 ms step, but a 30 fps picture is due every 33 ms.
+  At each step the next picture was already due too, so the one before it
+  was thrown away as late. (25 fps at 48 kHz lost fewer: 23.8 of 25 shown
+  in earlier logs.)
+- **reelcore:** `clock_smooth()` runs the sound clock on by itself
+  between steps from where the last step put it. It never goes more than
+  1.5 steps past the last reading (if the sound stops, so does the clock)
+  and never backwards. It starts again after a seek, a resume or a speed
+  change. Detecting a stalled device still uses the raw reading.
+- **Tests:** `tests/host/clock_test.c`.
+  - The fake sound device reports playback in 2048-frame blocks
+    (`FAKE_AUDIO_BLOCK`), with a 30 fps, 44.1 kHz clip.
+  - Now: 149 pictures in 5 s, none late.
+  - Without the smoothing: 123 pictures and 25 late, the Pi's numbers.
+
 ## 5.1.10-riscos12 (2026-09-29): RISC OS names in the current directory
 
 - **`ffmpeg -i holiday/mp4 small/mp4` now means the files holiday/mp4 and

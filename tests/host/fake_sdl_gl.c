@@ -46,7 +46,18 @@ SDL_AudioDeviceID SDL_OpenAudioDevice(const char *d, int c, const SDL_AudioSpec 
 void SDL_CloseAudioDevice(SDL_AudioDeviceID d) { fake_audio_open = 0; }
 void SDL_PauseAudioDevice(SDL_AudioDeviceID d, int p) { advance(); fake_audio_paused = p; }
 int SDL_QueueAudio(SDL_AudioDeviceID d, const void *data, Uint32 len) { advance(); fake_queued_total += len; return 0; }
-Uint32 SDL_GetQueuedAudioSize(SDL_AudioDeviceID d) { advance(); return (Uint32)(fake_queued_total - played); }
+/* FAKE_AUDIO_BLOCK=n: what has been played is only reported in whole
+   blocks of n sample frames, as StreamManager does (2048) */
+Uint32 SDL_GetQueuedAudioSize(SDL_AudioDeviceID d)
+{
+    static long block = -1;
+    double p;
+    advance();
+    if (block < 0)
+        block = getenv("FAKE_AUDIO_BLOCK") ? atol(getenv("FAKE_AUDIO_BLOCK")) * 4 : 0;
+    p = block > 0 ? (double)((long long)(played / block) * block) : played;
+    return (Uint32)(fake_queued_total - p);
+}
 void SDL_ClearQueuedAudio(SDL_AudioDeviceID d) { advance(); played = fake_queued_total; }
 void SDL_MixAudioFormat(Uint8 *dst, const Uint8 *src, SDL_AudioFormat f, Uint32 len, int vol)
 {
