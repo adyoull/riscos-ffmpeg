@@ -1,0 +1,27 @@
+| RunData for !Reel: runs a Data (&FFD) file by its name's extension.
+| Reel's File types > Data by extension sets Alias$@RunType_FFD to this. A file
+| named like film/mp4 (as from other computers) opens with Reel; any other
+| Data file goes to what ran Data files before (Alias$ReelOldRunData), if
+| anything.
+SetEval Reel$DX3 "%0" RIGHT 3
+SetEval Reel$DX4 "%0" RIGHT 4
+SetEval Reel$DX5 "%0" RIGHT 5
+Set Reel$DV 0
+If "<Reel$DX3>"="/ts" OR "<Reel$DX3>"="/TS" Then Set Reel$DV 1
+If "<Reel$DX4>"="/mp4" OR "<Reel$DX4>"="/MP4" Then Set Reel$DV 1
+If "<Reel$DX4>"="/m4v" OR "<Reel$DX4>"="/M4V" Then Set Reel$DV 1
+If "<Reel$DX4>"="/mkv" OR "<Reel$DX4>"="/MKV" Then Set Reel$DV 1
+If "<Reel$DX4>"="/mov" OR "<Reel$DX4>"="/MOV" Then Set Reel$DV 1
+If "<Reel$DX4>"="/avi" OR "<Reel$DX4>"="/AVI" Then Set Reel$DV 1
+If "<Reel$DX4>"="/mpg" OR "<Reel$DX4>"="/MPG" Then Set Reel$DV 1
+If "<Reel$DX4>"="/wmv" OR "<Reel$DX4>"="/WMV" Then Set Reel$DV 1
+If "<Reel$DX4>"="/flv" OR "<Reel$DX4>"="/FLV" Then Set Reel$DV 1
+If "<Reel$DX4>"="/ogv" OR "<Reel$DX4>"="/OGV" Then Set Reel$DV 1
+If "<Reel$DX4>"="/3gp" OR "<Reel$DX4>"="/3GP" Then Set Reel$DV 1
+If "<Reel$DX4>"="/vob" OR "<Reel$DX4>"="/VOB" Then Set Reel$DV 1
+If "<Reel$DX5>"="/webm" OR "<Reel$DX5>"="/WEBM" Then Set Reel$DV 1
+If "<Reel$DX5>"="/mpeg" OR "<Reel$DX5>"="/MPEG" Then Set Reel$DV 1
+Unset Reel$DX*
+If "<Reel$DV>"="1" Then Run <Reel$Dir>.!Run %0
+If "<Reel$DV>"<>"1" AND "<Alias$ReelOldRunData>"<>"" Then ReelOldRunData %*0
+If "<Reel$DV>"<>"1" AND "<Alias$ReelOldRunData>"="" Then Error No application is set to run this Data file

@@ -1,0 +1,27 @@
+| RunData for !ReelEGL: runs a Data (&FFD) file by its name's extension.
+| ReelEGL's File types > Data by extension sets Alias$@RunType_FFD to this. A file
+| named like film/mp4 (as from other computers) opens with ReelEGL; any other
+| Data file goes to what ran Data files before (Alias$ReelEGLOldRunData), if
+| anything.
+SetEval ReelEGL$DX3 "%0" RIGHT 3
+SetEval ReelEGL$DX4 "%0" RIGHT 4
+SetEval ReelEGL$DX5 "%0" RIGHT 5
+Set ReelEGL$DV 0
+If "<ReelEGL$DX3>"="/ts" OR "<ReelEGL$DX3>"="/TS" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/mp4" OR "<ReelEGL$DX4>"="/MP4" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/m4v" OR "<ReelEGL$DX4>"="/M4V" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/mkv" OR "<ReelEGL$DX4>"="/MKV" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/mov" OR "<ReelEGL$DX4>"="/MOV" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/avi" OR "<ReelEGL$DX4>"="/AVI" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/mpg" OR "<ReelEGL$DX4>"="/MPG" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/wmv" OR "<ReelEGL$DX4>"="/WMV" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/flv" OR "<ReelEGL$DX4>"="/FLV" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/ogv" OR "<ReelEGL$DX4>"="/OGV" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/3gp" OR "<ReelEGL$DX4>"="/3GP" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX4>"="/vob" OR "<ReelEGL$DX4>"="/VOB" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX5>"="/webm" OR "<ReelEGL$DX5>"="/WEBM" Then Set ReelEGL$DV 1
+If "<ReelEGL$DX5>"="/mpeg" OR "<ReelEGL$DX5>"="/MPEG" Then Set ReelEGL$DV 1
+Unset ReelEGL$DX*
+If "<ReelEGL$DV>"="1" Then Run <ReelEGL$Dir>.!Run %0
+If "<ReelEGL$DV>"<>"1" AND "<Alias$ReelEGLOldRunData>"<>"" Then ReelEGLOldRunData %*0
+If "<ReelEGL$DV>"<>"1" AND "<Alias$ReelEGLOldRunData>"="" Then Error No application is set to run this Data file

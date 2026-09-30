@@ -26,6 +26,15 @@ Choices:Reel.Types, which its !Boot runs, so they last after a restart
 wins). While Reel is loaded it plays any video double-clicked, ticked
 or not.
 
+MP4, MKV and WebM files often arrive from other computers as Data files
+named like film/mp4, since those formats have no settled RISC OS
+filetype. While Reel is loaded, double-clicking a Data file whose name
+ends in a video extension (/mp4, /mkv, /webm, /avi, /mov, /m4v, /mpg,
+/mpeg, /ts, /vob, /wmv, /flv, /ogv, /3gp) plays it. Tick "Data, by name"
+in File types for that to work when Reel isn't loaded too: Data files
+then go through Reel's RunData, which starts Reel for those names and
+passes any other Data file on to whatever ran Data files before.
+
 Drop several files at once (one drag from the Filer) and they play one
 after another: a playlist. Hold Shift as you drop to add files to the
 playlist instead of starting a new one.

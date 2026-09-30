@@ -23,6 +23,7 @@
 #include <string.h>
 #include "../../common/version.h"
 #include <unistd.h>
+#include <sys/stat.h>
 #include <math.h>
 #include "kernel.h"
 #include "reelcore.h"
@@ -719,12 +720,20 @@ static int next_event(int *b)
             CHECK(reports == 1, "directory: %d reports", reports);
             break;
         case P_OPEN_OTHER:
-            if (phase_step++ == 0) { message(b, 5, 0, 0, 0xFFF, "/tmp/text"); return 17; }   /* DataOpen, text */
-            CHECK(acks == 4, "text file claimed (%d acks)", acks);
+            if (phase_step == 0) { phase_step++; message(b, 5, 0, 0, 0xFFF, "/tmp/text"); return 17; }   /* DataOpen, text */
+            if (phase_step == 1) { phase_step++; message(b, 5, 0, 0, 0xFFD, "/tmp/notes/txt"); return 17; }  /* Data, not a video's name */
+            CHECK(acks == 4, "text file or Data file claimed (%d acks)", acks);
             break;
         case P_OPEN_VIDEO:
-            if (phase_step++ == 0) { message(b, 5, 0, 0, 0xBF8, clip1); return 17; }    /* DataOpen, MPEG */
-            CHECK(acks == 5, "video not claimed (%d acks)", acks);
+            if (phase_step == 0) { phase_step++; message(b, 5, 0, 0, 0xBF8, clip1); return 17; }    /* DataOpen, MPEG */
+            if (phase_step == 1) {
+                CHECK(acks == 5, "video not claimed (%d acks)", acks);
+                mkdir("/tmp/reel_test_film", 0777);                  /* a Data file named film/mp4 */
+                unlink("/tmp/reel_test_film/mp4");
+                CHECK(symlink(clip1, "/tmp/reel_test_film/mp4") == 0, "can't make /tmp/reel_test_film/mp4");
+                phase_step++; message(b, 5, 0, 0, 0xFFD, "/tmp/reel_test_film/mp4"); return 17;
+            }
+            CHECK(acks == 6, "Data named film/mp4 not claimed (%d acks)", acks);
             break;
         /* ---- subtitles: a file dropped on the window, V and J ---- */
         case P_SUBDROP: {
@@ -1095,8 +1104,30 @@ static int next_event(int *b)
                 phase_step++; click(b, 1000, 40, 2, -2, 1); return 6;
             }
             if (phase_step == 3) { phase_step++; b[0] = 2; b[1] = 0; b[2] = -1; return 9; }  /* AVI again: off */
-            CHECK(fvar_find(var) < 0 && !strstr(types, "RunType_FB2"), "AVI unticked: %s still set, Types '%s'", var, types);
-            printf("  File types: AVI ticked (%s = %s) and unticked\n", var, want);
+            if (phase_step == 4) {
+                CHECK(fvar_find(var) < 0 && !strstr(types, "RunType_FB2"), "AVI unticked: %s still set, Types '%s'", var, types);
+                /* Data, by name: the last item (AVI, MPEG, then Data); another program ran Data files before */
+                snprintf(fvar_name[fvar_n], sizeof(fvar_name[0]), "Alias$@RunType_FFD");
+                snprintf(fvar_val[fvar_n++], sizeof(fvar_val[0]), "Run <Other$Dir> %%*0");
+                phase_step++; click(b, 1000, 40, 2, -2, 1); return 6;
+            }
+            if (phase_step == 5) { phase_step++; b[0] = 2; b[1] = 2; b[2] = -1; return 9; }
+            if (phase_step == 6) {
+                int i = fvar_find("Alias$@RunType_FFD"), o = fvar_find("Alias$" APP_NAME "OldRunData");
+                snprintf(want, sizeof(want), "Obey %s.RunData %%*0", dir ? dir : "?");
+                CHECK(i >= 0 && !strcmp(fvar_val[i], want) && o >= 0 && !strcmp(fvar_val[o], "Run <Other$Dir> %*0"),
+                      "Data ticked: RunType_FFD '%s' (want '%s'), old '%s'", i >= 0 ? fvar_val[i] : "(unset)", want, o >= 0 ? fvar_val[o] : "(unset)");
+                CHECK(strstr(types, "Set Alias$@RunType_FFD Obey <" APP_NAME "$Dir>.RunData %%*0") &&
+                      strstr(types, "Then Set Alias$" APP_NAME "OldRunData <Alias$@RunType_FFD>"), "Types file for Data: '%s'", types);
+                phase_step++; click(b, 1000, 40, 2, -2, 1); return 6;
+            }
+            if (phase_step == 7) { phase_step++; b[0] = 2; b[1] = 2; b[2] = -1; return 9; }
+            {
+                int i = fvar_find("Alias$@RunType_FFD");
+                CHECK(i >= 0 && !strcmp(fvar_val[i], "Run <Other$Dir> %*0") && fvar_find("Alias$" APP_NAME "OldRunData") < 0,
+                      "Data unticked: RunType_FFD '%s' (want the other program's back)", i >= 0 ? fvar_val[i] : "(unset)");
+            }
+            printf("  File types: AVI ticked (%s = %s) and unticked; Data by name ticked and given back\n", var, want);
             break;
         }
         case P_QUIT:

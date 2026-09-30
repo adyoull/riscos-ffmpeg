@@ -22,6 +22,15 @@ Three requests from Chris on the ROOL forum:
   RunType now and writes `Choices:Reel.Types`, an Obey file !Boot runs, so
   it lasts. While Reel is loaded it still claims any video double-clicked
   (Message_DataOpen), ticked or not.
+- **Data files named like a video** (film/mp4: MP4, MKV and WebM have no
+  settled RISC OS filetype, and files from other computers arrive as
+  Data): while Reel is loaded it claims a double-clicked Data file whose
+  name ends in a video extension. File types > "Data, by name" sets
+  `Alias$@RunType_FFD` to `Obey <Reel$Dir>.RunData %*0`, a new Obey file
+  that picks the extension with `SetEval … RIGHT n` and starts Reel, or
+  passes any other Data file to the RunType there before (kept in
+  `Alias$ReelOldRunData`; given back when unticked). Pi report: an AVI
+  ticked worked, MP4 didn't.
 - reel_test: full screen, the pointer hidden after 2 s left alone, back
   when the mouse moves, hidden again, back on leaving full screen; # with
   a two-track file (second, then first); File types > AVI ticked (the

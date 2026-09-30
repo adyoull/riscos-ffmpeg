@@ -3255,9 +3255,10 @@ static void menu_end(menu_t *m, int n)
    its Alias$@RunType_XXX is Reel, set now and at every start-up by
    Choices:Reel.Types, an Obey file !Boot runs. */
 static const char *const ftype_exts[] = {
-    "avi", "mp4", "m4v", "mkv", "webm", "mov", "mpg", "ts", "vob", "wmv", "flv", "ogv", "3gp"
+    "avi", "mp4", "m4v", "mkv", "webm", "mov", "mpg", "mpeg", "ts", "vob", "wmv", "flv", "ogv", "3gp"
 };
-#define FTYPES_MAX 13
+static const int ftype_ext_n = sizeof(ftype_exts) / sizeof(ftype_exts[0]);
+#define FTYPES_MAX 14
 static struct { int type; char name[12], ext[8]; } ftype[FTYPES_MAX];
 static int ftype_n = -1;                /* -1: not looked for yet */
 
@@ -3332,11 +3333,63 @@ static void ftypes_save(void)
     for (int i = 0; i < ftype_n; i++)
         if (ftype_ours(ftype[i].type))
             fprintf(f, "Set Alias$@RunType_%03X /<%s$Dir> %%%%*0\n", ftype[i].type, APP);
+    if (ftype_ours(0xFFD))              /* Data, by the name's extension (RunData) */
+        fprintf(f, "If \"<Alias$@RunType_FFD>\"<>\"\" Then Set Alias$%sOldRunData <Alias$@RunType_FFD>\n"
+                   "Set Alias$@RunType_FFD Obey <%s$Dir>.RunData %%%%*0\n", APP, APP);
     fclose(f);
+}
+
+static int var_read(const char *name, char *val, int n)
+{
+    _kernel_swi_regs r;
+    r.r[0] = (intptr_t)name; r.r[1] = (intptr_t)val; r.r[2] = n - 1; r.r[3] = 0; r.r[4] = 0;
+    if (swi(0x23, &r) || r.r[2] < 0 || r.r[2] >= n)
+        return -1;
+    val[r.r[2]] = 0;
+    return 0;
+}
+
+static void var_set(const char *name, const char *val)   /* NULL: delete it */
+{
+    _kernel_swi_regs r;
+    r.r[0] = (intptr_t)name; r.r[1] = (intptr_t)(val ? val : ""); r.r[2] = val ? (int)strlen(val) : -1;
+    r.r[3] = 0; r.r[4] = 4;             /* a literal string */
+    swi(0x24, &r);
+}
+
+/* Data files by their names' extensions: Alias$@RunType_FFD is RunData (an
+   Obey file in the app), which runs Reel for film/mp4 and the like and
+   passes anything else to what ran Data files before (kept in
+   Alias$<APP>OldRunData). */
+static void data_toggle(void)
+{
+    char val[300], old[300];
+    const char *dir = getenv(APP "$Dir");
+    if (!dir || !*dir)
+        return;
+    if (ftype_ours(0xFFD)) {
+        if (var_read("Alias$" APP "OldRunData", old, sizeof(old)) == 0 && old[0]) {
+            var_set("Alias$@RunType_FFD", old);
+            var_set("Alias$" APP "OldRunData", NULL);
+        } else
+            var_set("Alias$@RunType_FFD", NULL);
+        lg("Data files by extension: no longer opened with %s", APP);
+    } else {
+        if (var_read("Alias$@RunType_FFD", old, sizeof(old)) == 0 && old[0])
+            var_set("Alias$" APP "OldRunData", old);        /* what ran them before */
+        snprintf(val, sizeof(val), "Obey %s.RunData %%*0", dir);
+        var_set("Alias$@RunType_FFD", val);
+        lg("Data files by extension: opened with %s (film/mp4 and the like)", APP);
+    }
+    ftypes_save();
 }
 
 static void ftype_toggle(int i)
 {
+    if (i == ftype_n) {
+        data_toggle();
+        return;
+    }
     char name[40], val[300];
     const char *dir = getenv(APP "$Dir");
     _kernel_swi_regs r;
@@ -3380,8 +3433,9 @@ static void menu_open(int bar, int x, int y)
                 snprintf(t, sizeof(t), "%s (%s)", ftype[i].name, ftype[i].ext);
                 menu_add(&m_types, 1, &k, t, ftype_ours(ftype[i].type), NULL, 0);
             }
+            menu_add(&m_types, 1, &k, "Data, by name (film/mp4...)", ftype_ours(0xFFD), NULL, 0);
             menu_end(&m_types, k);
-            menu_add(&menu, 0, &n, "File types", 0, k ? &m_types : NULL, !k);
+            menu_add(&menu, 0, &n, "File types", 0, &m_types, 0);
         }
         menu_add(&menu, 0, &n, "Loop", S.loop, NULL, 0);
         menu_add(&menu, 0, &n, "Log", 0, NULL, 0);
@@ -4070,6 +4124,20 @@ static int is_video_type(int type)
     return !strncmp(mime, "video/", 6);
 }
 
+/* A Data file named like a video (film/mp4, as files from other computers
+   often are: MP4 has no settled RISC OS filetype) */
+static int name_is_video(const char *path)
+{
+    const char *leafname = strrchr(path, '.'), *e;
+    leafname = leafname ? leafname + 1 : path;
+    if (!(e = strrchr(leafname, '/')) || !e[1])
+        return 0;
+    for (int i = 0; i < ftype_ext_n; i++)
+        if (!strcasecmp(e + 1, ftype_exts[i]))
+            return 1;
+    return 0;
+}
+
 static void ack(int *b)
 {
     _kernel_swi_regs r;
@@ -4200,7 +4268,7 @@ static void message(int *b)
         }
         break;
     case MSG_DATAOPEN:
-        if (is_video_type(b[10])) {
+        if (is_video_type(b[10]) || (b[10] == 0xFFD && name_is_video((const char *)&b[11]))) {
             snprintf(file, sizeof(file), "%s", (const char *)&b[11]);
             ack(b);                     /* claims it */
             list_arrived(file);
