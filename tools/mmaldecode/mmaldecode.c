@@ -56,7 +56,10 @@
 #define VCHIQ_ServiceUse          0x5920D
 #define VCHIQ_ServiceRelease      0x5920E
 #define VCHIQ_BulkQueueReceive    0x5920F
+/* VCHIQ_BulkQueueReceive takes only 0/4 (no callback), 1 (wait) or 6 (a
+   callback when done): 2 on its own is refused (from the module's code) */
 #define VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE 2
+#define VCHI_FLAGS_CALLBACK_WHEN_DONE        6
 #define VCHI_FLAGS_BLOCK_UNTIL_QUEUED        4
 
 #define FOURCC_BE(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
@@ -138,6 +141,7 @@ typedef char chk_buf[offsetof(buffer_msg_t, pts) == 64 && sizeof(buffer_msg_t) =
 typedef char chk_set[sizeof(port_set_t) == 280 ? 1 : -1];
 
 static FILE *out2;
+static int verbose;
 
 static void say(const char *fmt, ...)
 {
@@ -386,15 +390,15 @@ static int buffer_to_vc(port_info_t *pi, int idx, uint8_t *data, uint32_t alloc,
     b.length = len;
     b.flags = flags;
     b.pts = b.dts = TIME_UNKNOWN;
-    if (len && len <= SHORT_DATA) {
-        memcpy(b.short_data, data, len);
-        b.payload_in_message = len;
-    }
+    /* the data always follows by bulk transfer: MMAL only takes it in the
+       message for opaque or clock ports (userland mmal_vc_port_send) */
     if (send_msg(T_BUFFER_FROM_HOST, &b, sizeof b, NULL)) return -1;
-    if (len > SHORT_DATA) {                  /* the data follows by bulk transfer */
+    if (verbose) say("  tx: %s buffer %d, %u bytes%s\n", pi == &in_info ? "input" : "output", idx, (unsigned)len,
+                     flags & FLAG_EOS ? ", EOS" : "");
+    if (len) {
         _kernel_oserror *e;
         swi(VCHIQ_ServiceUse, handle, 0, 0, 0, NULL, NULL);
-        e = swi5(VCHIQ_BulkQueueTransmit, handle, (uint32_t)(uintptr_t)data, len, VCHI_FLAGS_BLOCK_UNTIL_QUEUED, 0,
+        e = swi5(VCHIQ_BulkQueueTransmit, handle, (uint32_t)(uintptr_t)data, (len + 3) & ~3u, VCHI_FLAGS_BLOCK_UNTIL_QUEUED, 0,
                  NULL, NULL);
         swi(VCHIQ_ServiceRelease, handle, 0, 0, 0, NULL, NULL);
         if (e) { say("VCHIQ_BulkQueueTransmit: %s\n", e->errmess); return -1; }
@@ -419,7 +423,7 @@ static int bulk_in(uint8_t *dst, uint32_t n, uint32_t tag)
     _kernel_oserror *e;
     swi(VCHIQ_ServiceUse, handle, 0, 0, 0, NULL, NULL);
     e = swi5(VCHIQ_BulkQueueReceive, handle, (uint32_t)(uintptr_t)dst, (n + 3) & ~3u,
-             VCHI_FLAGS_CALLBACK_WHEN_OP_COMPLETE, tag, NULL, NULL);
+             VCHI_FLAGS_CALLBACK_WHEN_DONE, tag, NULL, NULL);
     swi(VCHIQ_ServiceRelease, handle, 0, 0, 0, NULL, NULL);
     if (e) { say("VCHIQ_BulkQueueReceive: %s\n", e->errmess); return -1; }
     t0 = now_cs();
@@ -531,16 +535,17 @@ int probe_main(int argc, char **argv)
 
     /* (a fresh start each time: the host tests call this more than once) */
     free(want); want = NULL; nwant = want_w = want_h = 0; npend = 0; out_size = 0; stub = 0; comp = 0;
-    memset(in_busy, 0, sizeof in_busy); memset(out_busy, 0, sizeof out_busy); out2 = NULL;
+    memset(in_busy, 0, sizeof in_busy); memset(out_busy, 0, sizeof out_busy); out2 = NULL; verbose = 0;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out2 = fopen(argv[++i], "a");   /* (added to: Test runs three) */
         else if (!strcmp(argv[i], "-n")) keep_going = 1;
+        else if (!strcmp(argv[i], "-v")) verbose = 1;
         else if (!stream_name) stream_name = argv[i];
         else if (!crc_name) crc_name = argv[i];
         else stream_name = NULL;
     }
     if (!stream_name || !crc_name) {
-        printf("Usage: mmaldecode [-o file] [-n] stream.h264 expected.crc\n");
+        printf("Usage: mmaldecode [-o file] [-n] [-v] stream.h264 expected.crc\n");
         return 1;
     }
     say("mmaldecode: %s on the VideoCore, through VCHIQ and MMAL\n", stream_name);
@@ -620,6 +625,19 @@ int probe_main(int argc, char **argv)
             (unsigned)out_info.video.width, (unsigned)out_info.video.height, OUT_BUFS, (unsigned)out_size);
     }
 
+    if (verbose) {
+        char b1[5], b2[5];
+        say("  input port %u: %s %ux%u, %u buffers of %u (min %u x %u, recommended %u x %u)\n",
+            (unsigned)in_info.port_handle, fourcc(in_info.format.encoding, b1), (unsigned)in_info.video.width,
+            (unsigned)in_info.video.height, (unsigned)in_info.port.buffer_num, (unsigned)in_info.port.buffer_size,
+            (unsigned)in_info.port.buffer_num_min, (unsigned)in_info.port.buffer_size_min,
+            (unsigned)in_info.port.buffer_num_recommended, (unsigned)in_info.port.buffer_size_recommended);
+        say("  output port %u: %s %ux%u, %u buffers of %u (min %u x %u, recommended %u x %u)\n",
+            (unsigned)out_info.port_handle, fourcc(out_info.format.encoding, b2), (unsigned)out_info.video.width,
+            (unsigned)out_info.video.height, (unsigned)out_info.port.buffer_num, (unsigned)out_info.port.buffer_size,
+            (unsigned)out_info.port.buffer_num_min, (unsigned)out_info.port.buffer_size_min,
+            (unsigned)out_info.port.buffer_num_recommended, (unsigned)out_info.port.buffer_size_recommended);
+    }
     /* 2. enable */
     if (simple(T_COMPONENT_ENABLE, "Enable")) goto done;
     enabled = 1;
@@ -654,11 +672,27 @@ int probe_main(int argc, char **argv)
         } else if (!(got = poll_msg())) {
             if (now_cs() - last_progress > IDLE_CS) {
                 say("Nothing from the decoder for %d cs (%d pictures so far)\n", IDLE_CS, frames);
+                say("  %u of %u bytes sent; input buffers with the decoder: %d %d %d; output: %d %d %d; "
+                    "bulk receives done %u, aborted %u\n", (unsigned)sent, (unsigned)stream_len,
+                    in_busy[0], in_busy[1], in_busy[2], out_busy[0], out_busy[1], out_busy[2],
+                    (unsigned)bulk_done(0), (unsigned)bulk_done(1));
                 fatal = 1;
             }
             continue;
         }
         last_progress = now_cs();
+        if (verbose) {
+            const uint32_t *w = reply_payload();
+            if (((hdr_t *)msg)->type == T_BUFFER_TO_HOST)
+                say("  rx: buffer back, status %u, port %u, buffer %u, length %u, flags &%X, in message %u\n",
+                    (unsigned)((hdr_t *)msg)->status, (unsigned)w[2], (unsigned)w[3], (unsigned)w[8 + 5],
+                    (unsigned)w[8 + 7], (unsigned)((buffer_msg_t *)w)->payload_in_message);
+            else
+                say("  rx: type %u, status %u, %u bytes: %08X %08X %08X %08X %08X %08X %08X %08X\n",
+                    (unsigned)((hdr_t *)msg)->type, (unsigned)((hdr_t *)msg)->status, (unsigned)got,
+                    (unsigned)w[0], (unsigned)w[1], (unsigned)w[2], (unsigned)w[3], (unsigned)w[4], (unsigned)w[5],
+                    (unsigned)w[6], (unsigned)w[7]);
+        }
         if (((hdr_t *)msg)->type == T_BUFFER_TO_HOST) {
             buffer_msg_t b;
             memcpy(&b, reply_payload(), sizeof b);
@@ -707,6 +741,16 @@ int probe_main(int argc, char **argv)
             char c[5];
             memcpy(&ev, reply_payload(), sizeof ev);
             events++;
+            if (ev.length > sizeof ev.data) {    /* the rest comes by bulk transfer (userland does this) */
+                static uint8_t *evbuf;
+                static uint32_t evsize;
+                if (ev.length > evsize) {
+                    evbuf = aligned(ev.length + 4);
+                    evsize = evbuf ? ev.length : 0;
+                }
+                if (!evbuf || bulk_in(evbuf, ev.length, 99)) { fatal = 1; break; }
+                memcpy(ev.data, evbuf, sizeof ev.data);
+            }
             if (ev.cmd == EV_FORMAT_CHANGED && ev.port_type == PORT_OUTPUT) {
                 format_changed_t fc;
                 memcpy(&fc, ev.data, sizeof fc);
@@ -743,7 +787,8 @@ int probe_main(int argc, char **argv)
                 say("The decoder reports an error (port type %u)\n", (unsigned)ev.port_type);
                 fatal = 1;
             } else {
-                say("Event %s on port type %u\n", fourcc(ev.cmd, c), (unsigned)ev.port_type);
+                say("Event %s (&%08X, %u bytes) on port type %u, number %u\n", fourcc(ev.cmd, c), (unsigned)ev.cmd,
+                    (unsigned)ev.length, (unsigned)ev.port_type, (unsigned)ev.port_num);
             }
         } else {
             say("(a type %u message)\n", (unsigned)((hdr_t *)msg)->type);

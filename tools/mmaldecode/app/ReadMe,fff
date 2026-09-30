@@ -22,6 +22,10 @@ Running it:
   send Result back, and one from an older Pi (1, 2, 3 or Zero) too if
   you can.
 
+  If Test doesn't get pictures back, double-click Verbose too: it runs
+  the small clip only, writing every message to and from the decoder to
+  ResultV. Please send that as well.
+
 The decoded pictures come back to RISC OS by the VCHIQ module's bulk
 transfer, and a nine-instruction callback in the RMA counts them in; it's
 removed at the end. If the machine locks up (it shouldn't), switch it off

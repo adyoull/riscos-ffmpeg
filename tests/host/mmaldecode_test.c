@@ -35,7 +35,7 @@ static int fails;
 static _kernel_oserror err = { 1, "fake error" }, empty = { 2, "none" };
 
 /* scenario */
-static int big_efch, corrupt_at = -1, go_quiet, error_event;
+static int big_efch, corrupt_at = -1, go_quiet, error_event, long_event, awaiting_reformat;
 /* counters */
 static int uses, releases, opens, closes, connects, disconnects, freed, created, destroyed, comp_enabled,
            port_on[4], shorts, bulks_tx, bulks_rx, efch_sent, disables_out;
@@ -101,9 +101,18 @@ static void produce(void)
 {
     uint8_t vals[64];
     int n;
-    if (!eos_in || need_rx || go_quiet) return;
+    if (!eos_in || need_rx || go_quiet || awaiting_reformat) return;
     n = frame_values(vals);
     if (!nout) return;
+    if (long_event == 1) {                   /* an event whose data comes by bulk transfer */
+        uint32_t ev[5 + 64 + 1];
+        memset(ev, 0, sizeof ev);
+        ev[1] = 2; ev[3] = 0x48435045u; ev[4] = 300;
+        post(16, ev, sizeof ev, 0);
+        need_rx = 3; rx_len_expected = 300;
+        long_event = 2;
+        return;
+    }
     if (!efch_sent) {                        /* the first thing out: a format change */
         uint32_t ev[5 + 256 / 4 + 1];
         uint32_t *fc;
@@ -118,7 +127,7 @@ static void produce(void)
         fc[13 + 4] = W; fc[13 + 5] = H;                                   /* crop w/h */
         post(16, ev, sizeof ev, 0);
         efch_sent = 1;
-        if (big_efch) return;                /* wait for the reconfigure */
+        if (big_efch) { awaiting_reformat = 1; return; }   /* nothing more until the port is re-enabled */
     }
     if (error_event && frames_made == 2) {
         uint32_t ev[5 + 64 + 1];
@@ -179,7 +188,7 @@ static void firmware(const uint32_t *m, uint32_t len)
     case 10: {                               /* PORT_ACTION */
         uint32_t r = 0, port = p[1];
         CHECK(port == 1 || port == 2, "port action on %u", port);
-        if (p[2] == 1) port_on[port] = 1;
+        if (p[2] == 1) { port_on[port] = 1; if (port == 2) awaiting_reformat = 0; }
         else {
             port_on[port] = 0;
             if (port == 2) {
@@ -266,7 +275,7 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
         produce();
         return NULL;
     case 0x5920F: {                          /* BulkQueueReceive */
-        CHECK(need_rx && R[2] == ((rx_len_expected + 3) & ~3u) && R[3] == 2, "receive %u (expected %u), flags %u",
+        CHECK(need_rx && R[2] == ((rx_len_expected + 3) & ~3u) && R[3] == 6, "receive %u (expected %u), flags %u",
               R[2], rx_len_expected, R[3]);
         CHECK((R[1] & 63) == 0, "receive buffer not aligned");
         if (need_rx == 1) memcpy((void *)(uintptr_t)R[1], cur_frame, R[2]);
@@ -334,7 +343,7 @@ static char *run(int *ret, int keep_going)
     uses = releases = opens = closes = connects = disconnects = freed = created = destroyed = comp_enabled = 0;
     memset(port_on, 0, sizeof port_on);
     shorts = bulks_tx = bulks_rx = efch_sent = disables_out = 0;
-    got_len = pending_tx = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
+    got_len = pending_tx = 0; awaiting_reformat = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
     noutq = 0;
     remove("/tmp/mmaldecode_test.out");
     *ret = keep_going ? probe_main(6, argv) : probe_main(5, argv2);
@@ -364,7 +373,7 @@ int main(void)
     printf("%s", o);
     CHECK(ret == 0 && strstr(o, "9 pictures decoded") && strstr(o, "9 of 9 checked against FFmpeg: 0 wrong") &&
           strstr(o, "Result: OK"), "normal path (%d)", ret);
-    CHECK(bulks_tx == 5 && shorts == 1, "pieces: %d by bulk, %d short", bulks_tx, shorts);
+    CHECK(bulks_tx == 6 && shorts == 0, "pieces: %d by bulk, %d in the message", bulks_tx, shorts);
     CHECK(bulks_rx == 10 && disables_out == 1, "receives %d (9 pictures + EOS), disables %d (at the end)", bulks_rx, disables_out);
     CHECK(got_len == 9 * (FILLER + 5), "stream arrived whole: %u", got_len);
     cleaned("normal");
@@ -390,6 +399,13 @@ int main(void)
     CHECK(ret == 1 && strstr(o, "Nothing from the decoder") && strstr(o, "didn't finish"), "quiet (%d)", ret);
     cleaned("quiet");
     go_quiet = 0;
+
+    long_event = 1;
+    o = run(&ret, 0);
+    CHECK(ret == 0 && long_event == 2 && bulks_rx == 11 && strstr(o, "Event EPCH (&48435045, 300 bytes) on port type 2"),
+          "long event (%d, %d receives):\n%s", ret, bulks_rx, o);
+    cleaned("long event");
+    long_event = 0;
 
     error_event = 1;
     o = run(&ret, 0);
