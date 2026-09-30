@@ -3,6 +3,19 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased: UnixLib 5.0.3
+
+- **Relinked with UnixLib 5.0.3** (github.com/adyoull/riscos-unixlib
+  v5.0.3; `libunixlib.a` sha256 761305fa…). Its fixes: `read()` into a
+  buffer on the stack could kill a program ("Fatal signal received: EMT
+  trap") when the SWI wrote to a stack page not yet mapped; `ctime()`,
+  `asctime()` and their `_r` forms could return a bad pointer; no build
+  paths in the library's debug information. Same symbols and installed
+  headers as 5.0.2, so FFmpeg's libraries weren't rebuilt, only the
+  programs relinked. `tools/check-unixlib.sh` (run by package.sh) now
+  also checks the toolchain's libunixlib.a is 5.0.3's, since a program
+  linked with it can't be told from one linked with 5.0.2.
+
 ## 5.1.10-riscos14 (2026-09-30): MP4 files from the Convert window, properly this time
 
 - **Forum report (Raik):** reducing a 720p video to 480p with the Convert

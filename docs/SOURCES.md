@@ -27,8 +27,10 @@ Test-only (not in any release):
 Toolchain: GCCSDK GCC 10.2.0 Release 2 (riscos-warzone2100), built from
 GCCSDK 64c6f81 (`Warzone2100/dist/gccsdk-gcc10.2-x86_64-linux-env.tgz`, md5
 caea90c3cc14abb4387f2c8d2e009355), with its UnixLib replaced by
-**UnixLib 5.0.2** from github.com/adyoull/riscos-unixlib (release v5.0.2:
-`libunixlib.a` sha256 bcd01280…2254 into `arm-riscos-gnueabihf/lib/`, and
+**UnixLib 5.0.3** from github.com/adyoull/riscos-unixlib (release v5.0.3:
+`libunixlib.a` sha256 761305fa…8ae0 into `arm-riscos-gnueabihf/lib/`; its
+installed headers are 5.0.2's, unchanged. 5.0.2's library, sha256
+bcd01280…2254, was used for riscos13, riscos14 and Reel 0.1.20, 0.1.21), and
 its changed headers, `sched.h`, `unistd.h`, `sys/stat.h` and
 `sys/mman.h`, from the tag, into `arm-riscos-gnueabihf/include/`), from
 riscos13 and Reel 0.1.20: files over 2GB (up to 4GB-1) for programs built
