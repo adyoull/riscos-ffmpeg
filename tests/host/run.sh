@@ -130,6 +130,11 @@ arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/mmalp
 echo "== mmalprobe_test (VCHIQ service open, ril.video_decode created, ports, encodings, all closed)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/mmalprobe_test" | grep "FAIL\|mmalprobe_test:" || bad=1
 
+# tools/mmaldecode: H.264 decoded through a fake VCHIQ + MMAL decoder, the real callback stub, checksums as framecrc
+arm-linux-gnueabihf-gcc -O1 -marm -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/mmaldecode_test" "$TOP/tools/mmaldecode/mmaldecode.c" "$HERE/mmaldecode_test.c"
+echo "== mmaldecode_test (stream in by bulk and in-message, pictures back by bulk, EFCH reformat, checksums, clean-up)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/mmaldecode_test" | grep "FAIL\|mmaldecode_test:" || bad=1
+
 # hwhevc/module: the HEVCHW module (its C, and header.s's veneers and IRQ handler) on a fake RISC OS
 arm-linux-gnueabihf-gcc -c -o "$O/hevchw_header.o" "$TOP/hwhevc/module/header.s" &&
   arm-linux-gnueabihf-objcopy --weaken-symbol=hw_swi "$O/hevchw_header.o" &&
