@@ -125,6 +125,11 @@ arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/vchiq
 echo "== vchiqprobe_test (VCHIQ's SWIs and commands, the modules calling it, copies saved)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/vchiqprobe_test" | grep "FAIL\|vchiqprobe_test:" || bad=1
 
+# tools/mmalprobe: MMAL over VCHIQ to the video decoder, against a fake VCHIQ and firmware
+arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/mmalprobe_test" "$TOP/tools/mmalprobe/mmalprobe.c" "$HERE/mmalprobe_test.c"
+echo "== mmalprobe_test (VCHIQ service open, ril.video_decode created, ports, encodings, all closed)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/mmalprobe_test" | grep "FAIL\|mmalprobe_test:" || bad=1
+
 # hwhevc/module: the HEVCHW module (its C, and header.s's veneers and IRQ handler) on a fake RISC OS
 arm-linux-gnueabihf-gcc -c -o "$O/hevchw_header.o" "$TOP/hwhevc/module/header.s" &&
   arm-linux-gnueabihf-objcopy --weaken-symbol=hw_swi "$O/hevchw_header.o" &&

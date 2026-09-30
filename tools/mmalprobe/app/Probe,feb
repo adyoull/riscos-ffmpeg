@@ -1,0 +1,5 @@
+| Probe: opens the VideoCore's MMAL service through VCHIQ, creates its video
+| decoder, reads its ports and the encodings it takes, and destroys it again.
+| Nothing is decoded. The report is also saved as Result.
+WimpSlot -min 2048K -max 2048K
+Run <Obey$Dir>.mmalprobe -o <Obey$Dir>.Result
