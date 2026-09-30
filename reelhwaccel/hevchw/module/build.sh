@@ -1,5 +1,5 @@
 #!/bin/bash
-# hwhevc/module/build.sh [OUTDIR] - builds the HEVCHW relocatable module
+# reelhwaccel/hevchw/module/build.sh [OUTDIR] - builds the HEVCHW relocatable module
 # (HEVCHW,ffa). Freestanding C and the header in assembler, linked at 0
 # with the header first, turned into a flat binary. A module is loaded
 # anywhere in the RMA, so the build refuses anything that would need
@@ -30,18 +30,18 @@ ${CROSS}ld -nostdlib --emit-relocs -T "$OUT/module.ld" -o "$OUT/hevchw.elf" "$OU
 # position independence: only PC-relative relocations may appear
 BAD=$(${CROSS}readelf -rW "$OUT/hevchw.elf" | grep -E 'R_ARM_(ABS|GOT|BASE|TARGET1|GLOB|JUMP|RELATIVE)' || true)
 if [ -n "$BAD" ]; then
-  echo "hwhevc: relocations a module can't have:"; echo "$BAD"; exit 1
+  echo "hevchw: relocations a module can't have:"; echo "$BAD"; exit 1
 fi
 SECS=$(${CROSS}readelf -SW "$OUT/hevchw.elf" | grep -oE '\] \.[a-z.]+' | sed 's/] //' | grep -vE '^\.(text|symtab|strtab|shstrtab|rel\.text)$' || true)
 if [ -n "$SECS" ]; then
-  echo "hwhevc: unexpected sections: $SECS"; exit 1
+  echo "hevchw: unexpected sections: $SECS"; exit 1
 fi
 ${CROSS}objcopy -O binary "$OUT/hevchw.elf" "$OUT/HEVCHW,ffa"
 # (the .bss must be in the image: it's zeros at the end, objcopy writes them
 # because it's inside .text)
 SIZE=$(stat -c %s "$OUT/HEVCHW,ffa")
 END=$(${CROSS}readelf -sW "$OUT/hevchw.elf" | awk '$8=="module_base"{print "ok"}')
-[ "$END" = ok ] || { echo "hwhevc: no module_base"; exit 1; }
+[ "$END" = ok ] || { echo "hevchw: no module_base"; exit 1; }
 FIRST=$(od -An -tx4 -N4 "$OUT/HEVCHW,ffa" | tr -d ' ')
-[ "$FIRST" = 00000000 ] || { echo "hwhevc: the header isn't first"; exit 1; }
-echo "hwhevc: $OUT/HEVCHW,ffa ($SIZE bytes)"
+[ "$FIRST" = 00000000 ] || { echo "hevchw: the header isn't first"; exit 1; }
+echo "hevchw: $OUT/HEVCHW,ffa ($SIZE bytes)"

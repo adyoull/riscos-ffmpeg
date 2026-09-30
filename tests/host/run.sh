@@ -135,14 +135,14 @@ arm-linux-gnueabihf-gcc -O1 -marm -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O
 echo "== mmaldecode_test (stream in by bulk and in-message, pictures back by bulk, EFCH reformat, checksums, clean-up)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/mmaldecode_test" | grep "FAIL\|mmaldecode_test:" || bad=1
 
-# hwhevc/module: the HEVCHW module (its C, and header.s's veneers and IRQ handler) on a fake RISC OS
-arm-linux-gnueabihf-gcc -c -o "$O/hevchw_header.o" "$TOP/hwhevc/module/header.s" &&
+# reelhwaccel/hevchw/module: the HEVCHW module (its C, and header.s's veneers and IRQ handler) on a fake RISC OS
+arm-linux-gnueabihf-gcc -c -o "$O/hevchw_header.o" "$TOP/reelhwaccel/hevchw/module/header.s" &&
   arm-linux-gnueabihf-objcopy --weaken-symbol=hw_swi "$O/hevchw_header.o" &&
-  arm-linux-gnueabihf-gcc -O1 -marm -DHW_TEST -Wall -no-pie -o "$O/hevchw_test" "$TOP/hwhevc/module/hevchw.c" \
+  arm-linux-gnueabihf-gcc -O1 -marm -DHW_TEST -Wall -no-pie -o "$O/hevchw_test" "$TOP/reelhwaccel/hevchw/module/hevchw.c" \
     "$HERE/hevchw_test.c" "$O/hevchw_header.o"
 echo "== hevchw_test (the HEVCHW module: maps, register test, the interrupt found then claimed, memory)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/hevchw_test" | grep -v "^  &\|^$" || bad=1
-"$TOP/hwhevc/module/build.sh" "$O/hevchw" | tail -1 || bad=1
+"$TOP/reelhwaccel/hevchw/module/build.sh" "$O/hevchw" | tail -1 || bad=1
 
 echo "== riscos_name_test (holiday/mp4 as a RISC OS name, Unix names untouched)"
 gcc -O1 -g -fsanitize=address,undefined -I"$F/libavformat" "$HERE/riscos_name_test.c" -o "$O/riscos_name_test" &&

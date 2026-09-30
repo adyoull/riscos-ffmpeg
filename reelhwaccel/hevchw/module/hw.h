@@ -3,7 +3,7 @@
  * Shared between the module's C (hevchw.c), its assembler (header.s) and
  * the host tests.
  *
- * Part of riscos-ffmpeg (hwhevc/). MIT licence.
+ * Part of riscos-ffmpeg (reelhwaccel/hevchw/). MIT licence.
  */
 #ifndef HWHEVC_HW_H
 #define HWHEVC_HW_H

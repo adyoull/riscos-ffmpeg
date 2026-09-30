@@ -1,18 +1,18 @@
-# hwhevc - hardware HEVC decoding on the Raspberry Pi 4
+# hevchw - the Raspberry Pi 4 HEVC block (part of ReelHWAccel)
 
 Work towards Reel decoding HEVC (H.265) with the Pi 4's own decoder block
 (the one Linux drives as "rpivid"), one step at a time.
 
 - Step 1, `tools/hevcprobe`: can RISC OS reach the block? Yes: it answers
   VERSION &202 with its clock on (250 MHz on the Pi tested).
-- Step 2, `hwhevc/module` (this): a module, HEVCHW, that checks writing
+- Step 2, `reelhwaccel/hevchw/module` (this): a module, HEVCHW, that checks writing
   the registers, memory the block can use, and the block's interrupt at
   RISC OS: `*HEVCInfo`, `*HEVCRegTest`, `*HEVCMemTest`, `*HEVCIRQTest`.
 
 ## Building
 
-    hwhevc/build.sh [VERSION]      # dist/HEVCHW-VERSION.zip
-    hwhevc/module/build.sh [DIR]   # just HEVCHW,ffa
+    reelhwaccel/hevchw/build.sh [VERSION]      # dist/HEVCHW-VERSION.zip
+    reelhwaccel/hevchw/module/build.sh [DIR]   # just HEVCHW,ffa
 
 The module is freestanding C (no C library; every SWI goes through
 `hw_swi` in `header.s`) compiled position independent with the Linux ARM

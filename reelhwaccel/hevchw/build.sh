@@ -1,9 +1,9 @@
 #!/bin/bash
-# hwhevc/build.sh [VERSION] - builds the HEVCHW module and HEVCHW-VERSION.zip
+# reelhwaccel/hevchw/build.sh [VERSION] - builds the HEVCHW module and HEVCHW-VERSION.zip
 # in dist/ (the module, the Test and IRQTest Obey files and the ReadMe).
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
-TOP=$(cd "$HERE/.." && pwd)
+TOP=$(cd "$HERE/../.." && pwd)
 V=${1:-0.1}
 TMP=$(mktemp -d)
 "$HERE/module/build.sh" "$TMP/out" >/dev/null

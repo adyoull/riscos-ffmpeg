@@ -19,7 +19,7 @@
  * position-independent image (build.sh checks there are no absolute
  * relocations). Host tests build this file with HW_TEST and fakes.
  *
- * Part of riscos-ffmpeg (hwhevc/). MIT licence.
+ * Part of riscos-ffmpeg (reelhwaccel/hevchw/). MIT licence.
  */
 #include <stddef.h>
 #include <stdint.h>

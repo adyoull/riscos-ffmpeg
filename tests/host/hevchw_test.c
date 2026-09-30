@@ -1,5 +1,5 @@
 /*
- * HEVCHW (hwhevc/module) against a fake RISC OS, a fake firmware, a fake
+ * HEVCHW (reelhwaccel/hevchw/module) against a fake RISC OS, a fake firmware, a fake
  * HAL and memory standing in for the HEVC block, its interrupt control and
  * the GIC. The module's own header.s is linked in (its hw_swi weakened), so
  * the veneers and the assembler IRQ handler are the real ones.
@@ -20,7 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../hwhevc/module/hw.h"
+#include "../../reelhwaccel/hevchw/module/hw.h"
 
 typedef struct { int errnum; char errmess[64]; } err_t;
 const err_t *hw_init(ws_t **pw);
