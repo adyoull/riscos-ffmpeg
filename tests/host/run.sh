@@ -115,6 +115,11 @@ echo "== sub_test (subtitles, chapters, turned pictures, frame steps)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/sub_test" "$O/subs.mkv" "$O/plain.mp4" "$O/subs.srt" "$O/turned.mp4" "$O/subs.ass" "$O/gop.mp4" 2>&1 | grep -v "reelcore: " || bad=1
 
 # RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
+# tools/hevcprobe: the Pi 4 HEVC block probe, against a fake firmware and fake registers
+arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/hevcprobe_test" "$TOP/tools/hevcprobe/hevcprobe.c" "$HERE/hevcprobe_test.c"
+echo "== hevcprobe_test (the Pi 4 HEVC block probe: the clock on only around reads, put back)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/hevcprobe_test" | grep -v "^  &\|^hevcprobe:\|^$" || bad=1
+
 echo "== riscos_name_test (holiday/mp4 as a RISC OS name, Unix names untouched)"
 gcc -O1 -g -fsanitize=address,undefined -I"$F/libavformat" "$HERE/riscos_name_test.c" -o "$O/riscos_name_test" &&
   "$O/riscos_name_test" || bad=1

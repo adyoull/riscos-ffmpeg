@@ -1,0 +1,4 @@
+| ProbeNoClock: the same, but leaves the HEVC clock alone (so only the board,
+| the clock's state and the interrupt controller are read). Saved as Result.
+WimpSlot -min 2048K -max 2048K
+Run <Obey$Dir>.hevcprobe -n -o <Obey$Dir>.Result

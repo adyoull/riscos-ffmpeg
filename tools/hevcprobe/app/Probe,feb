@@ -1,0 +1,4 @@
+| Probe: looks for the Pi 4's HEVC decoder block (turns its clock on briefly,
+| reads its registers, puts the clock back). The report is also saved as Result.
+WimpSlot -min 2048K -max 2048K
+Run <Obey$Dir>.hevcprobe -o <Obey$Dir>.Result

@@ -1,0 +1,32 @@
+HEVCProbe - can RISC OS reach the Raspberry Pi 4's HEVC decoder?
+==================================================================
+
+A first step towards hardware HEVC (H.265) decoding in Reel. The Pi 4,
+Pi 400 and CM4 have an HEVC decoder block that the ARM drives directly
+(Linux calls it "rpivid"). This program checks whether RISC OS can see it.
+
+What it does, in order:
+  1. asks the firmware which board this is (it stops unless it's a Pi 4,
+     400 or CM4);
+  2. asks about the HEVC clock: on or off, its rate and limits;
+  3. maps the block's registers and reads its interrupt controller;
+  4. turns the HEVC clock on at its top rate, reads the block's
+     registers (VERSION is the interesting one), and puts the clock back
+     as it was.
+
+It only reads the block; the one thing it changes is the clock, and only
+for a moment. The HEVC registers are only read with the clock on.
+
+Running it:
+  Double-click Probe. A window shows the report, which is also saved as
+  Result in this directory. ProbeNoClock does steps 1-3 only: try it
+  first if you'd rather, then Probe.
+
+If the machine locks up at step 4 (it shouldn't: the registers are only
+read with the clock confirmed on), switch it off and on again: nothing
+is written to the block, so nothing is left behind.
+
+Please send the Result file back.
+
+Needs: RISC OS 5 on a Raspberry Pi 4, 400 or CM4, with BCMSupport (in
+the ROM). Part of riscos-ffmpeg; MIT licence.
