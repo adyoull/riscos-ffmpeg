@@ -1,0 +1,44 @@
+HEVCHW 0.01 - step 2 towards hardware HEVC decoding in Reel
+============================================================
+
+HEVCProbe (step 1) showed RISC OS can reach the Raspberry Pi 4's HEVC
+decoder block: it answered with VERSION &202. HEVCHW is a small module
+that checks the three other things a decoder driver needs:
+
+  *HEVCInfo     the HEVC clock, and the block's VERSION, STATUS and
+                interrupt control word
+  *HEVCRegTest  the block's registers can be written: two patterns into
+                three of its address registers, read back, then each put
+                back as it was
+  *HEVCMemTest  1 MB of physically contiguous memory (PCI_RAMAlloc), and
+                whether it's below 1 GB, where the block can reach it
+  *HEVCIRQTest  the block's interrupt reaches RISC OS: the block's own
+                test interrupt is raised with nothing listening, to see
+                which line goes up at the interrupt controller. Only if
+                it's the expected one (ID 130) does the module claim it,
+                let one interrupt through, count it and let go again.
+
+Nothing is decoded yet, and nothing is sent to the block but register
+writes. The module turns the HEVC clock on (at its top rate) if it's
+off, and leaves it on.
+
+Running it:
+  1. Double-click Test. It loads the module and runs *HEVCInfo,
+     *HEVCRegTest and *HEVCMemTest. The report is also saved as Result.
+  2. Then double-click IRQTest. It runs *HEVCIRQTest and adds its report
+     to Result.
+
+IRQTest goes last because it's the one that touches interrupts. It
+shouldn't, but if the machine locks up or keeps printing, switch it off
+and on again: nothing it does outlasts a restart. The module stops the
+interrupt itself if it arrives 64 times.
+
+You can also type the commands yourself at the * prompt (F12) after
+*RMLoad HEVCHW, and *RMKill HEVCHW takes it out again.
+
+Please send the Result file back (and a photo if anything goes wrong
+before it's written).
+
+Needs: RISC OS 5 on a Raspberry Pi 4, 400 or CM4, with BCMSupport (in
+the ROM); the PCI module for *HEVCMemTest (also in the ROM). Part of
+riscos-ffmpeg; MIT licence.

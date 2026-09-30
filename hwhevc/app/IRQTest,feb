@@ -1,0 +1,8 @@
+| IRQTest: the interrupt test, on its own (run Test first). Its report is
+| added to Result.
+RMEnsure HEVCHW 0.01 RMLoad <Obey$Dir>.HEVCHW
+SpoolOn <Obey$Dir>.Result
+Echo HEVCIRQTest
+HEVCIRQTest
+HEVCInfo
+Spool
