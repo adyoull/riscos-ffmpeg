@@ -120,6 +120,11 @@ arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/hevcp
 echo "== hevcprobe_test (the Pi 4 HEVC block probe: the clock on only around reads, put back)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/hevcprobe_test" | grep -v "^  &\|^hevcprobe:\|^$" || bad=1
 
+# tools/vchiqprobe: the VCHIQ module's interface and clients, against fake modules
+arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/vchiqprobe_test" "$TOP/tools/vchiqprobe/vchiqprobe.c" "$HERE/vchiqprobe_test.c"
+echo "== vchiqprobe_test (VCHIQ's SWIs and commands, the modules calling it, copies saved)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/vchiqprobe_test" | grep "FAIL\|vchiqprobe_test:" || bad=1
+
 # hwhevc/module: the HEVCHW module (its C, and header.s's veneers and IRQ handler) on a fake RISC OS
 arm-linux-gnueabihf-gcc -c -o "$O/hevchw_header.o" "$TOP/hwhevc/module/header.s" &&
   arm-linux-gnueabihf-objcopy --weaken-symbol=hw_swi "$O/hevchw_header.o" &&

@@ -1,0 +1,5 @@
+| Probe: lists the VCHIQ module's SWIs and *commands, finds the modules
+| that call it, and saves copies of them in Modules (as Data). Reads only.
+| The report is also saved as Result.
+WimpSlot -min 4096K -max 4096K
+Run <Obey$Dir>.vchiqprobe -o <Obey$Dir>.Result -d <Obey$Dir>.Modules
