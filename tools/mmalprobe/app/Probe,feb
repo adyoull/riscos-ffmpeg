@@ -1,5 +1,10 @@
 | Probe: opens the VideoCore's MMAL service through VCHIQ, creates its video
 | decoder, reads its ports and the encodings it takes, and destroys it again.
 | Nothing is decoded. The report is also saved as Result.
+| (a GCCSDK program: needs SharedUnixLibrary and ARMEABISupport loaded)
+RMEnsure SharedUnixLibrary 1.16 IfThere System:Modules.SharedULib Then RMLoad System:Modules.SharedULib
+RMEnsure SharedUnixLibrary 1.16 Error This needs SharedUnixLibrary 1.16 or later. Install it with PackMan.
+RMEnsure ARMEABISupport 0 IfThere System:Modules.ARMEABISupport Then RMLoad System:Modules.ARMEABISupport
+RMEnsure ARMEABISupport 0 Error This needs the ARMEABISupport module. Install it with PackMan.
 WimpSlot -min 2048K -max 2048K
 Run <Obey$Dir>.mmalprobe -o <Obey$Dir>.Result

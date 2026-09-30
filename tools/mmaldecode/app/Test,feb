@@ -1,5 +1,10 @@
 | Test: decodes three H.264 clips on the VideoCore (through VCHIQ and MMAL)
 | and checks every picture against FFmpeg's own decode. Reports to Result.
+| (a GCCSDK program: needs SharedUnixLibrary and ARMEABISupport loaded)
+RMEnsure SharedUnixLibrary 1.16 IfThere System:Modules.SharedULib Then RMLoad System:Modules.SharedULib
+RMEnsure SharedUnixLibrary 1.16 Error This needs SharedUnixLibrary 1.16 or later. Install it with PackMan.
+RMEnsure ARMEABISupport 0 IfThere System:Modules.ARMEABISupport Then RMLoad System:Modules.ARMEABISupport
+RMEnsure ARMEABISupport 0 Error This needs the ARMEABISupport module. Install it with PackMan.
 WimpSlot -min 16384K -max 16384K
 Remove <Obey$Dir>.Result
 Run <Obey$Dir>.mmaldecode -o <Obey$Dir>.Result <Obey$Dir>.clips.small.stream <Obey$Dir>.clips.small.crc
