@@ -19,7 +19,7 @@
  *      if it failed, Log with ffmpeg's own messages.
  *
  * Nothing is lost by mistake: an existing file is only replaced after
- * asking, a stopped conversion's unfinished file is deleted, closing the
+ * asking, a stopped or failed conversion's unfinished file is deleted, closing the
  * window or quitting while converting asks first. Interactive help
  * (!Help) describes every part of the window.
  *
@@ -1076,9 +1076,16 @@ static void finished(void)
         progress_bar(1);
         status("Done: %s, %.1f MB, in %s.", l ? l + 1 : C.out, C.prog.bytes / 1048576.0, t);
     } else {
+        /* a half-made file isn't left to be mistaken for a video (an MP4
+           with no index plays nowhere); it was new, or its replacing was
+           agreed to before starting */
+        int gone;
+        r.r[0] = 6; r.r[1] = (intptr_t)C.out;
+        gone = !swi(OS_File, &r) && r.r[0] != 0;
         C.state = CONV_FAILED;
         progress_bar(0);
-        status("Couldn't convert: %s", C.prog.error[0] ? C.prog.error : "ffmpeg stopped early (see Log).");
+        status("Couldn't convert: %s%s", C.prog.error[0] ? C.prog.error : "ffmpeg stopped early (see Log).",
+               gone ? " The unfinished file was deleted." : "");
     }
     show_settings();
 }

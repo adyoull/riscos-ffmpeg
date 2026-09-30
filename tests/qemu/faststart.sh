@@ -5,7 +5,12 @@
 # already open"). Patch 0020 shifts the data in place instead through one
 # read-write opening; on RISC OS always, here when FFMPEG_SHIFT_IN_PLACE is
 # set. The output must be byte for byte what the usual way makes: an MP4
-# (video and sound, several 256 KB chunks), a MOV and an M4A.
+# (video and sound, several 256 KB chunks), a MOV, an M4A and an FLV. The
+# in-place runs are repeated with an allocator that never reuses freed
+# memory (nofree.c): the first version of 0020 left movenc writing the
+# index through a freed AVIOContext, which only worked when the allocator
+# handed the same block back (a forum report: "the created video was
+# unusable").
 # Usage: tests/qemu/faststart.sh   (after a LINUX_ARM_TEST=1 build)
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -14,6 +19,7 @@ FF=${FF:-$TOP/src-linuxarm/ffmpeg-5.1.10/ffmpeg_g}
 W=${WORK:-$HERE/out}/faststart
 mkdir -p "$W"
 bad=0
+arm-linux-gnueabihf-gcc -shared -fPIC -O2 -o "$W/nofree.so" "$HERE/nofree.c" || exit 1
 ffmpeg -v error -y -f lavfi -i testsrc2=size=640x360:rate=25:duration=12 -f lavfi -i sine=d=12 \
   -c:v mpeg2video -q:v 4 -c:a mp2 "$W/src.mpg" || exit 1
 one() {   # name, extra args
@@ -29,9 +35,18 @@ one() {   # name, extra args
   else
     echo "FAIL: $n: in place differs from usual"; bad=1
   fi
+  rm -f "$W/nofree.$n"
+  FFMPEG_SHIFT_IN_PLACE=1 QEMU_SET_ENV=LD_PRELOAD=$W/nofree.so "$HERE/aligntrap.sh" "$FF" "${a[@]}" "$W/nofree.$n" \
+    2>"$W/nofree.$n.err" || { echo "FAIL: $n: in place, memory never reused: $(tail -c 300 "$W/nofree.$n.err")"; bad=1; return; }
+  if cmp -s "$W/usual.$n" "$W/nofree.$n"; then
+    echo "  $n: the same with memory never reused"
+  else
+    echo "FAIL: $n: in place, memory never reused, differs from usual"; bad=1
+  fi
 }
 one mp4 -c:v libx264 -preset veryfast -c:a aac -b:a 128k
 one mov -c:v libx264 -preset ultrafast -an
 one m4a -vn -c:a aac
+one flv -c:v flv1 -c:a mp3 -ar 44100 -flvflags add_keyframe_index
 [ $bad -eq 0 ] && echo "all passed" || echo "FAILED"
 exit $bad

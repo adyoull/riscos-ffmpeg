@@ -3,6 +3,29 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next FFmpeg): MP4 files from the Convert window, properly this time
+
+- **Forum report (Raik):** reducing a 720p video to 480p with the Convert
+  window's default settings made an unusable file, while his own command
+  line worked. The window's command is fine; the fault was in patch 0020
+  (riscos13), which every MP4/M4A with `-movflags +faststart` goes
+  through on RISC OS. It closed and reopened the output's AVIOContext
+  while movenc kept its old pointer and wrote the index (the moov)
+  through freed memory. That worked only when the allocator handed the
+  same block back; otherwise the file had no index ("moov atom not
+  found") or ffmpeg crashed.
+- **Patch 0020, reworked:** the AVIOContext stays the same object; only
+  the file under it is closed, the data shifted in place through one
+  read-write opening, and the trailer written through that opening. FLV
+  (`-flvflags add_keyframe_index`) used the same path and is fixed too.
+- **tests/qemu/faststart.sh** repeats every in-place run with an
+  allocator that never reuses freed memory (`tests/qemu/nofree.c`): the
+  old patch crashes there for MP4, MOV, M4A and FLV; the new one gives
+  files byte-identical to the usual way. FLV added.
+- **Convert window:** when a conversion fails, the unfinished file is
+  deleted (as after Stop), so a broken file isn't left to be mistaken
+  for a video. The status line says so.
+
 ## 5.1.10-riscos13 (2026-09-29): files over 2GB, MP4 files from the Convert window, and more options
 
 - **Files over 2GB** (up to 4GB-1, the RISC OS limit): linked with

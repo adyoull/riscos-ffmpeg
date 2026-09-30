@@ -1,4 +1,4 @@
-From 821a860d45818ad5ebd1e4637815393fac079b7e Mon Sep 17 00:00:00 2001
+From b32355f61b4d6f870ef67b4b074fcc62ddccf546 Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Tue, 29 Sep 2026 12:01:29 +0100
 Subject: [PATCH] avformat/mux_utils: shift data in place where the output
@@ -6,21 +6,28 @@ Subject: [PATCH] avformat/mux_utils: shift data in place where the output
 
 -movflags +faststart moves the moov atom to the front by opening the
 output a second time for reading, which RISC OS refuses while it is
-open for writing ("This file is already open", 0x108C2). There the
-output is closed, the data shifted in place through one read-write
-opening (from the end backwards), and the output opened again for
-writing without truncating. Elsewhere this is used only when the second
-opening fails, or when FFMPEG_SHIFT_IN_PLACE is set (for testing).
+open for writing ("This file is already open", 0x108C2). There the file
+under the output is closed, the data shifted in place through one
+read-write opening (from the end backwards), and the trailer written
+through that same opening. The output's AVIOContext stays the same
+object, only its URLContext is replaced: muxers keep s->pb in a local
+variable across the shift (movenc writes the moov through it), so
+reopening s->pb itself would leave them writing through freed memory.
+Elsewhere this is used only when the second opening fails, or when
+FFMPEG_SHIFT_IN_PLACE is set (for testing).
 ---
- libavformat/mux_utils.c | 65 ++++++++++++++++++++++++++++++++++++++++-
- 1 file changed, 64 insertions(+), 1 deletion(-)
+ libavformat/mux_utils.c | 88 ++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 87 insertions(+), 1 deletion(-)
 
 diff --git a/libavformat/mux_utils.c b/libavformat/mux_utils.c
-index eb8ea3d..80c1561 100644
+index eb8ea3d..c9305ba 100644
 --- a/libavformat/mux_utils.c
 +++ b/libavformat/mux_utils.c
-@@ -28,6 +28,60 @@
+@@ -26,8 +26,85 @@
+ #include "libavutil/parseutils.h"
+ #include "avformat.h"
  #include "avio.h"
++#include "avio_internal.h"
  #include "internal.h"
  #include "mux.h"
 +#include "url.h"
@@ -28,25 +35,41 @@ index eb8ea3d..80c1561 100644
 +
 +/* RISC OS won't open a file a second time while it's open for writing
 + * ("This file is already open"), so the read-only second opening below
-+ * fails there. Instead: close the output, shift the data along in place
-+ * through one read-write opening, from the end backwards (so nothing is
-+ * overwritten before it's read), and open the output again for writing
-+ * without truncating it, at the end of the shifted data. Also used
-+ * elsewhere when the second opening fails, and (for testing) when
-+ * FFMPEG_SHIFT_IN_PLACE is set. */
++ * fails there. Instead: close the file under the output, shift the data
++ * along in place through one read-write opening, from the end backwards
++ * (so nothing is overwritten before it's read), and carry on writing the
++ * trailer through that same opening, at the end of the shifted data.
++ *
++ * The output's AVIOContext (s->pb) stays the same object: only the
++ * URLContext under it is replaced. Muxers keep s->pb in a local variable
++ * across this call (movenc's mov_write_trailer writes the moov through
++ * it afterwards), so closing and reopening s->pb itself would leave them
++ * writing through freed memory; that only worked where the allocator
++ * happened to hand the same block back.
++ *
++ * Also used elsewhere when the second opening fails, and (for testing)
++ * when FFMPEG_SHIFT_IN_PLACE is set. */
 +static int shift_in_place(AVFormatContext *s, int64_t read_start, int shift_size, int64_t pos_end)
 +{
-+    URLContext *h = NULL;
++    AVIOContext *pb = s->pb;
++    URLContext *h = NULL, *old = ffio_geturlcontext(pb);
 +    AVDictionary *opts = NULL;
-+    int size = 1 << 18, ret, ret2;              /* (file: writes of at most 256 KB) */
++    int size = 1 << 18, ret;                    /* (file: writes of at most 256 KB) */
 +    int64_t p = pos_end;
-+    uint8_t *buf = av_malloc(size);
++    uint8_t *buf;
 +
-+    if (!buf)
++    if (!old || !pb->write_flag)
++        return AVERROR(ENOSYS);                 /* (not a URLContext of our own under it) */
++    if (!(buf = av_malloc(size)))
 +        return AVERROR(ENOMEM);
-+    avio_flush(s->pb);
-+    ff_format_io_close(s, &s->pb);
-+    av_dict_set(&opts, "truncate", "0", 0);             /* (file: the default truncates) */
++    avio_flush(pb);
++    if (pb->error < 0) {
++        av_free(buf);
++        return pb->error;
++    }
++    pb->opaque = NULL;                          /* (nothing reaches it while it's away) */
++    ffurl_closep(&old);                         /* the file itself closed: now it can be opened */
++    av_dict_set(&opts, "truncate", "0", 0);     /* (file: the default truncates) */
 +    ret = ffurl_open_whitelist(&h, s->url, AVIO_FLAG_READ_WRITE, &s->interrupt_callback, &opts,
 +                               s->protocol_whitelist, s->protocol_blacklist, NULL);
 +    av_dict_free(&opts);
@@ -64,23 +87,29 @@ index eb8ea3d..80c1561 100644
 +            (ret = ffurl_write(h, buf, n)) < 0)
 +            break;
 +    }
-+    ffurl_closep(&h);
 +    av_free(buf);
-+    if (ret < 0)
++    if (!h) {
++        /* couldn't open it again: the output is gone. Stop writes and seeks
++           (they'd go to a URLContext that isn't there) and say so. */
++        pb->error = ret < 0 ? ret : AVERROR(EIO);
++        pb->seek = NULL;
++        av_log(s, AV_LOG_ERROR, "Unable to open %s again to shift the data\n", s->url);
++        return pb->error;
++    }
++    /* the output carries on through this opening, at the end of the shifted data */
++    pb->opaque = h;
++    if (ret < 0) {
 +        av_log(s, AV_LOG_ERROR, "Unable to shift the data in %s in place\n", s->url);
-+    /* the output again, for the rest of the trailer */
-+    av_dict_set(&opts, "truncate", "0", 0);
-+    ret2 = s->io_open(s, &s->pb, s->url, AVIO_FLAG_READ_WRITE, &opts);
-+    av_dict_free(&opts);
-+    if (ret2 < 0)
-+        return ret2;
-+    avio_seek(s->pb, pos_end + shift_size, SEEK_SET);
++        pb->error = ret;
++        return ret;
++    }
++    ret = avio_seek(pb, pos_end + shift_size, SEEK_SET);
 +    return ret < 0 ? ret : 0;
 +}
  
  int64_t av_stream_get_end_pts(const AVStream *st)
  {
-@@ -74,8 +128,17 @@ int ff_format_shift_data(AVFormatContext *s, int64_t read_start, int shift_size)
+@@ -74,8 +151,17 @@ int ff_format_shift_data(AVFormatContext *s, int64_t read_start, int shift_size)
       * writing, so we re-open the same output, but for reading. It also avoids
       * a read/seek/write/seek back and forth. */
      avio_flush(s->pb);

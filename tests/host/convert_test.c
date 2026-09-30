@@ -204,8 +204,10 @@ static int script(int *b)
     case 24: tw_output(b, 0x996, "SDFS::Pi.$.Out.trailer_480/mp4: Permission denied\n"); return 17;
     case 25: msg(b, 0x808C3, 0x996, 20); return 17;
     case 26:
-        CHECK(!strcmp(conv_test_text(1), "Couldn't convert: SDFS::Pi.$.Out.trailer_480/mp4: Permission denied") && !shaded(I_LOG) &&
-              shaded(I_PLAY), "failed: '%s'", conv_test_text(1));
+        CHECK(!strcmp(conv_test_text(1), "Couldn't convert: SDFS::Pi.$.Out.trailer_480/mp4: Permission denied "
+                      "The unfinished file was deleted.") && !shaded(I_LOG) && shaded(I_PLAY) && deleted == 2 &&
+              !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer_480/mp4"),
+              "failed: '%s', deleted %d '%s' (a failed file isn't left behind)", conv_test_text(1), deleted, deleted_name);
         click(b, I_FORMAT_B, 4); return 6;                                       /* sound only */
     case 27: b[0] = 2; b[1] = -1; return 9;                                      /* MP3 */
     case 28:
@@ -223,7 +225,7 @@ static int script(int *b)
         CHECK(morites == 2 && morite_to == 0x995 && !win_open, "close while converting: %d Morites, open %d", morites, win_open);
         msg(b, 0x808C3, 0x995, 20); return 17;
     case 33:
-        CHECK(conv_test_state() == CONV_STOPPED && deleted == 2, "after closing: state %d, deleted %d", conv_test_state(), deleted);
+        CHECK(conv_test_state() == CONV_STOPPED && deleted == 3, "after closing: state %d, deleted %d", conv_test_state(), deleted);
         /* fallthrough */
     default: msg(b, 0, 0x111, 20); return 17;                                   /* Message_Quit */
     }
@@ -296,7 +298,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         case 8: mkdir((const char *)(intptr_t)in->r[1], 0777); return NULL;
         case 18: if (strstr((const char *)(intptr_t)in->r[1], "Out.")) settype = in->r[2]; return NULL;
         case 17: out->r[0] = exists; return NULL;
-        case 6: deleted++; snprintf(deleted_name, sizeof(deleted_name), "%s", (const char *)(intptr_t)in->r[1]); return NULL;
+        case 6: deleted++; snprintf(deleted_name, sizeof(deleted_name), "%s", (const char *)(intptr_t)in->r[1]);
+            out->r[0] = 1; return NULL;                                          /* (a file was there) */
         }
         return &err;
     case 0x50B00: {                                                              /* MimeMap_Translate: extension -> type */
