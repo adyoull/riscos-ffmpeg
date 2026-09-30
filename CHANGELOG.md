@@ -3,7 +3,7 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next FFmpeg): MP4 files from the Convert window, properly this time
+## 5.1.10-riscos14 (2026-09-30): MP4 files from the Convert window, properly this time
 
 - **Forum report (Raik):** reducing a 720p video to 480p with the Convert
   window's default settings made an unusable file, while his own command
@@ -61,7 +61,7 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   M4A made in place are byte for byte what the usual way makes. Mutations
   caught: opening with truncation (an empty file), 1 MB writes (EIO).
 
-## Unreleased (next Reel): subtitles, chapters, frame steps, turned videos
+## Reel 0.1.21 (2026-09-30): subtitles, chapters, frame steps, turned videos, 4K, and keeping up
 
 - **Subtitles, drawn into the picture** (so they show over the hardware
   overlay), in reelcore:
@@ -158,6 +158,29 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   - panel_test's margin scales with the overlay.
   - Mutations caught: no rotation, no override-tag stripping, no layers
     in YV12.
+
+- **Keeping up: deblocking off by itself.** Before any frames are skipped,
+  reelcore turns off the H.264 deblocking filter (about a quarter of the
+  decoding) when pictures take more than 0.9 of the time between them, or
+  the video is 0.1 s behind with decoding above 0.75 of that time. It is
+  tried on again every 10 s while decoding keeps up (after 20, 40 … 160 s
+  when a try had to go straight off again), and comes back for good below
+  0.6. The timers use real time (the clock goes back at a loop or seek).
+  Media info's Frame skipping row and a "Keeping Up" row on the stats say
+  when; `*Set Reel$NoAutoFast 1` (`REELCORE_NO_AUTOFAST`) stops it. On the
+  Pi a 1080p 4:4:4 or high-bitrate 1080p file gains most; a 4K trailer
+  still skips frames. slow_test: a video a little too slow keeps up with
+  no skipping (5 skip spells without); a stall on an easy video, and a
+  video just too slow, are tried and settle correctly.
+- **Stats and subtitles readable full screen through the overlay.** They
+  were drawn at the screen's size and shrunk into the frame a pixel at a
+  time (a 720p frame on 1920x1200: 0.67), which dropped whole rows and
+  columns of each letter. Now each is drawn in a font of the size it is
+  seen, in the frame's own pixels, with no scaling: the panel from DejaVu
+  Sans Mono Bold at 9-33 px (bigger on screens over 900 lines: about 18 px
+  at 1200), subtitles from DejaVu Sans Bold at 16-56 px (5.2% of the
+  frame's height). panel_test at scales 0.5, 1 and 2; sub_test: the same
+  text height shown 1x and 2x. Confirmed on a Pi.
 
 ## Reel 0.1.20 (2026-09-29): files over 2GB, a steady clock, 60 fps, and stats on the picture
 

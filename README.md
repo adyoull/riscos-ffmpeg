@@ -39,6 +39,10 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
   - A mini player above the icon bar (optionally kept on top), playlists,
     speed 0.5x–2x, picture sizes, sound tracks, A-B repeat, carry on
     where you stopped, vsync full screen, fast decoding, deinterlacing.
+  - **Subtitles** (the file's own tracks, and .srt/.ass/.vtt files dropped
+    on the window or found beside the video), **chapters** (a menu, Page
+    Up/Down), **frame steps** (`.` and `,`), and videos turned as the file
+    says; stats "for nerds" drawn on the picture (S).
   - **Web addresses** (http, https through AcornSSL, HLS): Open address…
     on the icon bar menu (type or paste), or a dropped URI/URL/text/M3U
     file. **yt-dlp's output** plays too: `-g`'s one or two addresses (the
@@ -47,14 +51,16 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
     playlist). A thread in reelcore reads up to 10 s ahead.
   - **Hardware acceleration** through the VideoOverlay module: pictures are
     copied as YV12 into a hardware overlay, which the display scales and
-    converts; drawn as before whenever that isn't possible.
+    converts (4K is halved into it first); drawn as before whenever that
+    isn't possible.
 - **NEON added by this port** (each bit-exact with FFmpeg's C, tested
   under the alignment-trapping qemu): yadif deinterlacing (patch 0015),
   HEVC chroma motion compensation (0016), and swscale's fast bilinear
   scaling to RGB32 (0017), which Reel uses whenever the picture is
   resized.
   - Sound straight to SharedSoundBuffer, which is also the clock the
-    pictures follow; late frames are skipped (and, when far behind,
+    pictures follow; when decoding can't keep up, deblocking is turned off
+    by itself first, then late frames are skipped (and, when far behind,
     non-reference frames aren't decoded).
   - **Media info** window: the file's codecs and formats, and "stats for
     nerds" every second (pictures shown and decoded, decode time and
