@@ -1,3 +1,6 @@
 | !Boot for !Reel (a video player, from riscos-ffmpeg)
 If "<Reel$Dir>"="" Then Set Reel$Dir <Obey$Dir>
 IconSprites <Obey$Dir>.!Sprites
+| The file types a double-click opens with Reel even when it isn't loaded
+| (ticked in File types on its icon bar menu)
+IfThere Choices:Reel.Types Then Obey Choices:Reel.Types

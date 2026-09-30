@@ -3,6 +3,30 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next Reel): the pointer hides full screen, a sound track key, file types
+
+Three requests from Chris on the ROOL forum:
+
+- **The pointer hides full screen** after 2 seconds with the mouse left
+  alone, and comes back as soon as it moves or a button is pressed
+  (`OS_Byte 106`; the shape before is put back). Checked on every null;
+  while it's hidden and paused, nulls come a few times a second so a
+  move is still seen. Shown again on leaving full screen, before an
+  error box and on quitting. `*Set Reel$NoHidePointer 1` keeps it.
+- **#** chooses the next sound track (files with more than one; after
+  the last, the first again), as the Sound track menu does.
+- **File types** on the icon bar menu: the video file types MimeMap knows
+  (from avi, mp4, m4v, mkv, webm, mov, mpg, ts, vob, wmv, flv, ogv, 3gp;
+  each type once), ticked when a double-click of that type starts Reel
+  (its `Alias$@RunType_XXX` is Reel's). Choosing one sets or clears the
+  RunType now and writes `Choices:Reel.Types`, an Obey file !Boot runs, so
+  it lasts. While Reel is loaded it still claims any video double-clicked
+  (Message_DataOpen), ticked or not.
+- reel_test: full screen, the pointer hidden after 2 s left alone, back
+  when the mouse moves, hidden again, back on leaving full screen; # with
+  a two-track file (second, then first); File types > AVI ticked (the
+  RunType and the Types file) and unticked. Mutations caught for each.
+
 ## Unreleased: UnixLib 5.0.3
 
 - **Relinked with UnixLib 5.0.3** (github.com/adyoull/riscos-unixlib

@@ -12,9 +12,19 @@ Using it
 Double-click !Reel: its icon (a film reel) appears on the icon bar. Then:
 
   - drop a video file on the icon, or on Reel's window; or
-  - double-click a video file in the Filer (while Reel is loaded); or
+  - double-click a video file in the Filer (while Reel is loaded, or
+    at any time for the types ticked in File types, below); or
   - choose Open address... on the icon's menu, for a web address (see
     Web addresses, below).
+
+File types > on the icon bar menu lists the video file types your
+machine knows (from MimeMap: AVI, MP4, MKV, MPEG, ...). Tick one and
+double-clicking a file of that type starts Reel with it even when Reel
+isn't loaded; untick it to give it back. Reel remembers the ticks in
+Choices:Reel.Types, which its !Boot runs, so they last after a restart
+(another program that also claims the type when its !Boot runs later
+wins). While Reel is loaded it plays any video double-clicked, ticked
+or not.
 
 Drop several files at once (one drag from the Filer) and they play one
 after another: a playlist. Hold Shift as you drop to add files to the
@@ -31,7 +41,10 @@ The window shows the picture with a row of controls under it:
                 can't be read fast enough; "Opening" while it opens
   the volume    the green bar: click along it to set the volume.
                 Reel remembers it for next time
-  Full          full screen (Escape or F to come back)
+  Full          full screen (Escape or F to come back). Full screen,
+                the pointer hides when the mouse is left alone for 2
+                seconds, and comes back when it moves
+                (*Set Reel$NoHidePointer 1 keeps it)
 
 Keys (click in the window first):
   Space         pause / play
@@ -48,6 +61,8 @@ Keys (click in the window first):
   S             stats on the picture on and off (below)
   V             subtitles hidden / shown again
   J             the next subtitle track (after the last: none)
+  #             the next sound track (files with more than one;
+                after the last, the first again)
   Page Down, Up the next chapter / back to the start of this one
                 (the one before, within 2 s of its start)
   . (full stop) paused: the next picture (playing: pauses first)

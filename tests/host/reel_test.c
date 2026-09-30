@@ -58,7 +58,12 @@ int reel_test_list(int *n);
 int reel_test_mini(int *ontop);
 int reel_test_deint(void);
 
-static const char *clip1, *clip2;
+static const char *clip1, *clip2, *clip3;         /* clip3: two sound tracks (optional) */
+/* the pointer (OS_Byte 106, Wimp_GetPointerInfo) and system variables */
+static int ptr_fake, ptr_fx, ptr_fy, ptr_fb, ptr_shape = 1, ptr_offs;
+static char fvar_name[8][48], fvar_val[8][300];
+static int fvar_n;
+static int fvar_find(const char *n) { for (int i = 0; i < fvar_n; i++) if (!strcmp(fvar_name[i], n)) return i; return -1; }
 static int fails, step;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
 
@@ -85,6 +90,11 @@ static int mini_created, mini_open, mini_nicons, mini_tops, main_w, main_h;
 static int vsyncs, asks;
 static double ab_lo, ab_hi;
 static char choices_dir[64];
+#ifdef REEL_EGL
+#define APP_NAME "ReelEGL"
+#else
+#define APP_NAME "Reel"
+#endif
 
 /* the window menu (reel.c's WM_*) */
 enum { M_INFO, M_STATS, M_FULL, M_MINI, M_ONTOP, M_SIZE, M_PIC, M_DEINT, M_SPEED, M_TRACK, M_SUBS, M_CHAP, M_LIST, M_AB, M_LOOP, M_FAST, M_VSYNC, M_HWACCEL, M_CLOSE };
@@ -168,11 +178,11 @@ static int script(int *b)
 
 /* the phases after the first drop */
 enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
-       P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PANEL, P_PANELOFF, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL,
+       P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PANEL, P_PANELOFF, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL, P_PTRHIDE,
        P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
        P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_SUBDROP, P_SUBHIDE, P_SUBSHOW, P_SUBNEXT, P_STEP, P_STEPPLAY, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
-       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_CLOSE2, P_QUIT };
+       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_QUIT };
 static int phase = -1, phase_step;
 /* the phases that play (deliver nulls) */
 static int next_is_null(void)
@@ -453,6 +463,31 @@ static int next_event(int *b)
                 plots_full = PLOTS;
             }
             break;
+        case P_PTRHIDE:                                               /* full screen: the pointer hides, and comes back */
+            if (phase_step == 0) {
+                phase_step++;
+                ptr_fake = 1; ptr_fx = 500; ptr_fy = 500; ptr_fb = 0; ptr_offs = 0;
+                key_event(b, FULL, 0x18C);                            /* back to the start: 3 s of nulls to come */
+                return 8;
+            }
+            if (phase_step < 60) {                                    /* 2.95 s, the mouse left alone */
+                if (phase_step == 30)
+                    CHECK(ptr_shape == 1 && ptr_offs == 0, "pointer hidden after 1.5 s (shape %d)", ptr_shape);
+                phase_step++; fake_time += 0.05; return 0;
+            }
+            if (phase_step == 60) {
+                CHECK(ptr_shape == 0 && ptr_offs == 1, "full screen, the mouse left alone 3 s: pointer shape %d, hidden %d times",
+                      ptr_shape, ptr_offs);
+                phase_step++; ptr_fx += 8; fake_time += 0.02; return 0;   /* the mouse moves */
+            }
+            if (phase_step == 61) {
+                CHECK(ptr_shape == 1, "the mouse moved: pointer shape %d (want 1 again)", ptr_shape);
+                phase_step++;
+            }
+            if (phase_step < 110) { phase_step++; fake_time += 0.05; return 0; }
+            CHECK(ptr_shape == 0 && ptr_offs == 2, "left alone again: shape %d, hidden %d times", ptr_shape, ptr_offs);
+            printf("  full screen: pointer hidden after 2 s left alone, back when the mouse moved\n");
+            break;
         case P_VSYNCOFF:                                              /* Vsync off: Direct */
 #ifndef REEL_EGL
             if (phase_step == 0)
@@ -470,6 +505,8 @@ static int next_event(int *b)
                 memset(b, 0, 28); b[0] = FULL; b[6] = 27; return 8;       /* Escape */
             }
             CHECK(!reel_test_fullscreen() && !full_open, "Escape didn't leave full screen");
+            CHECK(ptr_shape == 1, "out of full screen: pointer shape %d (want it back)", ptr_shape);
+            ptr_fake = 0;
 #ifdef REEL_EGL
             CHECK(fake_surfaces == 1 && fake_wa[0] == 0 && fake_wa[1] == 0 && fake_wa[2] > 0,
                   "back in the window: %d surfaces, work area %d,%d %dx%d", fake_surfaces, fake_wa[0], fake_wa[1], fake_wa[2], fake_wa[3]);
@@ -536,6 +573,23 @@ static int next_event(int *b)
             MENU_PICK(WIN, M_SIZE, 1);
             CHECK(opened_w == 1132 && opened_h == 368 + 64, "actual size: %dx%d (want 1132x432)", opened_w, opened_h);
             check_picture("actual size");
+            break;
+        case P_SOUNDKEY:                                              /* # : the next sound track, round */
+            if (!clip3)
+                break;
+            if (phase_step == 0) { phase_step++; message(b, 3, WIN, -1, 0xFFD, clip3); return 18; }
+            if (phase_step < 12) { phase_step++; fake_time += 0.02; return 0; }
+            if (phase_step == 12) {
+                CHECK(v && reelcore_audio_tracks(v) == 2 && reelcore_audio_track(v) == 0, "two tracks: %d, on %d",
+                      v ? reelcore_audio_tracks(v) : -1, v ? reelcore_audio_track(v) : -1);
+                phase_step++; key_event(b, WIN, '#'); return 8;
+            }
+            if (phase_step == 13) {
+                CHECK(v && reelcore_audio_track(v) == 1, "#: track %d (want the second)", v ? reelcore_audio_track(v) : -1);
+                phase_step++; key_event(b, WIN, '#'); return 8;
+            }
+            CHECK(v && reelcore_audio_track(v) == 0, "# again: track %d (want the first again)", v ? reelcore_audio_track(v) : -1);
+            printf("  #: the second sound track, then the first again\n");
             break;
         case P_DROP2:                                                 /* from the middle: remembered */
             if (phase_step == 0) {
@@ -1023,6 +1077,28 @@ static int next_event(int *b)
             CHECK(fake_surfaces == 0, "close left %d EGL surfaces", fake_surfaces);
 #endif
             break;
+        case P_TYPES: {                                               /* File types: a double-click opens with Reel */
+            char want[400], types[600] = "", var[48];
+            FILE *f;
+            const char *dir = getenv(APP_NAME "$Dir");
+            snprintf(var, sizeof(var), "Alias$@RunType_FB2");
+            if (phase_step == 0) { phase_step++; click(b, 1000, 40, 2, -2, 1); return 6; }    /* the icon bar menu */
+            if (phase_step == 1) { phase_step++; b[0] = 2; b[1] = 0; b[2] = -1; return 9; }  /* File types > AVI */
+            snprintf(want, sizeof(want), "/%s %%*0", dir ? dir : "?");
+            snprintf(types, sizeof(types), "%s/Types", choices_dir);
+            if ((f = fopen(types, "r")) != NULL) { size_t n = fread(types, 1, sizeof(types) - 1, f); types[n] = 0; fclose(f); }
+            else types[0] = 0;
+            if (phase_step == 2) {
+                int i = fvar_find(var);
+                CHECK(i >= 0 && !strcmp(fvar_val[i], want), "AVI ticked: %s = '%s' (want '%s')", var, i >= 0 ? fvar_val[i] : "(unset)", want);
+                CHECK(strstr(types, "Set Alias$@RunType_FB2 /<" APP_NAME "$Dir> %%*0\n") != NULL, "Types file: '%s'", types);
+                phase_step++; click(b, 1000, 40, 2, -2, 1); return 6;
+            }
+            if (phase_step == 3) { phase_step++; b[0] = 2; b[1] = 0; b[2] = -1; return 9; }  /* AVI again: off */
+            CHECK(fvar_find(var) < 0 && !strstr(types, "RunType_FB2"), "AVI unticked: %s still set, Types '%s'", var, types);
+            printf("  File types: AVI ticked (%s = %s) and unticked\n", var, want);
+            break;
+        }
         case P_QUIT:
             memset(b, 0, 24); b[4] = 0;
             return 17;                                                /* Message_Quit: exits */
@@ -1269,7 +1345,37 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x400D1: case 0x400CD: case 0x400DC: return NULL;
     case 0x400D2: caret_win = in->r[0]; return NULL;
     case 0x400D0: drag_win = b[0]; drag_type = b[1]; return NULL;       /* Wimp_DragBox */                      /* SetCaretPosition */
-    case 0x400CF: b[2] = 4; return NULL;                                  /* GetPointerInfo: Select */
+    case 0x400CF:                                                         /* GetPointerInfo */
+        if (ptr_fake) { b[0] = ptr_fx; b[1] = ptr_fy; b[2] = ptr_fb; }
+        else b[2] = 4;                                                    /* Select */
+        return NULL;
+    case 0x23: {                                                          /* OS_ReadVarVal */
+        int i = fvar_find((const char *)(intptr_t)in->r[0]);
+        if (i < 0) return &err;
+        out->r[2] = snprintf((char *)(intptr_t)in->r[1], in->r[2], "%s", fvar_val[i]);
+        return NULL;
+    }
+    case 0x24: {                                                          /* OS_SetVarVal */
+        const char *n = (const char *)(intptr_t)in->r[0];
+        int i = fvar_find(n);
+        if (in->r[2] < 0) {
+            if (i < 0) return &err;
+            fvar_n--; memmove(fvar_name[i], fvar_name[i + 1], sizeof(fvar_name[0]) * (fvar_n - i));
+            memmove(fvar_val[i], fvar_val[i + 1], sizeof(fvar_val[0]) * (fvar_n - i));
+            return NULL;
+        }
+        if (i < 0) { i = fvar_n++; snprintf(fvar_name[i], sizeof(fvar_name[0]), "%s", n); }
+        snprintf(fvar_val[i], sizeof(fvar_val[0]), "%.*s", in->r[2], (const char *)(intptr_t)in->r[1]);
+        return NULL;
+    }
+    case 0x29:                                                            /* OS_FSControl */
+        if (in->r[0] == 18) {                                             /* a filetype's name */
+            const char *nm = in->r[2] == 0xFB2 ? "AVI     " : in->r[2] == 0xBF8 ? "MPEG    " : NULL;
+            if (!nm) return &err;
+            memcpy(&out->r[2], nm, 4); memcpy(&out->r[3], nm + 4, 4);
+            return NULL;
+        }
+        return &err;
     case 0x400DF:                                                         /* ReportError */
         if (((in->r[1] >> 9) & 7) == 4) { asks++; out->r[1] = 3; }        /* our own buttons: "Carry on" */
         else {
@@ -1278,6 +1384,12 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         }
         return NULL;
     case 0x06:                                                            /* OS_Byte */
+        if (in->r[0] == 106) {                                            /* select the pointer */
+            int want = in->r[1];                                          /* (in may be out) */
+            out->r[1] = ptr_shape; ptr_shape = want;
+            if (want == 0) ptr_offs++;
+            return NULL;
+        }
         if (in->r[0] == 19) { vsyncs++; fake_vsync++; }                   /* wait for the vsync */
         else if (in->r[0] == 176)                                         /* vsync counter */
             out->r[1] = vsync_now();
@@ -1297,6 +1409,11 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x42: out->r[0] = (int)(fake_time * 100); return NULL;           /* OS_ReadMonotonicTime */
     case 0x65: return &err;                                               /* OS_ScreenMode: TBGR anyway */
     case 0x50B00:                                                         /* MimeMap_Translate */
+        if (in->r[0] == 3) {                                              /* extension to filetype */
+            const char *e = (const char *)(intptr_t)in->r[1];
+            out->r[3] = !strcmp(e, "avi") ? 0xFB2 : !strcmp(e, "mp4") || !strcmp(e, "m4v") || !strcmp(e, "mpg") ? 0xBF8 : -1;
+            return out->r[3] < 0 ? &err : NULL;
+        }
         if (in->r[0] == 2) {                                              /* MIME type to filetype */
             out->r[3] = !strcmp((const char *)(intptr_t)in->r[1], "application/json") ? 0xF79 : 0xFFF;
             return NULL;
@@ -1352,6 +1469,8 @@ int main(int argc, char **argv)
     fake_scr_w = SCR_W; fake_scr_h = SCR_H;
 #endif
     clip2 = argv[2];
+    clip3 = argc > 3 ? argv[3] : NULL;
+    setenv(APP_NAME "$Dir", "/fake/!" APP_NAME, 1);
     base_url = getenv("REEL_TEST_URL");
     (void)title;
     strcpy(choices_dir, "/tmp/reelchoicesXXXXXX");                        /* a fresh Choices directory */

@@ -404,10 +404,69 @@ static void log_show(void);
 
 static int ov_hide(void);
 
+/* ---- the pointer, hidden full screen when the mouse is left alone ---------- */
+
+#define PTR_HIDE_CS 200                 /* no mouse movement this long, full screen: hidden */
+
+static struct {
+    int x, y, seen;                     /* where it was last seen */
+    int since;                          /* when it last moved (cs) */
+    int hidden;                         /* hidden by us (OS_Byte 106, 0) */
+    int was;                            /* the pointer shape before (to put back) */
+} ptr;
+
+/* Back on the screen, if we hid it */
+static void ptr_show(void)
+{
+    _kernel_swi_regs r;
+    if (!ptr.hidden)
+        return;
+    r.r[0] = 106;                       /* OS_Byte 106: select the pointer */
+    r.r[1] = ptr.was & 0x7F ? ptr.was : 1;
+    swi(0x06, &r);
+    ptr.hidden = 0;
+    lg("pointer shown");
+}
+
+/* Each null (and a few times a second while it's hidden): full screen, the
+   pointer is hidden after PTR_HIDE_CS with no movement or buttons, and
+   back as soon as the mouse moves. Reel$NoHidePointer keeps it. */
+static void ptr_watch(void)
+{
+    int b[5], now = now_cs();
+    _kernel_swi_regs r;
+    if (!S.fullscreen || getenv(APP "$NoHidePointer")) {
+        ptr_show();
+        ptr.seen = 0;
+        return;
+    }
+    r.r[1] = (intptr_t)b;
+    if (swi(Wimp_GetPointerInfo, &r))
+        return;
+    if (!ptr.seen || b[0] != ptr.x || b[1] != ptr.y || b[2]) {
+        ptr.x = b[0];
+        ptr.y = b[1];
+        ptr.seen = 1;
+        ptr.since = now;
+        ptr_show();
+        return;
+    }
+    if (!ptr.hidden && now - ptr.since >= PTR_HIDE_CS) {
+        r.r[0] = 106;
+        r.r[1] = 0;                     /* pointer off */
+        if (!swi(0x06, &r)) {
+            ptr.was = r.r[1] & 0xFF;
+            ptr.hidden = 1;
+            lg("pointer hidden (full screen, the mouse left alone)");
+        }
+    }
+}
+
 static void report(const char *text)
 {
     _kernel_oserror e;
     _kernel_swi_regs r;
+    ptr_show();
     ov_hide();                          /* the overlay would cover the error box */
     e.errnum = 0;
     snprintf(e.errmess, sizeof(e.errmess), "%s", text);
@@ -1477,6 +1536,7 @@ static void set_fullscreen(int on)
         if (!S.full && create_full_window() < 0)
             return;
         S.fullscreen = 1;
+        ptr.seen = 0;                   /* the pointer: hidden once left alone */
         S.vis_w = S.scr_w;
         S.vis_h = S.scr_h;
         b[0] = S.full; b[1] = 0; b[2] = 0; b[3] = S.scr_w; b[4] = S.scr_h;
@@ -1491,6 +1551,7 @@ static void set_fullscreen(int on)
         r.r[1] = (intptr_t)&S.full;
         swi(Wimp_CloseWindow, &r);
         S.fullscreen = 0;
+        ptr_show();
         window_state(S.win, st);
         layout(st[3] - st[1], st[4] - st[2]);
         pic_refresh();
@@ -3143,7 +3204,7 @@ typedef struct {
     int width, height, gap;
     item_t item[MENU_MAX];
 } menu_t;
-static menu_t menu, m_pic, m_speed, m_track, m_list, m_deint, m_size, m_subs, m_chap;
+static menu_t menu, m_pic, m_speed, m_track, m_list, m_deint, m_size, m_subs, m_chap, m_types;
 static char menu_text[9][MENU_MAX][72];
 static int menu_is_bar;                 /* the open menu: 1 icon bar, 0 window */
 static int menu_x, menu_y;
@@ -3185,6 +3246,120 @@ static void menu_end(menu_t *m, int n)
         m->item[n - 1].flags |= 0x80;
 }
 
+/* ---- file types a double-click opens with Reel ----------------------------- */
+
+/* The video files a double-click in the Filer can open with Reel: the
+   filetypes MimeMap gives these extensions (types it doesn't know are left
+   out). Reel claims a double-clicked video while it's running anyway
+   (Message_DataOpen); a type ticked here also starts Reel when it isn't:
+   its Alias$@RunType_XXX is Reel, set now and at every start-up by
+   Choices:Reel.Types, an Obey file !Boot runs. */
+static const char *const ftype_exts[] = {
+    "avi", "mp4", "m4v", "mkv", "webm", "mov", "mpg", "ts", "vob", "wmv", "flv", "ogv", "3gp"
+};
+#define FTYPES_MAX 13
+static struct { int type; char name[12], ext[8]; } ftype[FTYPES_MAX];
+static int ftype_n = -1;                /* -1: not looked for yet */
+
+static void ftypes_find(void)
+{
+    ftype_n = 0;
+    for (unsigned i = 0; i < sizeof(ftype_exts) / sizeof(ftype_exts[0]) && ftype_n < FTYPES_MAX; i++) {
+        _kernel_swi_regs r;
+        int t, k;
+        r.r[0] = 3;                     /* from an extension */
+        r.r[1] = (intptr_t)ftype_exts[i];
+        r.r[2] = 0;                     /* to a filetype */
+        if (swi(MimeMap_Translate, &r))
+            continue;
+        t = r.r[3];
+        if (t < 0 || t >= 0xFFD)        /* (not known: data, text) */
+            continue;
+        for (k = 0; k < ftype_n && ftype[k].type != t; k++)
+            ;
+        if (k < ftype_n)
+            continue;                   /* (m4v as mp4, say) */
+        ftype[ftype_n].type = t;
+        snprintf(ftype[ftype_n].ext, sizeof(ftype[0].ext), "%s", ftype_exts[i]);
+        r.r[0] = 18;                    /* OS_FSControl 18: the type's name */
+        r.r[2] = t;
+        if (!swi(0x29, &r) && (r.r[2] || r.r[3])) {
+            char nm[9];
+            int n = 8;
+            memcpy(nm, &r.r[2], 4);
+            memcpy(nm + 4, &r.r[3], 4);
+            while (n > 0 && (nm[n - 1] == ' ' || nm[n - 1] == 0))
+                n--;
+            nm[n] = 0;
+            snprintf(ftype[ftype_n].name, sizeof(ftype[0].name), "%s", nm);
+        } else
+            snprintf(ftype[ftype_n].name, sizeof(ftype[0].name), "&%03X", t);
+        ftype_n++;
+    }
+}
+
+static void ftype_var(char *buf, size_t n, int type)
+{
+    snprintf(buf, n, "Alias$@RunType_%03X", type);
+}
+
+/* Does a double-click of this type start Reel? (its RunType is ours) */
+static int ftype_ours(int type)
+{
+    char name[40], val[300];
+    const char *dir = getenv(APP "$Dir");
+    _kernel_swi_regs r;
+    ftype_var(name, sizeof(name), type);
+    r.r[0] = (intptr_t)name;
+    r.r[1] = (intptr_t)val;
+    r.r[2] = sizeof(val) - 1;
+    r.r[3] = 0;
+    r.r[4] = 0;
+    if (swi(0x23, &r) || !dir || !*dir)  /* OS_ReadVarVal */
+        return 0;
+    val[r.r[2] >= 0 && r.r[2] < (int)sizeof(val) ? r.r[2] : 0] = 0;
+    return strstr(val, dir) != NULL;
+}
+
+/* The ticked types, for the next start-up (an Obey file !Boot runs) */
+static void ftypes_save(void)
+{
+    FILE *f = choices_open("Types", 1);
+    if (!f)
+        return;
+    fprintf(f, "| %s: the file types a double-click opens with %s (the icon bar menu's\n"
+               "| File types). Run by !Boot.\n", APP, APP);
+    for (int i = 0; i < ftype_n; i++)
+        if (ftype_ours(ftype[i].type))
+            fprintf(f, "Set Alias$@RunType_%03X /<%s$Dir> %%%%*0\n", ftype[i].type, APP);
+    fclose(f);
+}
+
+static void ftype_toggle(int i)
+{
+    char name[40], val[300];
+    const char *dir = getenv(APP "$Dir");
+    _kernel_swi_regs r;
+    if (i < 0 || i >= ftype_n || !dir || !*dir)
+        return;
+    ftype_var(name, sizeof(name), ftype[i].type);
+    r.r[0] = (intptr_t)name;
+    r.r[3] = 0;
+    r.r[4] = 4;                         /* a literal string */
+    if (ftype_ours(ftype[i].type)) {
+        r.r[1] = (intptr_t)"";
+        r.r[2] = -1;                    /* delete it */
+        lg("file type %s (&%03X): no longer opens with %s", ftype[i].name, ftype[i].type, APP);
+    } else {
+        snprintf(val, sizeof(val), "/%s %%*0", dir);
+        r.r[1] = (intptr_t)val;
+        r.r[2] = (int)strlen(val);
+        lg("file type %s (&%03X): opens with %s", ftype[i].name, ftype[i].type, APP);
+    }
+    swi(0x24, &r);                      /* OS_SetVarVal */
+    ftypes_save();
+}
+
 static void menu_open(int bar, int x, int y)
 {
     _kernel_swi_regs r;
@@ -3195,6 +3370,19 @@ static void menu_open(int bar, int x, int y)
         menu_add(&menu, 0, &n, "Info", 0, NULL, 0);
         menu.item[0].sub = S.proginfo;  /* the About this program window (-1: none) */
         menu_add(&menu, 0, &n, "Open address...", 0, NULL, 0);
+        {
+            int k = 0;
+            if (ftype_n < 0)
+                ftypes_find();
+            menu_start(&m_types, "Double-click opens");
+            for (int i = 0; i < ftype_n; i++) {
+                char t[40];
+                snprintf(t, sizeof(t), "%s (%s)", ftype[i].name, ftype[i].ext);
+                menu_add(&m_types, 1, &k, t, ftype_ours(ftype[i].type), NULL, 0);
+            }
+            menu_end(&m_types, k);
+            menu_add(&menu, 0, &n, "File types", 0, k ? &m_types : NULL, !k);
+        }
         menu_add(&menu, 0, &n, "Loop", S.loop, NULL, 0);
         menu_add(&menu, 0, &n, "Log", 0, NULL, 0);
         menu_add(&menu, 0, &n, "Quit", 0, NULL, 0);
@@ -3564,6 +3752,7 @@ static void mini_keep_on_top(int t)
 static void quit(void)
 {
     _kernel_swi_regs r;
+    ptr_show();
     close_video();
     lg("quit");
     r.r[0] = S.task;
@@ -3579,9 +3768,10 @@ static void menu_select(const int *sel)
         switch (sel[0]) {
         case 0: break;                  /* Info: its window is the submenu */
         case 1: url_open(); break;
-        case 2: S.loop = !S.loop; break;
-        case 3: log_show(); break;
-        case 4: quit();
+        case 2: ftype_toggle(sel[1]); break;
+        case 3: S.loop = !S.loop; break;
+        case 4: log_show(); break;
+        case 5: quit();
         }
     } else {
         switch (sel[0]) {
@@ -3716,6 +3906,20 @@ static void click_track(int mouse_x)
     update_controls(1);
 }
 
+/* # : the next sound track, round to the first (files with more than one) */
+static void sound_next(void)
+{
+    int n = S.v ? reelcore_audio_tracks(S.v) : 0, i;
+    char name[80];
+    if (n < 2)
+        return;
+    i = (reelcore_audio_track(S.v) + 1) % n;
+    if (reelcore_set_audio_track(S.v, i) == 0) {
+        reelcore_audio_track_name(S.v, i, name, sizeof(name));
+        lg("sound track %d of %d: %s", i + 1, n, name);
+    }
+}
+
 static void key(int *b)
 {
     _kernel_swi_regs r;
@@ -3744,6 +3948,7 @@ static void key(int *b)
     case 's': case 'S': panel_toggle(); return;
     case 'v': case 'V': subs_toggle(); return;
     case 'j': case 'J': subs_next(); return;
+    case '#': sound_next(); return;
     case '.': frame_step(1); return;
     case ',': frame_step(-1); return;
     case 0x19F: chapter_go(-1); return;             /* Page Up */
@@ -3762,6 +3967,7 @@ static void tick(void)
 {
     int r2, t;
     _kernel_swi_regs r;
+    ptr_watch();
     if (S.opening)
         opening_tick();
     if (!S.v || S.ended)
@@ -4098,8 +4304,10 @@ int reel_main(int argc, char **argv)
 
     for (;;) {
         int playing = (S.v && !S.ended && !reelcore_paused(S.v)) || S.opening;
-        int sleep_cs = playing ? S.idle_cs : 0;
-        r.r[0] = (playing ? 0 : 1) | (1 << 4) | (1 << 5);
+        /* (the pointer hidden, paused: nulls a few times a second, to see it move) */
+        int watching = !playing && ptr.hidden;
+        int sleep_cs = playing ? S.idle_cs : watching ? 10 : 0;
+        r.r[0] = (playing || watching ? 0 : 1) | (1 << 4) | (1 << 5);
         r.r[1] = (intptr_t)block;
         S.idle_cs = 0;                  /* until the next null says otherwise */
         if (sleep_cs > 0) {
@@ -4113,7 +4321,12 @@ int reel_main(int argc, char **argv)
         } else if (swi(Wimp_Poll, &r))
             continue;
         switch (r.r[0]) {
-        case 0:  tick(); break;                            /* null */
+        case 0:                                            /* null */
+            if (playing)
+                tick();
+            else
+                ptr_watch();
+            break;
         case 1:
             if (S.info && block[0] == S.info)
                 info_redraw(block);
