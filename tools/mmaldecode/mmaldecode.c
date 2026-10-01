@@ -379,6 +379,21 @@ static uint32_t out_size;
 #define MAXPCI 16
 static uint32_t pci_alloc_swi, pci_free_swi, pci_blocks[MAXPCI];
 static int npci;
+static uint8_t *evbuf;                     /* for event data that comes by bulk */
+static uint32_t evsize;
+static const char *dump_dir;               /* -d: the first pictures and event data saved here */
+
+static void dump(const char *kind, int n, const uint8_t *p, uint32_t len)
+{
+    char name[300];
+    FILE *f;
+    if (!dump_dir || n > 2) return;
+    snprintf(name, sizeof name, "%s.%s%d", dump_dir, kind, n);
+    if ((f = fopen(name, "wb")) != NULL) {
+        fwrite(p, 1, len, f);
+        fclose(f);
+    }
+}
 
 static void *pci_alloc(size_t n)
 {
@@ -571,18 +586,19 @@ int probe_main(int argc, char **argv)
                                       0x05903004u, 0x02833001u, 0x05803004u, 0xe1a0f00eu };
 
     /* (a fresh start each time: the host tests call this more than once) */
-    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; npend = 0; out_size = 0; stub = 0; comp = 0;
+    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; evbuf = NULL; evsize = 0; dump_dir = NULL; npend = 0; out_size = 0; stub = 0; comp = 0;
     memset(in_busy, 0, sizeof in_busy); memset(out_busy, 0, sizeof out_busy); out2 = NULL; verbose = 0;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out2 = fopen(argv[++i], "a");   /* (added to: Test runs three) */
         else if (!strcmp(argv[i], "-n")) keep_going = 1;
         else if (!strcmp(argv[i], "-v")) verbose = 1;
+        else if (!strcmp(argv[i], "-d") && i + 1 < argc) dump_dir = argv[++i];
         else if (!stream_name) stream_name = argv[i];
         else if (!crc_name) crc_name = argv[i];
         else stream_name = NULL;
     }
     if (!stream_name || !crc_name) {
-        printf("Usage: mmaldecode [-o file] [-n] [-v] stream.h264 expected.crc\n");
+        printf("Usage: mmaldecode [-o file] [-n] [-v] [-d dir] stream.h264 expected.crc\n");
         return 1;
     }
     say("mmaldecode: %s on the VideoCore, through VCHIQ and MMAL\n", stream_name);
@@ -639,6 +655,8 @@ int probe_main(int argc, char **argv)
         n = transact(T_COMPONENT_CREATE, req, sizeof req, "Create");
         if (n < 20 || reply_payload()[0]) {
             if (n >= 4) say("Create: %s\n", st(reply_payload()[0]));
+            else say("The VideoCore's MMAL service isn't answering. If an earlier run stopped part way,\n"
+                     "it can stay stuck until the machine is restarted.\n");
             goto done;
         }
         comp = reply_payload()[1];
@@ -764,6 +782,7 @@ int probe_main(int argc, char **argv)
                 }
                 if (b.length) {
                     uint32_t crc = frame_crc(frame, &b);
+                    dump("p", frames, frame, b.length);
                     if (verbose)
                         say("  picture %d: planes %u, offsets %u %u %u, pitch %u %u %u; bytes %02X %02X %02X %02X; checksum &%08X\n",
                             frames, (unsigned)b.planes, (unsigned)b.offsets[0], (unsigned)b.offsets[1], (unsigned)b.offsets[2],
@@ -784,13 +803,32 @@ int probe_main(int argc, char **argv)
             char c[5];
             memcpy(&ev, reply_payload(), sizeof ev);
             events++;
-            /* An event's length can exceed the 256 bytes the message holds:
-               the Pi sends a 44 byte event (cmd 0, length = a picture's
-               size) on the output with each picture. Neither Linux's driver
-               nor userland's MMAL client receives any bulk data for such an
-               event (userland drops it as too big for an event buffer), and
-               receiving one here took the next picture's bytes (0.5 on the
-               Pi): so nothing is received for it. */
+            /* An event's length can exceed the 256 bytes the message holds;
+               then its data follows by bulk transfer (userland's client
+               queues a receive for it). The Pi sends one such event (cmd 0,
+               length = a picture's size) on the output before the first
+               picture: 0.6, which didn't receive it, got every picture one
+               transfer late and the decoder stuck at the end waiting to
+               send its last one. So it's received (into PCI memory), and
+               with -v checksummed as if it were a picture, and with -d
+               saved, to see what it is. */
+            if (ev.length > sizeof ev.data) {
+                if (ev.length > evsize) {
+                    evbuf = pci_alloc(ev.length + 4);
+                    evsize = evbuf ? ev.length : 0;
+                }
+                if (!evbuf || bulk_in(evbuf, ev.length, 99)) { fatal = 1; break; }
+                if (ev.length <= out_size) {
+                    buffer_msg_t none;
+                    memset(&none, 0, sizeof none);
+                    probe_svc_copy(frame, evbuf, (ev.length + 3) & ~3u);
+                    if (verbose)
+                        say("  event data: bytes %02X %02X %02X %02X; as a picture, checksum &%08X\n",
+                            frame[0], frame[1], frame[2], frame[3], (unsigned)frame_crc(frame, &none));
+                    dump("e", events, frame, ev.length);
+                }
+                probe_svc_copy(ev.data, evbuf, sizeof ev.data);
+            }
             if (ev.cmd == EV_FORMAT_CHANGED && ev.port_type == PORT_OUTPUT) {
                 format_changed_t fc;
                 memcpy(&fc, ev.data, sizeof fc);

@@ -37,6 +37,7 @@ static int fails;
 static _kernel_oserror err = { 1, "fake error" }, empty = { 2, "none" };
 
 /* scenario */
+static int first_event_sent;
 static int big_efch, corrupt_at = -1, go_quiet, error_event, long_event, awaiting_reformat;
 /* counters */
 static int uses, releases, opens, closes, connects, disconnects, freed, created, destroyed, comp_enabled,
@@ -111,7 +112,9 @@ static void produce(void)
         memset(ev, 0, sizeof ev);
         ev[1] = 2; ev[3] = 0x48435045u; ev[4] = 300;
         post(16, ev, sizeof ev, 0);
-        long_event = 2;                      /* (no data follows: see mmaldecode.c) */
+        need_rx = 3; rx_len_expected = 300;  /* its data follows by bulk */
+        long_event = 2;
+        return;
     }
     if (!efch_sent) {                        /* the first thing out: a format change */
         uint32_t ev[5 + 256 / 4 + 1];
@@ -139,9 +142,12 @@ static void produce(void)
     }
     if (frames_made < n) {
         uint32_t pw = (out_w + 31) & ~31u, ph = (out_h + 15) & ~15u, size = pw * ph * 3 / 2;
-        {                                    /* as the Pi: a 44 byte event (cmd 0, length = the picture's size) first */
+        if (!frames_made && !first_event_sent) {   /* as the Pi: a 44 byte event (cmd 0, length = a picture's size), data by bulk */
             uint32_t ev[5] = { 1, 3, 0, 0, size };
             post(16, ev, sizeof ev, 0);
+            need_rx = 3; rx_len_expected = size;
+            first_event_sent = 1;
+            return;
         }
         render(vals[frames_made], cur_frame);
         if (frames_made == corrupt_at) cur_frame[5] ^= 1;
@@ -394,7 +400,7 @@ static char *run(int *ret, int keep_going)
     uses = releases = opens = closes = connects = disconnects = freed = created = destroyed = comp_enabled = 0;
     memset(port_on, 0, sizeof port_on);
     shorts = bulks_tx = bulks_rx = efch_sent = disables_out = 0;
-    got_len = pending_tx = 0; awaiting_reformat = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
+    got_len = pending_tx = 0; awaiting_reformat = 0; first_event_sent = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
     noutq = 0;
     remove("/tmp/mmaldecode_test.out");
     *ret = keep_going ? probe_main(6, argv) : probe_main(5, argv2);
@@ -427,7 +433,7 @@ int main(void)
     CHECK(ret == 0 && strstr(o, "9 pictures decoded") && strstr(o, "9 of 9 checked against FFmpeg: 0 wrong") &&
           strstr(o, "Result: OK"), "normal path (%d)", ret);
     CHECK(bulks_tx == 6 && shorts == 0, "pieces: %d by bulk, %d in the message", bulks_tx, shorts);
-    CHECK(bulks_rx == 10 && disables_out == 1, "receives %d (9 pictures + EOS), disables %d (at the end)", bulks_rx, disables_out);
+    CHECK(bulks_rx == 11 && disables_out == 1, "receives %d (event + 9 pictures + EOS), disables %d (at the end)", bulks_rx, disables_out);
     CHECK(got_len == 9 * (FILLER + 5), "stream arrived whole: %u", got_len);
     cleaned("normal");
 
@@ -455,7 +461,7 @@ int main(void)
 
     long_event = 1;
     o = run(&ret, 0);
-    CHECK(ret == 0 && long_event == 2 && bulks_rx == 10 && strstr(o, "Event EPCH (&48435045, 300 bytes) on port type 2"),
+    CHECK(ret == 0 && long_event == 2 && bulks_rx == 12 && strstr(o, "Event EPCH (&48435045, 300 bytes) on port type 2"),
           "long event (%d, %d receives):\n%s", ret, bulks_rx, o);
     cleaned("long event");
     long_event = 0;
