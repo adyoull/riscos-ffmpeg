@@ -9,4 +9,4 @@ RMEnsure ARMEABISupport 0 Error This needs the ARMEABISupport module. Install it
 WimpSlot -min 16384K -max 16384K
 Remove <Obey$Dir>.ResultV
 CDir <Obey$Dir>.Dump
-Run <Obey$Dir>.mmaldecode -v -n -d <Obey$Dir>.Dump -o <Obey$Dir>.ResultV <Obey$Dir>.clips.small.stream <Obey$Dir>.clips.small.crc
+Run <Obey$Dir>.mmaldecode -v -n -d <Obey$Dir>.Dump -o <Obey$Dir>.ResultV <Obey$Dir>.clips.small.stream <Obey$Dir>.clips.small.crc <Obey$Dir>.clips.small.sig

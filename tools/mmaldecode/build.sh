@@ -26,6 +26,8 @@ $FFMPEG -v error -y -f lavfi -i testsrc2=size=1920x1080:rate=30 -frames:v 150 -c
 for c in small odd hd; do
   mkdir "$C/$c"
   $FFMPEG -v error -y -i "$C/$c.h264" -f framecrc -pix_fmt yuv420p "$C/$c/crc"
+  dims=$($FFMPEG -v error -i "$C/$c.h264" -f framecrc - 2>/dev/null | sed -n 's/^#dimensions 0: //p')
+  $FFMPEG -v error -i "$C/$c.h264" -f rawvideo -pix_fmt yuv420p - | python3 "$HERE/mksig.py" ${dims%x*} ${dims#*x} > "$C/$c/sig"
   mv "$C/$c.h264" "$C/$c/stream"
 done
 cp "$HERE"/app/* "$TMP/MMALDecode/"

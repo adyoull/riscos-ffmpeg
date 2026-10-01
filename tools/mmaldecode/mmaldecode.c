@@ -381,6 +381,7 @@ static uint32_t pci_alloc_swi, pci_free_swi, pci_blocks[MAXPCI];
 static int npci;
 static uint8_t *evbuf;                     /* for event data that comes by bulk */
 static uint32_t evsize;
+static int big_events;
 static const char *dump_dir;               /* -d: the first pictures and event data saved here */
 
 static void dump(const char *kind, int n, const uint8_t *p, uint32_t len)
@@ -515,6 +516,59 @@ static int read_crcs(const char *name)
     return 0;
 }
 
+/* Signatures: FFmpeg's pictures as block means (an 8x8 grid of Y, 4x4 of U
+   and of V: 96 numbers a picture), from build.sh. The VideoCore's H.264
+   output isn't always bit-exact with FFmpeg's (the Pi 4: a few chroma
+   values 1 lower, in moving areas), so each picture is also compared this
+   way: "close" if no block mean differs by more than 1.0; otherwise the
+   FFmpeg picture it is closest to is named, which shows pictures out of
+   order or missing. */
+#define SIGN 96
+static float (*sig)[SIGN];
+static int nsig;
+
+static int read_sigs(const char *name)
+{
+    FILE *f = fopen(name, "r");
+    int cap = 0;
+    float v[SIGN];
+    if (!f) { say("Can't open %s\n", name); return -1; }
+    for (;;) {
+        int k;
+        for (k = 0; k < SIGN; k++) if (fscanf(f, "%f", &v[k]) != 1) break;
+        if (k < SIGN) break;
+        if (nsig == cap) {
+            cap = cap ? cap * 2 : 64;
+            if (!(sig = realloc(sig, (size_t)cap * sizeof *sig))) { fclose(f); return -1; }
+        }
+        memcpy(sig[nsig++], v, sizeof v);
+    }
+    fclose(f);
+    return 0;
+}
+
+static void grid(const uint8_t *p, uint32_t pitch, uint32_t w, uint32_t h, int n, float *out)
+{
+    for (int gy = 0; gy < n; gy++)
+        for (int gx = 0; gx < n; gx++) {
+            uint32_t y0 = h * (uint32_t)gy / (uint32_t)n, y1 = h * (uint32_t)(gy + 1) / (uint32_t)n;
+            uint32_t x0 = w * (uint32_t)gx / (uint32_t)n, x1 = w * (uint32_t)(gx + 1) / (uint32_t)n;
+            double sum = 0;
+            for (uint32_t y = y0; y < y1; y++)
+                for (uint32_t x = x0; x < x1; x++) sum += p[y * pitch + x];
+            *out++ = (float)(sum / (double)((y1 - y0) * (x1 - x0)));
+        }
+}
+
+static void frame_sig(const uint8_t *p, const buffer_msg_t *b, float *s);
+
+static float sig_diff(const float *a, const float *b)
+{
+    float m = 0;
+    for (int k = 0; k < SIGN; k++) { float d = a[k] > b[k] ? a[k] - b[k] : b[k] - a[k]; if (d > m) m = d; }
+    return m;
+}
+
 /* Adler-32 of the visible picture, packed (Y, U, V) */
 static uint32_t frame_crc(const uint8_t *p, const buffer_msg_t *b)
 {
@@ -532,6 +586,22 @@ static uint32_t frame_crc(const uint8_t *p, const buffer_msg_t *b)
     for (int c = 1; c < 3; c++)
         for (y = 0; y < (h + 1) / 2; y++) a = adler(a, p + off[c] + y * pit[c], (w + 1) / 2);
     return a;
+}
+
+static void frame_sig(const uint8_t *p, const buffer_msg_t *b, float *s)
+{
+    uint32_t w = (uint32_t)want_w, h = (uint32_t)want_h;
+    uint32_t pitch = out_info.video.width, rows = out_info.video.height, off[3], pit[3];
+    if (b->planes == 3 && b->pitch[0]) {
+        for (int i = 0; i < 3; i++) { off[i] = b->offsets[i]; pit[i] = b->pitch[i]; }
+    } else {
+        off[0] = 0; pit[0] = pitch;
+        off[1] = pitch * rows; pit[1] = pitch / 2;
+        off[2] = off[1] + (pitch / 2) * (rows / 2); pit[2] = pitch / 2;
+    }
+    grid(p + off[0], pit[0], w, h, 8, s);
+    grid(p + off[1], pit[1], (w + 1) / 2, (h + 1) / 2, 4, s + 64);
+    grid(p + off[2], pit[2], (w + 1) / 2, (h + 1) / 2, 4, s + 80);
 }
 
 /* ---- output format ---- */
@@ -576,7 +646,8 @@ static int configure_output(void)
 
 int probe_main(int argc, char **argv)
 {
-    const char *stream_name = NULL, *crc_name = NULL;
+    const char *stream_name = NULL, *crc_name = NULL, *sig_name = NULL;
+    int close_n = 0, far_n = 0;
     uint8_t *stream = NULL;
     uint32_t stream_len = 0, sent = 0, instance = 0, setup[11], t_start = 0, t_end = 0, last_progress;
     int connected = 0, opened = 0, created = 0, enabled = 0, in_on = 0, out_on = 0, keep_going = 0;
@@ -586,7 +657,7 @@ int probe_main(int argc, char **argv)
                                       0x05903004u, 0x02833001u, 0x05803004u, 0xe1a0f00eu };
 
     /* (a fresh start each time: the host tests call this more than once) */
-    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; evbuf = NULL; evsize = 0; dump_dir = NULL; npend = 0; out_size = 0; stub = 0; comp = 0;
+    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; evbuf = NULL; evsize = 0; dump_dir = NULL; big_events = 0; nsig = 0; npend = 0; out_size = 0; stub = 0; comp = 0;
     memset(in_busy, 0, sizeof in_busy); memset(out_busy, 0, sizeof out_busy); out2 = NULL; verbose = 0;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out2 = fopen(argv[++i], "a");   /* (added to: Test runs three) */
@@ -595,6 +666,7 @@ int probe_main(int argc, char **argv)
         else if (!strcmp(argv[i], "-d") && i + 1 < argc) dump_dir = argv[++i];
         else if (!stream_name) stream_name = argv[i];
         else if (!crc_name) crc_name = argv[i];
+        else if (!sig_name) sig_name = argv[i];
         else stream_name = NULL;
     }
     if (!stream_name || !crc_name) {
@@ -603,6 +675,7 @@ int probe_main(int argc, char **argv)
     }
     say("mmaldecode: %s on the VideoCore, through VCHIQ and MMAL\n", stream_name);
     if (read_crcs(crc_name)) goto done;
+    if (sig_name && read_sigs(sig_name)) goto done;
     {
         FILE *f = fopen(stream_name, "rb");
         long n;
@@ -789,9 +862,28 @@ int probe_main(int argc, char **argv)
                             (unsigned)b.pitch[0], (unsigned)b.pitch[1], (unsigned)b.pitch[2],
                             frame[0], frame[1], frame[2], frame[3], (unsigned)crc);
                     if (frames < nwant && crc != want[frames]) {
-                        if (wrong < 5) say("Picture %d: checksum &%08X, FFmpeg's &%08X\n", frames, (unsigned)crc, (unsigned)want[frames]);
-                        wrong++;
-                        if (!keep_going) fatal = 1;
+                        int is_close = 0;
+                        if (frames < nsig) {
+                            float s[SIGN], d = 1e9f, best = 1e9f;
+                            int bj = -1;
+                            frame_sig(frame, &b, s);
+                            d = sig_diff(s, sig[frames]);
+                            for (int j = 0; j < nsig; j++) {
+                                float dj = sig_diff(s, sig[j]);
+                                if (dj < best) { best = dj; bj = j; }
+                            }
+                            if (d <= 1.0f) { is_close = 1; close_n++; }
+                            else {
+                                far_n++;
+                                if (far_n <= 5) say("Picture %d: not close to FFmpeg's picture %d (%.1f); closest is FFmpeg's %d (%.1f)\n",
+                                                    frames, frames, (double)d, bj, (double)best);
+                            }
+                        }
+                        if (!is_close) {
+                            if (wrong < 5 && frames >= nsig) say("Picture %d: checksum &%08X, FFmpeg's &%08X\n", frames, (unsigned)crc, (unsigned)want[frames]);
+                            wrong++;
+                            if (!keep_going) fatal = 1;
+                        }
                     }
                     frames++;
                 }
@@ -825,7 +917,7 @@ int probe_main(int argc, char **argv)
                     if (verbose)
                         say("  event data: bytes %02X %02X %02X %02X; as a picture, checksum &%08X\n",
                             frame[0], frame[1], frame[2], frame[3], (unsigned)frame_crc(frame, &none));
-                    dump("e", events, frame, ev.length);
+                    dump("e", big_events++, frame, ev.length);
                 }
                 probe_svc_copy(ev.data, evbuf, sizeof ev.data);
             }
@@ -836,8 +928,12 @@ int probe_main(int argc, char **argv)
                 say("Format changed: %s %ux%u (crop %dx%d), buffers %u x %u bytes\n", fourcc(fc.format.encoding, c),
                     (unsigned)fc.video.width, (unsigned)fc.video.height, (int)fc.video.crop[2], (int)fc.video.crop[3],
                     (unsigned)fc.buffer_num_recommended, (unsigned)fc.buffer_size_recommended);
-                if (fc.video.width != out_info.video.width || fc.video.height != out_info.video.height ||
-                    fc.buffer_size_min > out_size || fc.format.encoding != out_info.format.encoding) {
+                /* MMAL's clients always answer a format change by disabling
+                   the port, setting the format it gives and enabling it again
+                   (userland's examples, Linux's codec driver); 0.7 skipped it
+                   when the size hadn't changed, and the decoder then sent its
+                   first picture as an event and lost one: so always. */
+                {
                     /* the output's buffers come back when it's disabled */
                     if (port_action(&out_info, ACTION_DISABLE, "Output disable")) { fatal = 1; break; }
                     out_on = 0;
@@ -894,7 +990,9 @@ done:
     pci_free_all();
     {
         int ok = eos_seen && !fatal && !wrong && frames == nwant;
-        say("\nResult: %s\n", ok ? "OK - the VideoCore decoded every picture exactly as FFmpeg does" :
+        if (nsig) say("Not bit-exact but close to FFmpeg's (block means within 1): %d; not close: %d\n", close_n, far_n);
+        say("\nResult: %s\n", ok && !close_n ? "OK - the VideoCore decoded every picture exactly as FFmpeg does" :
+                              ok ? "OK - every picture matches FFmpeg's, some within rounding (see above)" :
                               eos_seen && frames != nwant ? "the decoder finished, but with a different number of pictures" :
                               wrong ? "pictures differ from FFmpeg's" : "the decode didn't finish (see above)");
         if (out2) fclose(out2);

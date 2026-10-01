@@ -37,7 +37,7 @@ static int fails;
 static _kernel_oserror err = { 1, "fake error" }, empty = { 2, "none" };
 
 /* scenario */
-static int first_event_sent;
+static int first_event_sent, swap_frames;
 static int big_efch, corrupt_at = -1, go_quiet, error_event, long_event, awaiting_reformat;
 /* counters */
 static int uses, releases, opens, closes, connects, disconnects, freed, created, destroyed, comp_enabled,
@@ -149,7 +149,7 @@ static void produce(void)
             first_event_sent = 1;
             return;
         }
-        render(vals[frames_made], cur_frame);
+        render(vals[swap_frames && frames_made == 1 ? 2 : swap_frames && frames_made == 2 ? 1 : frames_made], cur_frame);
         if (frames_made == corrupt_at) cur_frame[5] ^= 1;
         buffer_back(2, (uint32_t)out_bufs[--nout], size, 0);
         need_rx = 1; rx_len_expected = size;
@@ -368,6 +368,7 @@ static uint32_t adler0(uint32_t a, const uint8_t *p, size_t n)
 static void make_files(void)
 {
     FILE *f = fopen("/tmp/mmaldecode_test.h264", "wb"), *c = fopen("/tmp/mmaldecode_test.crc", "w");
+    FILE *sg = fopen("/tmp/mmaldecode_test.sig", "w");
     uint8_t filler[40000];
 #define FILLER 36415
     memset(filler, 0xAA, sizeof filler);
@@ -383,11 +384,14 @@ static void make_files(void)
         for (int r = 0; r < (H + 1) / 2; r++) a = adler0(a, u, sizeof u);
         for (int r = 0; r < (H + 1) / 2; r++) a = adler0(a, vv, sizeof vv);
         fprintf(c, "0, %10d, %10d, 1, %8d, 0x%08x\n", k, k, W * H * 3 / 2, a);
+        for (int q = 0; q < 96; q++) fprintf(sg, "%d.00%c", q < 64 ? v : q < 80 ? v + 1 : v + 2, q == 95 ? '\n' : ' ');
     }
     fclose(f);
     fclose(c);
+    fclose(sg);
 }
 
+static int with_sig;
 static char *run(int *ret, int keep_going)
 {
     static char buf[16384];
@@ -403,7 +407,13 @@ static char *run(int *ret, int keep_going)
     got_len = pending_tx = 0; awaiting_reformat = 0; first_event_sent = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
     noutq = 0;
     remove("/tmp/mmaldecode_test.out");
-    *ret = keep_going ? probe_main(6, argv) : probe_main(5, argv2);
+    if (with_sig) {
+        char *argv3[] = { "mmaldecode", "-o", "/tmp/mmaldecode_test.out", "-n", "/tmp/mmaldecode_test.h264",
+                          "/tmp/mmaldecode_test.crc", "/tmp/mmaldecode_test.sig", NULL };
+        *ret = probe_main(7, argv3);
+    } else {
+        *ret = keep_going ? probe_main(6, argv) : probe_main(5, argv2);
+    }
     f = fopen("/tmp/mmaldecode_test.out", "r");
     got = f ? fread(buf, 1, sizeof buf - 1, f) : 0;
     buf[got] = 0;
@@ -433,7 +443,7 @@ int main(void)
     CHECK(ret == 0 && strstr(o, "9 pictures decoded") && strstr(o, "9 of 9 checked against FFmpeg: 0 wrong") &&
           strstr(o, "Result: OK"), "normal path (%d)", ret);
     CHECK(bulks_tx == 6 && shorts == 0, "pieces: %d by bulk, %d in the message", bulks_tx, shorts);
-    CHECK(bulks_rx == 11 && disables_out == 1, "receives %d (event + 9 pictures + EOS), disables %d (at the end)", bulks_rx, disables_out);
+    CHECK(bulks_rx == 11 && disables_out == 2, "receives %d (event + 9 pictures + EOS), disables %d (the EFCH reformat + the end)", bulks_rx, disables_out);
     CHECK(got_len == 9 * (FILLER + 5), "stream arrived whole: %u", got_len);
     cleaned("normal");
 
@@ -470,6 +480,22 @@ int main(void)
     o = run(&ret, 0);
     CHECK(ret == 1 && strstr(o, "reports an error"), "error event (%d)", ret);
     cleaned("error");
+
+    /* signatures: a picture 1 value off is "close"; one out of order is named */
+    with_sig = 1;
+    corrupt_at = 3;
+    o = run(&ret, 1);
+    CHECK(ret == 0 && strstr(o, "close to FFmpeg's (block means within 1): 1; not close: 0") &&
+          strstr(o, "some within rounding"), "sig, 1 value off (%d):\n%s", ret, o);
+    cleaned("sig close");
+    corrupt_at = -1;
+    swap_frames = 1;
+    o = run(&ret, 1);
+    CHECK(ret == 1 && strstr(o, "Picture 1: not close to FFmpeg's picture 1") && strstr(o, "closest is FFmpeg's 2"),
+          "sig, swapped (%d):\n%s", ret, o);
+    cleaned("sig swapped");
+    swap_frames = 0;
+    with_sig = 0;
 
     no_pci_mem = 1;
     o = run(&ret, 0);

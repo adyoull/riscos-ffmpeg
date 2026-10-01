@@ -7,6 +7,6 @@ RMEnsure ARMEABISupport 0 IfThere System:Modules.ARMEABISupport Then RMLoad Syst
 RMEnsure ARMEABISupport 0 Error This needs the ARMEABISupport module. Install it with PackMan.
 WimpSlot -min 16384K -max 16384K
 Remove <Obey$Dir>.Result
-Run <Obey$Dir>.mmaldecode -o <Obey$Dir>.Result <Obey$Dir>.clips.small.stream <Obey$Dir>.clips.small.crc
-Run <Obey$Dir>.mmaldecode -o <Obey$Dir>.Result <Obey$Dir>.clips.odd.stream <Obey$Dir>.clips.odd.crc
-Run <Obey$Dir>.mmaldecode -o <Obey$Dir>.Result <Obey$Dir>.clips.hd.stream <Obey$Dir>.clips.hd.crc
+Run <Obey$Dir>.mmaldecode -o <Obey$Dir>.Result <Obey$Dir>.clips.small.stream <Obey$Dir>.clips.small.crc <Obey$Dir>.clips.small.sig
+Run <Obey$Dir>.mmaldecode -o <Obey$Dir>.Result <Obey$Dir>.clips.odd.stream <Obey$Dir>.clips.odd.crc <Obey$Dir>.clips.odd.sig
+Run <Obey$Dir>.mmaldecode -o <Obey$Dir>.Result <Obey$Dir>.clips.hd.stream <Obey$Dir>.clips.hd.crc <Obey$Dir>.clips.hd.sig
