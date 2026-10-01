@@ -15,7 +15,11 @@
  *   4. empty output buffers are handed over; each picture comes back as
  *      BUFFER_TO_HOST, then its bytes by a bulk receive into our memory,
  *      whose completion the RMA callback counts; an empty EOS buffer
- *      still gets an 8 byte receive (as Linux's driver), to keep order;
+ *      still gets an 8 byte receive (as Linux's driver), to keep order.
+ *      Every receive is queued the moment its message arrives, even while
+ *      waiting for the reply to something else: the VideoCore answers
+ *      nothing more until the data it's sending has been taken (0.8 sent
+ *      a port disable with an event's data still waiting: no reply);
  *   5. a FORMAT_CHANGED event on the output is honoured: port disabled,
  *      the new format set, re-enabled, the buffers handed over again;
  *   6. each picture's visible part is checksummed (Adler-32 of the packed
@@ -270,7 +274,11 @@ static int send_msg(uint32_t type, const void *payload, uint32_t len, uint32_t *
     return e ? -1 : 0;
 }
 
-/* one message into msg[]: its length, or 0 if none waiting */
+static int take_data(void);
+static int data_failed;                    /* a receive failed: the session can't go on */
+
+/* one message into msg[]: its length, or 0 if none waiting. Any data that
+   follows it by bulk transfer is received at once (take_data). */
 static uint32_t poll_msg(void)
 {
     uint32_t got = 0;
@@ -281,6 +289,7 @@ static uint32_t poll_msg(void)
         say("(a %u byte message that isn't MMAL's)\n", (unsigned)got);
         return 0;
     }
+    if (take_data()) data_failed = 1;
     return got;
 }
 
@@ -293,6 +302,7 @@ static int transact(uint32_t type, const void *payload, uint32_t len, const char
     t0 = now_cs();
     while (now_cs() - t0 < REPLY_CS) {
         if (!(got = poll_msg())) continue;
+        if (data_failed) return -1;
         if (((hdr_t *)msg)->type == type) return (int)(got - sizeof(hdr_t));
         if (npend < MAXPEND) {
             memcpy(pend[npend], msg, got);
@@ -486,6 +496,38 @@ static int bulk_in(uint8_t *dst, uint32_t n, uint32_t tag)
     return 0;
 }
 
+/* Receives the data that follows the message in msg[] by bulk transfer:
+   a picture into its output buffer, an empty EOS buffer's 8 bytes, an
+   event's data (over 256 bytes) into evbuf. Called as each message
+   arrives, so the receives are queued in the order the VideoCore sends. */
+static int take_data(void)
+{
+    hdr_t *h = (hdr_t *)msg;
+    const uint32_t *w = (const uint32_t *)(h + 1);
+    if (h->type == T_BUFFER_TO_HOST) {
+        const buffer_msg_t *b = (const buffer_msg_t *)w;
+        uint32_t k = b->drvbuf.client_context;
+        if (b->drvbuf.magic != MMAL_MAGIC || b->drvbuf.port_handle != out_port || k >= OUT_BUFS || h->status) return 0;
+        if (b->length && !b->payload_in_message) {
+            if (b->length > out_size) { say("A %u byte picture for a %u byte buffer\n", (unsigned)b->length, (unsigned)out_size); return -1; }
+            return bulk_in(out_buf[k], b->length, k);
+        }
+        if (!b->length && (b->flags & FLAG_EOS)) return bulk_in(out_buf[k], 8, k);   /* keeps the order */
+        return 0;
+    }
+    if (h->type == T_EVENT_TO_HOST) {
+        const event_msg_t *ev = (const event_msg_t *)w;
+        if (ev->length <= sizeof ev->data) return 0;
+        if (ev->length > evsize) {
+            evbuf = pci_alloc(ev->length + 4);
+            evsize = evbuf ? ev->length : 0;
+            if (!evbuf) { say("No physically contiguous memory for a %u byte event\n", (unsigned)ev->length); return -1; }
+        }
+        return bulk_in(evbuf, ev->length, 99);
+    }
+    return 0;
+}
+
 /* ---- the expected checksums ---- */
 
 static uint32_t *want;
@@ -657,7 +699,7 @@ int probe_main(int argc, char **argv)
                                       0x05903004u, 0x02833001u, 0x05803004u, 0xe1a0f00eu };
 
     /* (a fresh start each time: the host tests call this more than once) */
-    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; evbuf = NULL; evsize = 0; dump_dir = NULL; big_events = 0; nsig = 0; npend = 0; out_size = 0; stub = 0; comp = 0;
+    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; evbuf = NULL; evsize = 0; dump_dir = NULL; big_events = 0; nsig = 0; npend = 0; data_failed = 0; out_size = 0; stub = 0; comp = 0;
     memset(in_busy, 0, sizeof in_busy); memset(out_busy, 0, sizeof out_busy); out2 = NULL; verbose = 0;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out2 = fopen(argv[++i], "a");   /* (added to: Test runs three) */
@@ -808,6 +850,7 @@ int probe_main(int argc, char **argv)
             }
             continue;
         }
+        if (data_failed) { fatal = 1; break; }
         last_progress = now_cs();
         if (verbose) {
             const uint32_t *w = reply_payload();
@@ -844,15 +887,10 @@ int probe_main(int argc, char **argv)
                     say("Output buffer back with status %s\n", st(((hdr_t *)msg)->status));
                     continue;
                 }
-                if (b.length && !b.payload_in_message) {
-                    if (b.length > out_size) { say("A %u byte picture for a %u byte buffer\n", (unsigned)b.length, (unsigned)out_size); fatal = 1; break; }
-                    if (bulk_in(out_buf[k], b.length, (uint32_t)k)) { fatal = 1; break; }
+                if (b.length && !b.payload_in_message)   /* (received as it arrived: take_data) */
                     probe_svc_copy(frame, out_buf[k], (b.length + 3) & ~3u);
-                } else if (b.length) {
+                else if (b.length)
                     memcpy(frame, b.short_data, b.payload_in_message);
-                } else if (b.flags & FLAG_EOS) {
-                    if (bulk_in(out_buf[k], 8, (uint32_t)k)) { fatal = 1; break; }   /* keeps the order */
-                }
                 if (b.length) {
                     uint32_t crc = frame_crc(frame, &b);
                     dump("p", frames, frame, b.length);
@@ -904,12 +942,7 @@ int probe_main(int argc, char **argv)
                send its last one. So it's received (into PCI memory), and
                with -v checksummed as if it were a picture, and with -d
                saved, to see what it is. */
-            if (ev.length > sizeof ev.data) {
-                if (ev.length > evsize) {
-                    evbuf = pci_alloc(ev.length + 4);
-                    evsize = evbuf ? ev.length : 0;
-                }
-                if (!evbuf || bulk_in(evbuf, ev.length, 99)) { fatal = 1; break; }
+            if (ev.length > sizeof ev.data) {       /* (received as it arrived: take_data) */
                 if (ev.length <= out_size) {
                     buffer_msg_t none;
                     memset(&none, 0, sizeof none);
@@ -917,6 +950,17 @@ int probe_main(int argc, char **argv)
                     if (verbose)
                         say("  event data: bytes %02X %02X %02X %02X; as a picture, checksum &%08X\n",
                             frame[0], frame[1], frame[2], frame[3], (unsigned)frame_crc(frame, &none));
+                    if (nsig && ev.length == out_size) {   /* is it one of the pictures? */
+                        float s[SIGN], best = 1e9f;
+                        int bj = -1;
+                        frame_sig(frame, &none, s);
+                        for (int j = 0; j < nsig; j++) {
+                            float dj = sig_diff(s, sig[j]);
+                            if (dj < best) { best = dj; bj = j; }
+                        }
+                        say("Event data (%u bytes): as a picture, closest to FFmpeg's picture %d (%.1f)\n",
+                            (unsigned)ev.length, bj, (double)best);
+                    }
                     dump("e", big_events++, frame, ev.length);
                 }
                 probe_svc_copy(ev.data, evbuf, sizeof ev.data);
@@ -945,16 +989,24 @@ int probe_main(int argc, char **argv)
                                                 fc.buffer_size_recommended : fc.buffer_size_min;
                     if (configure_output() || port_action(&out_info, ACTION_ENABLE, "Output enable")) { fatal = 1; break; }
                     out_on = 1;
-                    /* anything the disable sent back is stale */
-                    for (i = 0; i < npend; )
-                        if (((hdr_t *)pend[i])->type == T_BUFFER_TO_HOST &&
-                            ((buffer_msg_t *)((hdr_t *)pend[i] + 1))->drvbuf.port_handle == out_port) {
+                    /* the empty buffers the disable sent back are dropped; a
+                       picture (or EOS) that came meanwhile is kept, its
+                       buffer not handed over again until it's been checked */
+                    for (i = 0; i < npend; ) {
+                        const buffer_msg_t *pb = (const buffer_msg_t *)((hdr_t *)pend[i] + 1);
+                        if (((hdr_t *)pend[i])->type == T_BUFFER_TO_HOST && pb->drvbuf.port_handle == out_port) {
+                            if ((pb->length || (pb->flags & FLAG_EOS)) && pb->drvbuf.client_context < OUT_BUFS) {
+                                out_busy[pb->drvbuf.client_context] = 1;
+                                i++;
+                                continue;
+                            }
                             memmove(pend[i], pend[i + 1], sizeof pend[0] * (size_t)(npend - i - 1));
                             memmove(pend_len + i, pend_len + i + 1, sizeof pend_len[0] * (size_t)(npend - i - 1));
                             npend--;
                         } else {
                             i++;
                         }
+                    }
                     if (give_outputs()) { fatal = 1; break; }
                 }
             } else if (ev.cmd == EV_ERROR) {

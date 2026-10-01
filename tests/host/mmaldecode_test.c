@@ -9,6 +9,9 @@
  *   - the normal path: several 64 KB pieces by bulk, a short last piece in
  *     the message, EOS, an EFCH that needs no change, every picture right;
  *   - an EFCH to a bigger size: disable, reformat, re-enable, buffers again;
+ *   - as the Pi, the fake answers nothing while data it's sending waits for
+ *     a receive: the EFCH's disable goes out with the next event's data
+ *     waiting, and only gets its reply once that's received;
  *   - a wrong picture: stops there (and with -n goes on and counts);
  *   - a decoder that goes quiet: gives up; an error event: stops;
  *   - every run: component disabled and destroyed, ports disabled,
@@ -161,10 +164,22 @@ static void produce(void)
     }
 }
 
+/* As the Pi: while the VideoCore is sending data by bulk transfer (an
+   event's or a picture's) and the host hasn't queued the receive, it
+   answers nothing else. Messages wait here until the receive (0.8 sent a
+   port disable at such a time, waited for the reply, and never got one). */
+static uint32_t deferred[8][128], deferred_len[8];
+static int ndeferred, deferred_ever;
+
 static void firmware(const uint32_t *m, uint32_t len)
 {
     const uint32_t *p = m + 6;
     CHECK(m[0] == MAGIC && len <= 512, "bad message");
+    if (need_rx) {
+        CHECK(ndeferred < 8, "too many messages while sending");
+        if (ndeferred < 8) { memcpy(deferred[ndeferred], m, len); deferred_len[ndeferred++] = len; deferred_ever++; }
+        return;
+    }
     switch (m[1]) {
     case 4: { uint32_t r[5] = { 0, 0xC0DE, 1, 1, 1 }; created++; reply(m, r, sizeof r); break; }
     case 8: {                                /* PORT_INFO_GET */
@@ -339,6 +354,14 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
         need_rx = 0;
         bulks_rx++;
         ((stub_fn *)(uintptr_t)stub)(stub + 64, 4, R[4]);      /* the real callback */
+        while (!need_rx && ndeferred) {                         /* what waited, in order */
+            uint32_t m[128], l = deferred_len[0];
+            memcpy(m, deferred[0], l);
+            memmove(deferred[0], deferred[1], sizeof deferred[0] * (size_t)(ndeferred - 1));
+            memmove(deferred_len, deferred_len + 1, sizeof deferred_len[0] * (size_t)(ndeferred - 1));
+            ndeferred--;
+            firmware(m, l);
+        }
         produce();
         return NULL;
     }
@@ -405,7 +428,7 @@ static char *run(int *ret, int keep_going)
     memset(port_on, 0, sizeof port_on);
     shorts = bulks_tx = bulks_rx = efch_sent = disables_out = 0;
     got_len = pending_tx = 0; awaiting_reformat = 0; first_event_sent = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
-    noutq = 0;
+    noutq = 0; ndeferred = deferred_ever = 0;
     remove("/tmp/mmaldecode_test.out");
     if (with_sig) {
         char *argv3[] = { "mmaldecode", "-o", "/tmp/mmaldecode_test.out", "-n", "/tmp/mmaldecode_test.h264",
@@ -445,6 +468,7 @@ int main(void)
     CHECK(bulks_tx == 6 && shorts == 0, "pieces: %d by bulk, %d in the message", bulks_tx, shorts);
     CHECK(bulks_rx == 11 && disables_out == 2, "receives %d (event + 9 pictures + EOS), disables %d (the EFCH reformat + the end)", bulks_rx, disables_out);
     CHECK(got_len == 9 * (FILLER + 5), "stream arrived whole: %u", got_len);
+    CHECK(deferred_ever, "the Output disable should have been sent while the event's data was waiting (as on the Pi)");
     cleaned("normal");
 
     big_efch = 1;

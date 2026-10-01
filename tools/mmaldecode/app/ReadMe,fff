@@ -31,6 +31,10 @@ transfer, and a nine-instruction callback in the RMA counts them in; it's
 removed at the end. If the machine locks up (it shouldn't), switch it off
 and on again.
 
+If a run stops part way (the report says "no reply"), the VideoCore's
+decoder can stay stuck until the machine is restarted: restart before
+running Test or Verbose again.
+
 Needs: RISC OS 5 on a Raspberry Pi, with the VCHIQ module (in the ROM).
 Part of riscos-ffmpeg; MIT licence. The clips are made from FFmpeg's
 testsrc2 pattern.
