@@ -31,8 +31,8 @@ caea90c3cc14abb4387f2c8d2e009355), with its UnixLib replaced by
 fork of GCCSDK's UnixLib; release v5.0.3.1: `libunixlib.a` sha256
 fa98152f…0658 into `arm-riscos-gnueabihf/lib/`; its installed headers are
 5.0.2's, unchanged (5.0.3.1's sched.h differs by a comment, and is the same
-as rc8's). 5.0.3.1-rc8's library, sha256 44cb5481…, was used for the ulrc8
-test builds. 5.0.3's library, sha256 761305fa…,
+as rc8's). 5.0.3.1 is in riscos15 and Reel 0.1.22. 5.0.3.1-rc8's library, sha256
+44cb5481…, was used for the ulrc8 test builds. 5.0.3's library, sha256 761305fa…,
 was used for the ul503 test builds. 5.0.2's library, sha256
 bcd01280…2254, was used for riscos13, riscos14 and Reel 0.1.20, 0.1.21), and
 its changed headers, `sched.h`, `unistd.h`, `sys/stat.h` and
@@ -42,7 +42,8 @@ with `-D_FILE_OFFSET_BITS=64`, which FFmpeg's configure adds and
 build-apps.sh gives the apps; FFmpeg was rebuilt from clean against the
 new headers. riscos10 to riscos12 and Reel 0.1.16 to 0.1.19 used UnixLib
 5.0.1 (sha256 bf0e9709…a7a6; sched.h and unistd.h). `tools/check-unixlib.sh` (run by package.sh) checks every program
-was linked with it. Its module PThreadTicker 0.01 is in
+was linked with it. Its module PThreadTicker (0.03 since riscos15 and Reel
+0.1.22; 0.01 at first) is in
 `third_party/pthreadticker` and goes into each app. riscos3 to riscos9
 used the Warzone toolchain's own UnixLib (the ticker code copied to the
 RMA, a 248-byte block); riscos1 and riscos2 an earlier one without the

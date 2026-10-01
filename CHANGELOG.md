@@ -3,7 +3,62 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next Reel): the pointer hides full screen, a sound track key, file types, saved HLS playlists
+## 5.1.10-riscos15 (2026-10-01): UnixLib 5.0.3.1
+
+FFmpeg's own code is unchanged since riscos14; the programs are relinked
+with the UnixLib releases since then (riscos14 had 5.0.2).
+
+
+- **Relinked with UnixLib 5.0.3.1** (github.com/adyoull/riscos-unixlib
+  release v5.0.3.1, an unofficial fork of GCCSDK's UnixLib;
+  `libunixlib.a` sha256 fa98152f…). Since rc8: heaps past 128 MB, and
+  threads that run in programs that poll often (UnixLib's thread timer
+  keeps running through Wimp_Poll, so ffplay's and SDL's threads get time
+  however often a program polls), the fixes of rc9. No interface or header
+  changes, so the programs were relinked and FFmpeg's libraries weren't
+  rebuilt. 5.0.3.1's start-up claims a 640-byte pthread block (472 before):
+  `tools/check-unixlib.sh` checks for that and for 5.0.3.1's library.
+- **PThreadTicker 0.03** (from the same release) replaces 0.02 in the
+  apps: it holds 5.0.3.1's new timer code (programs built with 5.0.3.1
+  use 0.03 only, older ones 0.01/0.02 only; either runs its own copy if
+  it doesn't find one it uses). The !Run files still ask for 0.01, as the
+  module's ReadMe advises.
+- Before that, the unreleased test builds were linked with UnixLib 5.0.3
+  and 5.0.3.1-rc8; their notes follow, as they were.
+- Not in the downloads: `tools/hevcprobe`, `vchiqprobe`, `mmalprobe`,
+  `mmaldecode` and `reelhwaccel/` (the HEVCHW module) - the first steps
+  towards hardware video decoding on the Raspberry Pi (ReelHWAccel), each
+  with a host test.
+
+### UnixLib 5.0.3.1-rc8 (test builds)
+
+- **Relinked with UnixLib 5.0.3.1-rc8** (github.com/adyoull/riscos-unixlib
+  pre-release v5.0.3.1-rc8; `libunixlib.a` sha256 44cb5481…, the same
+  library as rc7). Since 5.0.3: `fork()` works in EABI programs (a fork
+  child exiting no longer frees its parent's stack), `_exit(n)` exits with
+  code n, `mmap()` offsets, and the review fixes of the rc series. The
+  installed headers are unchanged (sched.h differs by a comment only), so
+  FFmpeg's libraries weren't rebuilt; the programs were relinked.
+  `tools/check-unixlib.sh` checks for rc8's library.
+- **PThreadTicker 0.02** (from the same pre-release) replaces 0.01 in the
+  apps: it updates its count of programs with interrupts off. The !Run
+  files still ask for 0.01, as the module's ReadMe advises (a loaded,
+  in-use older copy can't be replaced).
+
+### UnixLib 5.0.3 (test builds)
+
+- **Relinked with UnixLib 5.0.3** (github.com/adyoull/riscos-unixlib
+  v5.0.3; `libunixlib.a` sha256 761305fa…). Its fixes: `read()` into a
+  buffer on the stack could kill a program ("Fatal signal received: EMT
+  trap") when the SWI wrote to a stack page not yet mapped; `ctime()`,
+  `asctime()` and their `_r` forms could return a bad pointer; no build
+  paths in the library's debug information. Same symbols and installed
+  headers as 5.0.2, so FFmpeg's libraries weren't rebuilt, only the
+  programs relinked. `tools/check-unixlib.sh` (run by package.sh) now
+  also checks the toolchain's libunixlib.a is 5.0.3's, since a program
+  linked with it can't be told from one linked with 5.0.2.
+
+## Reel 0.1.22 (2026-10-01): the pointer hides full screen, a sound track key, file types, saved HLS playlists
 
 Three requests from Chris on the ROOL forum:
 
@@ -50,51 +105,8 @@ Three requests from Chris on the ROOL forum:
   "not an address" refused, `<server>/live/master.m3u8?session=1` given:
   the scrap file names `<server>/live/hlsv.m3u8` and it plays (322x184).
   sources_test: what counts as relative, and the three kinds of join.
-
-## Unreleased: UnixLib 5.0.3.1
-
-- **Relinked with UnixLib 5.0.3.1** (github.com/adyoull/riscos-unixlib
-  release v5.0.3.1, an unofficial fork of GCCSDK's UnixLib;
-  `libunixlib.a` sha256 fa98152f…). Since rc8: heaps past 128 MB, and
-  threads that run in programs that poll often (UnixLib's thread timer
-  keeps running through Wimp_Poll, so ffplay's and SDL's threads get time
-  however often a program polls), the fixes of rc9. No interface or header
-  changes, so the programs were relinked and FFmpeg's libraries weren't
-  rebuilt. 5.0.3.1's start-up claims a 640-byte pthread block (472 before):
-  `tools/check-unixlib.sh` checks for that and for 5.0.3.1's library.
-- **PThreadTicker 0.03** (from the same release) replaces 0.02 in the
-  apps: it holds 5.0.3.1's new timer code (programs built with 5.0.3.1
-  use 0.03 only, older ones 0.01/0.02 only; either runs its own copy if
-  it doesn't find one it uses). The !Run files still ask for 0.01, as the
-  module's ReadMe advises.
-
-## Earlier, unreleased: UnixLib 5.0.3.1-rc8
-
-- **Relinked with UnixLib 5.0.3.1-rc8** (github.com/adyoull/riscos-unixlib
-  pre-release v5.0.3.1-rc8; `libunixlib.a` sha256 44cb5481…, the same
-  library as rc7). Since 5.0.3: `fork()` works in EABI programs (a fork
-  child exiting no longer frees its parent's stack), `_exit(n)` exits with
-  code n, `mmap()` offsets, and the review fixes of the rc series. The
-  installed headers are unchanged (sched.h differs by a comment only), so
-  FFmpeg's libraries weren't rebuilt; the programs were relinked.
-  `tools/check-unixlib.sh` checks for rc8's library.
-- **PThreadTicker 0.02** (from the same pre-release) replaces 0.01 in the
-  apps: it updates its count of programs with interrupts off. The !Run
-  files still ask for 0.01, as the module's ReadMe advises (a loaded,
-  in-use older copy can't be replaced).
-
-## Earlier, unreleased: UnixLib 5.0.3
-
-- **Relinked with UnixLib 5.0.3** (github.com/adyoull/riscos-unixlib
-  v5.0.3; `libunixlib.a` sha256 761305fa…). Its fixes: `read()` into a
-  buffer on the stack could kill a program ("Fatal signal received: EMT
-  trap") when the SWI wrote to a stack page not yet mapped; `ctime()`,
-  `asctime()` and their `_r` forms could return a bad pointer; no build
-  paths in the library's debug information. Same symbols and installed
-  headers as 5.0.2, so FFmpeg's libraries weren't rebuilt, only the
-  programs relinked. `tools/check-unixlib.sh` (run by package.sh) now
-  also checks the toolchain's libunixlib.a is 5.0.3's, since a program
-  linked with it can't be told from one linked with 5.0.2.
+- Linked with UnixLib 5.0.3.1 and carrying PThreadTicker 0.03, as
+  riscos15 (below).
 
 ## 5.1.10-riscos14 (2026-09-30): MP4 files from the Convert window, properly this time
 

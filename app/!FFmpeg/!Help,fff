@@ -1,4 +1,4 @@
-!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                   riscos14
+!FFmpeg - FFmpeg 5.1.10 (LTS) for RISC OS                   riscos15
 ===================================================================
 
 FFmpeg converts, plays and inspects audio and video. This is FFmpeg
@@ -198,11 +198,12 @@ Needs
 -----
 SharedUnixLibrary 1.16 or later and ARMEABISupport (both in PackMan).
 
-The programs are built with UnixLib 5.0.2 (the C library), so they read
+The programs are built with UnixLib 5.0.3.1 (the C library; an
+unofficial fork of GCCSDK's UnixLib), so they read
 and write files over 2GB, up to 4GB-1 (the largest RISC OS allows; the
 filing system must allow them too).
 
-Included: PThreadTicker 0.01, a small module from UnixLib (the C
+Included: PThreadTicker 0.03, a small module from UnixLib (the C
 library the programs are built with). UnixLib switches a program's
 threads (ffplay has several) with a timer, and this module holds the
 timer's code, so it's always there even while other tasks run. !Run
