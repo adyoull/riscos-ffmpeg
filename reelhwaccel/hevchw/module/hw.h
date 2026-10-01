@@ -3,7 +3,10 @@
  * Shared between the module's C (hevchw.c), its assembler (header.s) and
  * the host tests.
  *
- * Part of riscos-ffmpeg (reelhwaccel/hevchw/). MIT licence.
+ * Register offsets and addresses (no code copied): Raspberry Pi Linux's
+ * rpivid driver, rpivid_hw.h (GPL-2.0), and device tree, bcm2711*.dtsi.
+ * Part of riscos-ffmpeg (reelhwaccel/hevchw/). GPL version 2 or later
+ * (see COPYING).
  */
 #ifndef HWHEVC_HW_H
 #define HWHEVC_HW_H

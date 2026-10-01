@@ -30,7 +30,8 @@
  *      -n       don't touch the clock (and so don't read the HEVC registers)
  *      -o file  also write the report to file
  *
- * Part of riscos-ffmpeg. MIT licence.
+ * (Facts only: no code copied from the device tree or rpivid.)
+ * Part of riscos-ffmpeg. GPL version 2 or later (see COPYING).
  */
 #include <stdarg.h>
 #include <stdint.h>

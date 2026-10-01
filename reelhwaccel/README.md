@@ -30,3 +30,23 @@ library).
 Each test tool has a host test in `tests/host` (run by
 `tests/host/run.sh`) against fakes of the VCHIQ module, the MMAL firmware
 or the hardware.
+
+## Licence
+
+GPL version 2 or later (see `COPYING`), like the rest of riscos-ffmpeg:
+Reel and FFmpeg, which will use it, are GPL already (FFmpeg's build
+includes x264).
+
+What it's built from, and how:
+
+| Source | Licence | Used for |
+|---|---|---|
+| Raspberry Pi userland, MMAL client (`interface/mmal/vc/mmal_vc_msgs.h`, `mmal_vc_client.c`) | BSD-3-Clause (Broadcom) | MMAL message layouts and how the client handles them: facts only, no code copied |
+| Linux `vchiq-mmal` (`mmal-msg*.h`, `mmal-vchiq.c`) | GPL-2.0 only | the same layouts, checked against these: facts only, no code copied |
+| Linux `rpivid` (`rpivid_hw.h`) and device tree (`bcm2711*.dtsi`) | GPL-2.0 | the HEVC block's register offsets, addresses and interrupt: facts only |
+| RISC OS's VCHIQ, BCMSound and BCMVideo modules (in the ROM) | - | the VCHIQ SWI conventions, learnt by running and disassembling them |
+
+The HEVC decoder itself (still to come) may follow rpivid's two-phase
+pipeline (`rpivid_h265.c`, GPL-2.0-or-later); any part translated from
+it stays GPL-2.0-or-later. Code from `mmal-vchiq.c` (GPL-2.0 only) is
+not to be copied.

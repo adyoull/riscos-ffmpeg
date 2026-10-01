@@ -26,4 +26,4 @@ any Pi; if you have an older one (Pi 1, 2, 3 or Zero), a Result from
 that too would be useful.
 
 Needs: RISC OS 5 on a Raspberry Pi with the VCHIQ module (in the ROM).
-Part of riscos-ffmpeg; MIT licence.
+Part of riscos-ffmpeg; GPL version 2 or later.

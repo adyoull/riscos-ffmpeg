@@ -38,9 +38,12 @@
  * and BULK_RECEIVE_ABORTED (18) callbacks in two words after it (its
  * param). Nothing else runs outside this program.
  *
- * Message layouts from Linux's vchiq-mmal (mmal-msg.h); the VCHIQ SWI
- * conventions from RISC OS's VCHIQ, BCMSound and BCMVideo (see mmalprobe).
- * Part of riscos-ffmpeg. MIT licence.
+ * Message layouts (no code copied): Raspberry Pi userland's MMAL client,
+ * interface/mmal/vc/mmal_vc_msgs.h (Broadcom, BSD-3-Clause), and Linux's
+ * vchiq-mmal, mmal-msg*.h (GPL-2.0).
+ * The VCHIQ SWI conventions from RISC OS's VCHIQ, BCMSound and BCMVideo
+ * (see mmalprobe).
+ * Part of riscos-ffmpeg. GPL version 2 or later (see COPYING).
  */
 #include <stdarg.h>
 #include <stddef.h>

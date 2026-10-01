@@ -32,8 +32,10 @@
  *
  *   mmalprobe [-o file] [-c component]
  *
- * Message layouts from Linux's vchiq-mmal (mmal-msg.h). Part of
- * riscos-ffmpeg. MIT licence.
+ * Message layouts (no code copied): Raspberry Pi userland's MMAL client,
+ * interface/mmal/vc/mmal_vc_msgs.h (Broadcom, BSD-3-Clause), and Linux's
+ * vchiq-mmal, mmal-msg*.h (GPL-2.0).
+ * Part of riscos-ffmpeg. GPL version 2 or later (see COPYING).
  */
 #include <stdarg.h>
 #include <stddef.h>

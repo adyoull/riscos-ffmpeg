@@ -26,4 +26,4 @@ Running it:
 If the machine locks up (it shouldn't), switch it off and on again.
 
 Needs: RISC OS 5 on a Raspberry Pi, with the VCHIQ module (in the ROM).
-Part of riscos-ffmpeg; MIT licence.
+Part of riscos-ffmpeg; GPL version 2 or later.

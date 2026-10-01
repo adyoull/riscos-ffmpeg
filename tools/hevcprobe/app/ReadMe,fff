@@ -29,4 +29,4 @@ is written to the block, so nothing is left behind.
 Please send the Result file back.
 
 Needs: RISC OS 5 on a Raspberry Pi 4, 400 or CM4, with BCMSupport (in
-the ROM). Part of riscos-ffmpeg; MIT licence.
+the ROM). Part of riscos-ffmpeg; GPL version 2 or later.

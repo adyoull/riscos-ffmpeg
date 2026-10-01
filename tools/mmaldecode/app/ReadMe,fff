@@ -36,5 +36,5 @@ decoder can stay stuck until the machine is restarted: restart before
 running Test or Verbose again.
 
 Needs: RISC OS 5 on a Raspberry Pi, with the VCHIQ module (in the ROM).
-Part of riscos-ffmpeg; MIT licence. The clips are made from FFmpeg's
-testsrc2 pattern.
+Part of riscos-ffmpeg; GPL version 2 or later. The clips are made from
+FFmpeg's testsrc2 pattern.

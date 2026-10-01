@@ -187,7 +187,8 @@ docs/       ALIGNMENT.md, EGL.md, SOURCES.md
 
 The build scripts, tools, patches and programs are GPL version 2 or later
 (see `COPYING`), like the FFmpeg build they make; reelcore and ffegl are LGPL 2.1 or
-later. That build includes x264, so it is GPL (version 2
+later, and the ffegl examples' sources (`videowin.c`, `videocube.c`) are MIT, so
+they can be copied freely. That build includes x264, so it is GPL (version 2
 or later). The other libraries keep their own licences: see
 `dist/…/docs/Licences`.
 

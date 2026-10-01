@@ -2,7 +2,8 @@
 @ The C (hevchw.c) is freestanding: no C library, all SWIs through
 @ hw_swi. Everything here is position independent (offsets from the
 @ module's base); the link checks there are no absolute relocations.
-@ Part of riscos-ffmpeg (reelhwaccel/hevchw/). MIT licence.
+@ Part of riscos-ffmpeg (reelhwaccel/hevchw/). GPL version 2 or later
+@ (see COPYING).
 
         .syntax unified
         .arm

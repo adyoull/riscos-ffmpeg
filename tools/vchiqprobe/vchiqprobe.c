@@ -21,7 +21,7 @@
  *      -d dir     save the module copies in dir (created if need be)
  *      -m module  look at another module instead of VCHIQ
  *
- * Part of riscos-ffmpeg. MIT licence.
+ * Part of riscos-ffmpeg. GPL version 2 or later (see COPYING).
  */
 #include <stdarg.h>
 #include <stdint.h>

@@ -41,4 +41,4 @@ before it's written).
 
 Needs: RISC OS 5 on a Raspberry Pi 4, 400 or CM4, with BCMSupport (in
 the ROM); the PCI module for *HEVCMemTest (also in the ROM). Part of
-riscos-ffmpeg; MIT licence.
+riscos-ffmpeg; GPL version 2 or later.
