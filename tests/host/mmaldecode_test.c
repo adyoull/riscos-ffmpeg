@@ -111,9 +111,7 @@ static void produce(void)
         memset(ev, 0, sizeof ev);
         ev[1] = 2; ev[3] = 0x48435045u; ev[4] = 300;
         post(16, ev, sizeof ev, 0);
-        need_rx = 3; rx_len_expected = 300;
-        long_event = 2;
-        return;
+        long_event = 2;                      /* (no data follows: see mmaldecode.c) */
     }
     if (!efch_sent) {                        /* the first thing out: a format change */
         uint32_t ev[5 + 256 / 4 + 1];
@@ -141,6 +139,10 @@ static void produce(void)
     }
     if (frames_made < n) {
         uint32_t pw = (out_w + 31) & ~31u, ph = (out_h + 15) & ~15u, size = pw * ph * 3 / 2;
+        {                                    /* as the Pi: a 44 byte event (cmd 0, length = the picture's size) first */
+            uint32_t ev[5] = { 1, 3, 0, 0, size };
+            post(16, ev, sizeof ev, 0);
+        }
         render(vals[frames_made], cur_frame);
         if (frames_made == corrupt_at) cur_frame[5] ^= 1;
         buffer_back(2, (uint32_t)out_bufs[--nout], size, 0);
@@ -453,7 +455,7 @@ int main(void)
 
     long_event = 1;
     o = run(&ret, 0);
-    CHECK(ret == 0 && long_event == 2 && bulks_rx == 11 && strstr(o, "Event EPCH (&48435045, 300 bytes) on port type 2"),
+    CHECK(ret == 0 && long_event == 2 && bulks_rx == 10 && strstr(o, "Event EPCH (&48435045, 300 bytes) on port type 2"),
           "long event (%d, %d receives):\n%s", ret, bulks_rx, o);
     cleaned("long event");
     long_event = 0;

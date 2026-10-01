@@ -379,8 +379,6 @@ static uint32_t out_size;
 #define MAXPCI 16
 static uint32_t pci_alloc_swi, pci_free_swi, pci_blocks[MAXPCI];
 static int npci;
-static uint8_t *evbuf;                     /* for event data that comes by bulk */
-static uint32_t evsize;
 
 static void *pci_alloc(size_t n)
 {
@@ -573,7 +571,7 @@ int probe_main(int argc, char **argv)
                                       0x05903004u, 0x02833001u, 0x05803004u, 0xe1a0f00eu };
 
     /* (a fresh start each time: the host tests call this more than once) */
-    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; evbuf = NULL; evsize = 0; npend = 0; out_size = 0; stub = 0; comp = 0;
+    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; npend = 0; out_size = 0; stub = 0; comp = 0;
     memset(in_busy, 0, sizeof in_busy); memset(out_busy, 0, sizeof out_busy); out2 = NULL; verbose = 0;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out2 = fopen(argv[++i], "a");   /* (added to: Test runs three) */
@@ -766,6 +764,11 @@ int probe_main(int argc, char **argv)
                 }
                 if (b.length) {
                     uint32_t crc = frame_crc(frame, &b);
+                    if (verbose)
+                        say("  picture %d: planes %u, offsets %u %u %u, pitch %u %u %u; bytes %02X %02X %02X %02X; checksum &%08X\n",
+                            frames, (unsigned)b.planes, (unsigned)b.offsets[0], (unsigned)b.offsets[1], (unsigned)b.offsets[2],
+                            (unsigned)b.pitch[0], (unsigned)b.pitch[1], (unsigned)b.pitch[2],
+                            frame[0], frame[1], frame[2], frame[3], (unsigned)crc);
                     if (frames < nwant && crc != want[frames]) {
                         if (wrong < 5) say("Picture %d: checksum &%08X, FFmpeg's &%08X\n", frames, (unsigned)crc, (unsigned)want[frames]);
                         wrong++;
@@ -781,14 +784,13 @@ int probe_main(int argc, char **argv)
             char c[5];
             memcpy(&ev, reply_payload(), sizeof ev);
             events++;
-            if (ev.length > sizeof ev.data) {    /* the rest comes by bulk transfer (userland does this) */
-                if (ev.length > evsize) {
-                    evbuf = pci_alloc(ev.length + 4);
-                    evsize = evbuf ? ev.length : 0;
-                }
-                if (!evbuf || bulk_in(evbuf, ev.length, 99)) { fatal = 1; break; }
-                probe_svc_copy(ev.data, evbuf, sizeof ev.data);
-            }
+            /* An event's length can exceed the 256 bytes the message holds:
+               the Pi sends a 44 byte event (cmd 0, length = a picture's
+               size) on the output with each picture. Neither Linux's driver
+               nor userland's MMAL client receives any bulk data for such an
+               event (userland drops it as too big for an event buffer), and
+               receiving one here took the next picture's bytes (0.5 on the
+               Pi): so nothing is received for it. */
             if (ev.cmd == EV_FORMAT_CHANGED && ev.port_type == PORT_OUTPUT) {
                 format_changed_t fc;
                 memcpy(&fc, ev.data, sizeof fc);
