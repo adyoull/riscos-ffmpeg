@@ -51,7 +51,24 @@ Three requests from Chris on the ROOL forum:
   the scrap file names `<server>/live/hlsv.m3u8` and it plays (322x184).
   sources_test: what counts as relative, and the three kinds of join.
 
-## Unreleased: UnixLib 5.0.3.1-rc8
+## Unreleased: UnixLib 5.0.3.1
+
+- **Relinked with UnixLib 5.0.3.1** (github.com/adyoull/riscos-unixlib
+  release v5.0.3.1, an unofficial fork of GCCSDK's UnixLib;
+  `libunixlib.a` sha256 fa98152f…). Since rc8: heaps past 128 MB, and
+  threads that run in programs that poll often (UnixLib's thread timer
+  keeps running through Wimp_Poll, so ffplay's and SDL's threads get time
+  however often a program polls), the fixes of rc9. No interface or header
+  changes, so the programs were relinked and FFmpeg's libraries weren't
+  rebuilt. 5.0.3.1's start-up claims a 640-byte pthread block (472 before):
+  `tools/check-unixlib.sh` checks for that and for 5.0.3.1's library.
+- **PThreadTicker 0.03** (from the same release) replaces 0.02 in the
+  apps: it holds 5.0.3.1's new timer code (programs built with 5.0.3.1
+  use 0.03 only, older ones 0.01/0.02 only; either runs its own copy if
+  it doesn't find one it uses). The !Run files still ask for 0.01, as the
+  module's ReadMe advises.
+
+## Earlier, unreleased: UnixLib 5.0.3.1-rc8
 
 - **Relinked with UnixLib 5.0.3.1-rc8** (github.com/adyoull/riscos-unixlib
   pre-release v5.0.3.1-rc8; `libunixlib.a` sha256 44cb5481…, the same
