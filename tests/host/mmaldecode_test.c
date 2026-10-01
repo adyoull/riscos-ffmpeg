@@ -43,7 +43,8 @@ static int fails;
 static _kernel_oserror err = { 1, "fake error" }, empty = { 2, "none" };
 
 /* scenario */
-static int hijacked, vc_stuck, efch_late, swap_frames;
+static int hijacked, vc_stuck, efch_late, swap_frames, hold_inputs;
+static uint32_t held[32]; static int nheld;
 static int big_efch, corrupt_at = -1, go_quiet, error_event, long_event, awaiting_reformat;
 /* counters */
 static int uses, releases, opens, closes, connects, disconnects, freed, created, destroyed, comp_enabled,
@@ -211,7 +212,7 @@ static void firmware(const uint32_t *m, uint32_t len)
         r[1] = 0xC0DE; r[2] = p[0]; r[5] = p[1] - 1;
         memcpy(&r[6], port, 64); memcpy(&r[6 + 16], fmt, 32); memcpy(&r[6 + 16 + 8], vid, 44);
         if (p[1] == 2) {
-            CHECK(fmt[1] == 0x34363248u && vid[0] == W && vid[1] == H && port[11] == 3 && port[12] == 65536,
+            CHECK(fmt[1] == 0x34363248u && vid[0] == W && vid[1] == H && port[11] == 20 && port[12] == 65536,
                   "input format %08X %ux%u, %u x %u", fmt[1], vid[0], vid[1], port[11], port[12]);
         } else if (p[1] == 3) {
             CHECK(fmt[1] == 0x30323449u && vid[0] % 32 == 0 && vid[1] % 16 == 0, "output format %08X %ux%u", fmt[1], vid[0], vid[1]);
@@ -293,6 +294,12 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
     uint32_t *R = (uint32_t *)r->r;
     switch (n) {
     case 0x42: R[0] = time_cs++; return NULL;
+    case 0x591C5: {                          /* BCMSupport_SendTempPropertyBuffer: VC memory */
+        uint32_t *b = (uint32_t *)(uintptr_t)R[0];
+        CHECK(b[2] == 0x00010006, "property tag %08X", b[2]);
+        b[1] = 0x80000000u; b[5] = 0x3B400000; b[6] = 76u << 20;
+        return NULL;
+    }
     case 0x1E:
         if (R[0] == 6) {
             void *p = mmap(NULL, 4096, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -353,7 +360,12 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
         pci_open(0);
         got_len += R[2];
         bulks_tx++;
-        buffer_back(1, pending_tx_ctx, 0, 0);
+        if (hold_inputs) {                   /* as the Pi with 1080p: input kept until there's enough */
+            held[nheld++] = pending_tx_ctx;
+            if (nheld >= hold_inputs || eos_in) { while (nheld) buffer_back(1, held[--nheld], 0, 0); }
+        } else {
+            buffer_back(1, pending_tx_ctx, 0, 0);
+        }
         pending_tx = 0;
         produce();
         return NULL;
@@ -445,7 +457,7 @@ static char *run(int *ret, int keep_going)
     uses = releases = opens = closes = connects = disconnects = freed = created = destroyed = comp_enabled = 0;
     memset(port_on, 0, sizeof port_on);
     shorts = bulks_tx = bulks_rx = efch_sent = disables_out = 0;
-    got_len = pending_tx = 0; awaiting_reformat = 0; hijacked = vc_stuck = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
+    got_len = pending_tx = 0; nheld = 0; awaiting_reformat = 0; hijacked = vc_stuck = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
     noutq = 0; ndeferred = deferred_ever = 0;
     remove("/tmp/mmaldecode_test.out");
     if (with_sig) {
@@ -488,6 +500,14 @@ int main(void)
     CHECK(got_len == 9 * (FILLER + 5), "stream arrived whole: %u", got_len);
     CHECK(!hijacked && !vc_stuck, "an output buffer numbered 0 (swallowed, %d)", vc_stuck);
     cleaned("normal");
+
+    CHECK(strstr(o, "The VideoCore has 76 MB of memory"), "VideoCore memory not shown");
+
+    hold_inputs = 4;                          /* keeps 4 input buffers before giving any back (the Pi, 1080p) */
+    o = run(&ret, 0);
+    CHECK(ret == 0 && strstr(o, "Result: OK"), "a decoder that keeps 4 input buffers (%d):\n%s", ret, o);
+    cleaned("held inputs");
+    hold_inputs = 0;
 
     efch_late = 1;                            /* a decoder that waits for buffers before its format change */
     o = run(&ret, 0);

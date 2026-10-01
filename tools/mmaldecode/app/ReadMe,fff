@@ -26,6 +26,12 @@ Running it:
   the small clip only, writing every message to and from the decoder to
   ResultV. Please send that as well.
 
+  VerboseHD does the same for the hd clip only (1920x1080), writing
+  ResultHD and DumpHD.
+
+  The report starts by saying how much memory the VideoCore has (gpu_mem
+  in CONFIG/TXT). 1080p may need more than the smaller clips.
+
 The decoded pictures come back to RISC OS by the VCHIQ module's bulk
 transfer, and a nine-instruction callback in the RMA counts them in; it's
 removed at the end. If the machine locks up (it shouldn't), switch it off

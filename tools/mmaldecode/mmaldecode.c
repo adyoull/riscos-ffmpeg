@@ -54,6 +54,8 @@
 #include "kernel.h"
 
 #define OS_Module                 0x1E
+#define BCMSupport_SendTempPropertyBuffer 0x591C5
+#define TAG_GET_VC_MEMORY         0x00010006
 #define OS_ReadMonotonicTime      0x42
 #define OS_SynchroniseCodeAreas   0x6E
 #define VCHIQ_Initialise          0x59200
@@ -91,7 +93,10 @@ enum { ES_VIDEO = 3 };
 #define FLAG_EOS       1u
 #define TIME_UNKNOWN   0x8000000000000000ull
 #define SHORT_DATA     128
-#define IN_BUFS        3
+/* The decoder recommends 20 input buffers (ril.video_decode's input port
+   on the Pi 4: 20 x 81920). 0.11 gave it 3: enough for the small clips,
+   but with 1080p High (hd) it kept all three and never answered. */
+#define IN_BUFS        20
 #define IN_SIZE        (64 * 1024)
 #define OUT_BUFS       3
 #define REPLY_CS       300
@@ -422,7 +427,7 @@ static uint32_t out_size;
    (physically contiguous, below 1 GB), and are given back at the end.
    That memory is privileged (a USR mode access aborts: the Pi's 0.4 run),
    so this program only reaches it with probe_svc_copy. */
-#define MAXPCI 16
+#define MAXPCI 32
 static uint32_t pci_alloc_swi, pci_free_swi, pci_blocks[MAXPCI];
 static int npci;
 static uint8_t *evbuf;                     /* for event data that comes by bulk */
@@ -723,6 +728,20 @@ static int configure_output(void)
     return 0;
 }
 
+/* The VideoCore's own memory (gpu_mem in CONFIG/TXT), from the firmware
+   through BCMSupport: its size in bytes, or 0 if it doesn't say */
+static uint32_t vc_memory(void)
+{
+    uint32_t buf[8];
+    _kernel_swi_regs r;
+    buf[0] = sizeof buf; buf[1] = 0;
+    buf[2] = TAG_GET_VC_MEMORY; buf[3] = 8; buf[4] = 0; buf[5] = buf[6] = 0; buf[7] = 0;
+    memset(&r, 0, sizeof r);
+    r.r[0] = r.r[1] = (int)(uintptr_t)buf;
+    if (probe_swi(BCMSupport_SendTempPropertyBuffer, &r) || buf[1] != 0x80000000u) return 0;
+    return buf[6];
+}
+
 /* ---- main ---- */
 
 int probe_main(int argc, char **argv)
@@ -732,6 +751,7 @@ int probe_main(int argc, char **argv)
     uint8_t *stream = NULL;
     uint32_t stream_len = 0, sent = 0, instance = 0, setup[11], t_start = 0, t_end = 0, last_progress;
     int connected = 0, opened = 0, created = 0, enabled = 0, in_on = 0, out_on = 0, keep_going = 0;
+    uint32_t vcmem = 0;
     int frames = 0, wrong = 0, eos_sent = 0, eos_seen = 0, fatal = 0, i, format_changes = 0, events = 0, outputs_given = 0;
     _kernel_oserror *e;
     static const uint32_t code[9] = { 0xe3510004u, 0x05903000u, 0x02833001u, 0x05803000u, 0xe3510012u,
@@ -769,7 +789,10 @@ int probe_main(int argc, char **argv)
         fclose(f);
         stream_len = ((uint32_t)n + 3) & ~3u;
     }
-    say("%u bytes, %dx%d, %d pictures expected\n\n", (unsigned)stream_len, want_w, want_h, nwant);
+    say("%u bytes, %dx%d, %d pictures expected\n", (unsigned)stream_len, want_w, want_h, nwant);
+    vcmem = vc_memory();
+    if (vcmem) say("The VideoCore has %u MB of memory (gpu_mem)\n\n", (unsigned)(vcmem >> 20));
+    else say("(the firmware didn't say how much memory the VideoCore has)\n\n");
     for (i = 0; i < IN_BUFS; i++)
         if (!(in_buf[i] = pci_alloc(IN_SIZE))) { say("No physically contiguous memory (PCI_RAMAlloc; is the PCI module loaded?)\n"); goto done; }
 
@@ -887,10 +910,18 @@ int probe_main(int argc, char **argv)
             }
             if (now_cs() - last_progress > IDLE_CS) {
                 say("Nothing from the decoder for %d cs (%d pictures so far)\n", IDLE_CS, frames);
-                say("  %u of %u bytes sent; input buffers with the decoder: %d %d %d; output: %d %d %d; "
-                    "bulk receives done %u, aborted %u\n", (unsigned)sent, (unsigned)stream_len,
-                    in_busy[0], in_busy[1], in_busy[2], out_busy[0], out_busy[1], out_busy[2],
-                    (unsigned)bulk_done(0), (unsigned)bulk_done(1));
+                {
+                    int nin = 0;
+                    for (int k = 0; k < IN_BUFS; k++) nin += in_busy[k];
+                    say("  %u of %u bytes sent; input buffers with the decoder: %d of %d; output: %d %d %d; "
+                        "bulk receives done %u, aborted %u\n", (unsigned)sent, (unsigned)stream_len,
+                        nin, IN_BUFS, out_busy[0], out_busy[1], out_busy[2],
+                        (unsigned)bulk_done(0), (unsigned)bulk_done(1));
+                    if (!frames && !format_changes)
+                        say("  The decoder never said what it would make. If the VideoCore is short of memory\n"
+                            "  for this size (%u MB here; Linux's players wanted gpu_mem=128 or more for 1080p),\n"
+                            "  a larger gpu_mem in CONFIG/TXT may help.\n", (unsigned)(vcmem >> 20));
+                }
                 fatal = 1;
             }
             continue;

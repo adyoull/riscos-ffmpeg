@@ -1,0 +1,12 @@
+| VerboseHD: the hd clip (1920x1080) only, with every message to and from
+| the decoder written out (-v). The report goes to ResultHD; the first
+| three pictures are saved in DumpHD.
+| (a GCCSDK program: needs SharedUnixLibrary and ARMEABISupport loaded)
+RMEnsure SharedUnixLibrary 1.16 IfThere System:Modules.SharedULib Then RMLoad System:Modules.SharedULib
+RMEnsure SharedUnixLibrary 1.16 Error This needs SharedUnixLibrary 1.16 or later. Install it with PackMan.
+RMEnsure ARMEABISupport 0 IfThere System:Modules.ARMEABISupport Then RMLoad System:Modules.ARMEABISupport
+RMEnsure ARMEABISupport 0 Error This needs the ARMEABISupport module. Install it with PackMan.
+WimpSlot -min 16384K -max 16384K
+Remove <Obey$Dir>.ResultHD
+CDir <Obey$Dir>.DumpHD
+Run <Obey$Dir>.mmaldecode -v -n -d <Obey$Dir>.DumpHD -o <Obey$Dir>.ResultHD <Obey$Dir>.clips.hd.stream <Obey$Dir>.clips.hd.crc <Obey$Dir>.clips.hd.sig
