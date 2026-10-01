@@ -12,12 +12,9 @@
  *   3. the stream goes in, in 64 KB pieces: each a BUFFER_FROM_HOST
  *      message, the data after it by VCHIQ bulk transfer (or in the
  *      message itself if 128 bytes or less); the last piece carries EOS;
- *   4. empty output buffers are handed over once the decoder has said
- *      what it will make (its first FORMAT_CHANGED event): given before
- *      that, the Pi turns the first into a 44 byte event (cmd 0, length a
- *      picture's size, no data), FFmpeg's picture 0 is lost with it, and
- *      a port disable never gets a reply while it's held (0.6-0.9 on the
- *      Pi; 200 cs without that event and they're handed over anyway);
+ *   4. empty output buffers (numbered from 1: see CTX_BASE) are handed
+ *      over once the decoder has said what it will make (its first
+ *      FORMAT_CHANGED event; after 200 cs without one, anyway);
  *      each picture comes back as
  *      BUFFER_TO_HOST, then its bytes by a bulk receive into our memory,
  *      whose completion the RMA callback counts; an empty EOS buffer
@@ -96,6 +93,13 @@ enum { ES_VIDEO = 3 };
 #define OUT_BUFS       3
 #define REPLY_CS       300
 #define IDLE_CS        500                 /* no progress for this long: give up */
+/* Buffers are numbered from 1 for the VideoCore (drvbuf.client_context,
+   which it gives back): Linux and userland put a pointer there, never 0,
+   and the Pi treats 0 as no buffer. 0.10 numbered from 0: buffer 0 came
+   back on the input after a stray cmd 0 event, and on the output not at
+   all - a 44 byte cmd 0 "event" with a picture's length instead, FFmpeg's
+   picture 0 lost with it, and a disable of the output never answered. */
+#define CTX_BASE       1
 #define EFCH_WAIT_CS   200                 /* the output's buffers handed over anyway after this */
 
 typedef struct { uint32_t magic, type, control_service, context, status, padding; } hdr_t;
@@ -299,6 +303,10 @@ static uint32_t poll_msg(void)
         say("(a %u byte message that isn't MMAL's)\n", (unsigned)got);
         return 0;
     }
+    if (((hdr_t *)msg)->type == T_BUFFER_TO_HOST) {   /* back to our numbering, from 0 */
+        drvbuf_t *d = (drvbuf_t *)((hdr_t *)msg + 1);
+        d->client_context = d->client_context >= CTX_BASE ? d->client_context - CTX_BASE : 0xFFFFFFFFu;
+    }
     if (verbose) {                          /* every message as it arrives (0.9 hid those during a wait) */
         const uint32_t *w = (const uint32_t *)((hdr_t *)msg + 1);
         if (((hdr_t *)msg)->type == T_BUFFER_TO_HOST)
@@ -471,7 +479,7 @@ static int buffer_to_vc(port_info_t *pi, int idx, uint8_t *data, uint32_t alloc,
     b.drvbuf.magic = MMAL_MAGIC;
     b.drvbuf.component_handle = comp;
     b.drvbuf.port_handle = pi->port_handle;
-    b.drvbuf.client_context = (uint32_t)idx;
+    b.drvbuf.client_context = (uint32_t)idx + CTX_BASE;
     b.data = (uint32_t)(uintptr_t)data;
     b.alloc_size = alloc;
     b.length = len;
@@ -1040,7 +1048,7 @@ int probe_main(int argc, char **argv)
                 fatal = 1;
             } else if (!ev.cmd && ev.port_type == PORT_OUTPUT && ev.length) {
                 say("A %u byte \"event\" with no code on the output: an output buffer kept back by the decoder\n"
-                    "  (as when buffers are given before its format change; a picture is lost with it)\n", (unsigned)ev.length);
+                    "  (as 0.10's buffer 0 was; a picture is lost with it)\n", (unsigned)ev.length);
             } else {
                 say("Event %s (&%08X, %u bytes) on port type %u, number %u\n", fourcc(ev.cmd, c), (unsigned)ev.cmd,
                     (unsigned)ev.length, (unsigned)ev.port_type, (unsigned)ev.port_num);

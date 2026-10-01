@@ -10,9 +10,9 @@
  *     the message, EOS, an EFCH that needs no change, every picture right;
  *   - an EFCH to a bigger size: disable, reformat, re-enable, buffers again;
  *   - as the Pi, the fake answers nothing while data it's sending waits for
- *     a receive; and output buffers given before its format change cost
- *     the first one (a 44 byte cmd 0 "event", no data), picture 0, and any
- *     answer to a disable of the output (0.6-0.9 on the Pi);
+ *     a receive; and an output buffer numbered 0 is swallowed (a 44 byte
+ *     cmd 0 "event", no data), its picture lost, and a disable of the
+ *     output never answers (0.6-0.10 on the Pi);
  *   - a decoder that wants buffers before its format change: handed over
  *     after 200 cs anyway;
  *   - a wrong picture: stops there (and with -n goes on and counts);
@@ -77,6 +77,10 @@ typedef struct { uint32_t magic, comp, port, ctx; } drv_t;
 static void buffer_back(uint32_t port, uint32_t ctx, uint32_t length, uint32_t flags)
 {
     uint32_t b[68];                          /* 272 bytes */
+    if (port == 1 && ctx == 0) {             /* as the Pi: a stray cmd 0 event before input buffer 0 */
+        uint32_t e0[5] = { 1, 2, 0, 0, 0 };
+        post(16, e0, sizeof e0, 0);
+    }
     memset(b, 0, sizeof b);
     b[0] = MAGIC; b[1] = 0xC0DE; b[2] = port; b[3] = ctx;
     b[4 + 4 + 4] = 0;                        /* (buffer header) */
@@ -126,18 +130,6 @@ static void produce(void)
         fc[13 + 4] = W; fc[13 + 5] = H;                                   /* crop w/h */
         post(16, ev, sizeof ev, 0);
         efch_sent = 1;
-        if (nout && !efch_late) {
-            /* as the Pi (0.6-0.9): output buffers there before the format
-               change: the first becomes a 44 byte cmd 0 "event" with a
-               picture's length and no data, picture 0 is lost with it, and
-               the buffer is held: a disable of the output never answers */
-            uint32_t pw = (out_w + 31) & ~31u, ph = (out_h + 15) & ~15u;
-            uint32_t e0[5] = { 1, 3, 0, 0, pw * ph * 3 / 2 };
-            post(16, e0, sizeof e0, 0);
-            nout--;
-            hijacked = 1;
-            frames_made++;
-        }
         if (big_efch) { awaiting_reformat = 1; return; }   /* nothing more until the port is re-enabled */
     }
     if (!nout) return;
@@ -160,6 +152,18 @@ static void produce(void)
     }
     if (frames_made < n) {
         uint32_t pw = (out_w + 31) & ~31u, ph = (out_h + 15) & ~15u, size = pw * ph * 3 / 2;
+        if (out_bufs[nout - 1] == 0 && !hijacked) {
+            /* as the Pi (0.6-0.10): a buffer numbered 0 (no buffer, to the
+               firmware) becomes a 44 byte cmd 0 "event" with a picture's
+               length and no data, the picture is lost with it, and the
+               buffer is held: a disable of the output never answers */
+            uint32_t e0[5] = { 1, 3, 0, 0, size };
+            post(16, e0, sizeof e0, 0);
+            nout--;
+            hijacked = 1;
+            frames_made++;
+            return;
+        }
         render(vals[swap_frames && frames_made == 1 ? 2 : swap_frames && frames_made == 2 ? 1 : frames_made], cur_frame);
         if (frames_made == corrupt_at) cur_frame[5] ^= 1;
         buffer_back(2, (uint32_t)out_bufs[--nout], size, 0);
@@ -482,7 +486,7 @@ int main(void)
     CHECK(bulks_tx == 6 && shorts == 0, "pieces: %d by bulk, %d in the message", bulks_tx, shorts);
     CHECK(bulks_rx == 10 && disables_out == 1, "receives %d (9 pictures + EOS), disables %d (only the end: the format was the one set)", bulks_rx, disables_out);
     CHECK(got_len == 9 * (FILLER + 5), "stream arrived whole: %u", got_len);
-    CHECK(!hijacked && !vc_stuck, "output buffers given before the format change (a buffer swallowed, %d)", vc_stuck);
+    CHECK(!hijacked && !vc_stuck, "an output buffer numbered 0 (swallowed, %d)", vc_stuck);
     cleaned("normal");
 
     efch_late = 1;                            /* a decoder that waits for buffers before its format change */
