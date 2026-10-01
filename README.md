@@ -183,6 +183,13 @@ tests/host/ reelcore, ffegl, Reel and front end tests with fake Wimp/SDL/EGL, un
 docs/       ALIGNMENT.md, EGL.md, SOURCES.md
 ```
 
+## Hardware decoding
+
+Decoding with the Raspberry Pi's own hardware (H.264 on the VideoCore,
+HEVC on the Pi 4's HEVC block) is a separate project, ReelHWAccel:
+github.com/adyoull/riscos-reelhwaccel. It started here; its test tools
+and the HEVCHW module moved there with their history.
+
 ## Licence
 
 The build scripts, tools, patches and programs are GPL version 2 or later

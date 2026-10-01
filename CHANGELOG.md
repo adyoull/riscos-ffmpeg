@@ -3,6 +3,14 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased: ReelHWAccel has its own project
+
+The hardware video decoding work (`reelhwaccel/`, the HEVCHW module, and
+the test tools `tools/hevcprobe`, `vchiqprobe`, `mmalprobe` and
+`mmaldecode` with their host tests) moved, with its history, to
+riscos-reelhwaccel (github.com/adyoull/riscos-reelhwaccel). FFmpeg and
+Reel will use its decoders through its devkit, as they use riscos-mesa's.
+
 ## 5.1.10-riscos15 (2026-10-01): UnixLib 5.0.3.1
 
 FFmpeg's own code is unchanged since riscos14; the programs are relinked

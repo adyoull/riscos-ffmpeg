@@ -115,34 +115,8 @@ echo "== sub_test (subtitles, chapters, turned pictures, frame steps)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/sub_test" "$O/subs.mkv" "$O/plain.mp4" "$O/subs.srt" "$O/turned.mp4" "$O/subs.ass" "$O/gop.mp4" 2>&1 | grep -v "reelcore: " || bad=1
 
 # RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
-# tools/hevcprobe: the Pi 4 HEVC block probe, against a fake firmware and fake registers
-arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/hevcprobe_test" "$TOP/tools/hevcprobe/hevcprobe.c" "$HERE/hevcprobe_test.c"
-echo "== hevcprobe_test (the Pi 4 HEVC block probe: the clock on only around reads, put back)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/hevcprobe_test" | grep -v "^  &\|^hevcprobe:\|^$" || bad=1
-
-# tools/vchiqprobe: the VCHIQ module's interface and clients, against fake modules
-arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/vchiqprobe_test" "$TOP/tools/vchiqprobe/vchiqprobe.c" "$HERE/vchiqprobe_test.c"
-echo "== vchiqprobe_test (VCHIQ's SWIs and commands, the modules calling it, copies saved)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/vchiqprobe_test" | grep "FAIL\|vchiqprobe_test:" || bad=1
-
-# tools/mmalprobe: MMAL over VCHIQ to the video decoder, against a fake VCHIQ and firmware
-arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/mmalprobe_test" "$TOP/tools/mmalprobe/mmalprobe.c" "$HERE/mmalprobe_test.c"
-echo "== mmalprobe_test (VCHIQ service open, ril.video_decode created, ports, encodings, all closed)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/mmalprobe_test" | grep "FAIL\|mmalprobe_test:" || bad=1
-
-# tools/mmaldecode: H.264 decoded through a fake VCHIQ + MMAL decoder, the real callback stub, checksums as framecrc
-arm-linux-gnueabihf-gcc -O1 -marm -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/mmaldecode_test" "$TOP/tools/mmaldecode/mmaldecode.c" "$HERE/mmaldecode_test.c"
-echo "== mmaldecode_test (stream in by bulk and in-message, pictures back by bulk, EFCH reformat, checksums, clean-up)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/mmaldecode_test" | grep "FAIL\|mmaldecode_test:" || bad=1
-
-# reelhwaccel/hevchw/module: the HEVCHW module (its C, and header.s's veneers and IRQ handler) on a fake RISC OS
-arm-linux-gnueabihf-gcc -c -o "$O/hevchw_header.o" "$TOP/reelhwaccel/hevchw/module/header.s" &&
-  arm-linux-gnueabihf-objcopy --weaken-symbol=hw_swi "$O/hevchw_header.o" &&
-  arm-linux-gnueabihf-gcc -O1 -marm -DHW_TEST -Wall -no-pie -o "$O/hevchw_test" "$TOP/reelhwaccel/hevchw/module/hevchw.c" \
-    "$HERE/hevchw_test.c" "$O/hevchw_header.o"
-echo "== hevchw_test (the HEVCHW module: maps, register test, the interrupt found then claimed, memory)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/hevchw_test" | grep -v "^  &\|^$" || bad=1
-"$TOP/reelhwaccel/hevchw/module/build.sh" "$O/hevchw" | tail -1 || bad=1
+# (the hardware decoding test tools and the HEVCHW module moved to
+#  riscos-reelhwaccel, with their host tests)
 
 echo "== riscos_name_test (holiday/mp4 as a RISC OS name, Unix names untouched)"
 gcc -O1 -g -fsanitize=address,undefined -I"$F/libavformat" "$HERE/riscos_name_test.c" -o "$O/riscos_name_test" &&
