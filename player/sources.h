@@ -39,6 +39,17 @@ int sources_parse(const char *text, size_t len, source_t *out, int max, int *hls
    with no addresses in it. */
 int sources_from_file(const char *path, source_t *out, int max);
 
+/* An HLS playlist saved from the web often names its streams relative to
+   the address it came from (chunklist_1080.m3u8), which means nothing next
+   to the saved copy. 1 if text is an HLS playlist with such names (lines,
+   or URI="..." attributes, that aren't whole addresses). */
+int sources_hls_relative(const char *text);
+
+/* The same playlist with every relative name resolved against base (the
+   address the playlist came from, or its directory ending in '/'), as a
+   new string (malloc'd), or NULL. */
+char *sources_hls_rebase(const char *text, const char *base);
+
 /* A source for a file name or address on its own */
 int source_simple(source_t *s, const char *url);
 int source_copy(source_t *dst, const source_t *src);

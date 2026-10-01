@@ -269,6 +269,7 @@ static struct {
     /* addresses: the Open address window, and text coming from other programs */
     int url_win;                        /* 0 = not made yet */
     char url_text[1024];
+    char hls_pending[256];              /* a saved HLS playlist waiting for its web address */
     int paste_ref;                      /* our Message_DataRequest (Ctrl-V), 0 = none */
     int save_ref;                       /* the DataSaveAck we sent: the DataLoad that follows */
     int scrap_paste;                    /* ... is for the Open address field, not to play */
@@ -1786,6 +1787,8 @@ static void set_title(void)
 
 static void play_source(const source_t *src);
 static void list_arrived_list(const char *file);
+static int hls_needs_address(const char *file);
+static char *read_text(const char *path);
 
 static void list_clear(void)
 {
@@ -1916,6 +1919,8 @@ static void list_arrived_list(const char *file)
     char msg[300];
     if (n == 0) {                       /* a video (or an HLS playlist): the file itself */
         source_t one;
+        if (hls_needs_address(file))    /* (saved from the web, with relative names) */
+            return;
         if (source_simple(&one, file) == 0) {
             list_add(&one, 1);
             source_free(&one);
@@ -2179,7 +2184,9 @@ enum { U_LABEL, U_FIELD, U_PASTE, U_CANCEL, U_PLAY, U_N };
 #define URL_H 216
 
 static char url_title[] = "Open address";
-static char url_label[] = "Web address, or yt-dlp's output (Ctrl-V pastes):";
+#define URL_LABEL "Web address, or yt-dlp's output (Ctrl-V pastes):"
+#define URL_LABEL_HLS "The address this playlist came from (Ctrl-V pastes):"
+static char url_label[64] = URL_LABEL;
 static char url_paste[] = "Paste", url_cancel[] = "Cancel", url_play_text[] = "Play";
 
 static int url_create(void)
@@ -2265,9 +2272,24 @@ static void url_open(void)
     url_caret();
 }
 
+static void url_label_set(const char *text)
+{
+    _kernel_swi_regs r;
+    int b[4] = { S.url_win, U_LABEL, 0, 0 };
+    snprintf(url_label, sizeof(url_label), "%s", text);
+    if (!S.url_win)
+        return;
+    r.r[1] = (intptr_t)b;
+    swi(Wimp_SetIconState, &r);
+}
+
 static void url_close(void)
 {
     _kernel_swi_regs r;
+    if (S.hls_pending[0]) {             /* (asked for, but not given) */
+        S.hls_pending[0] = 0;
+        url_label_set(URL_LABEL);
+    }
     if (!S.url_win)
         return;
     r.r[1] = (intptr_t)&S.url_win;
@@ -2282,9 +2304,81 @@ static void url_field_refresh(void)
     swi(Wimp_SetIconState, &r);
 }
 
+/* A saved HLS playlist that names its streams relative to where it came
+   from: played from a copy with those names made whole against the address
+   given (the playlist's own, or its directory), in <Wimp$ScrapDir>.ReelHLS */
+static void hls_with_address(void)
+{
+    char *text = read_text(S.hls_pending), *fixed, addr[1024], name[300];
+    const char *scrap = getenv("Wimp$ScrapDir");
+    size_t n;
+    FILE *f;
+    snprintf(addr, sizeof(addr), "%s", S.url_text);
+    for (n = strlen(addr); n && (addr[n - 1] == ' ' || addr[n - 1] == '\r' || addr[n - 1] == '\n'); )
+        addr[--n] = 0;
+    if (!text) {
+        report("Can't read the playlist any more.");
+        url_close();
+        return;
+    }
+    fixed = sources_hls_rebase(text, addr);
+    free(text);
+    if (!fixed) {
+        report("That isn't a web address: give the one the playlist came from, beginning http:// or https://.");
+        return;
+    }
+    if (!scrap || !*scrap) {
+        free(fixed);
+        report("<Wimp$ScrapDir> isn't set, so the playlist can't be made whole.");
+        url_close();
+        return;
+    }
+    snprintf(name, sizeof(name), "%s.%sHLS", scrap, APP);
+    if (!(f = fopen(name, "w")) || fputs(fixed, f) < 0) {
+        if (f)
+            fclose(f);
+        free(fixed);
+        report("Can't write the playlist to <Wimp$ScrapDir>.");
+        url_close();
+        return;
+    }
+    fclose(f);
+    free(fixed);
+    lg("HLS playlist %s with names relative to %s: playing %s", S.hls_pending, addr, name);
+    {
+        source_t one;
+        if (source_simple(&one, name) == 0) {
+            one.title = strdup(leaf(S.hls_pending));
+            one.key = strdup(S.hls_pending);        /* (remembered by the playlist's own name) */
+            list_add(&one, 1);
+            source_free(&one);
+        }
+    }
+    url_close();
+}
+
+/* A file that's an HLS playlist: does it need the address it came from? */
+static int hls_needs_address(const char *file)
+{
+    char *text = read_text(file);
+    int rel = text && sources_hls_relative(text);
+    free(text);
+    if (!rel)
+        return 0;
+    snprintf(S.hls_pending, sizeof(S.hls_pending), "%s", file);
+    lg("%s: an HLS playlist naming its streams relative to where it came from: asking for the address", file);
+    url_label_set(URL_LABEL_HLS);
+    url_open();
+    return 1;
+}
+
 /* Play (or Return): what's typed */
 static void url_play(void)
 {
+    if (S.hls_pending[0]) {
+        hls_with_address();
+        return;
+    }
     if (text_arrived(S.url_text) > 0)
         url_close();
     else

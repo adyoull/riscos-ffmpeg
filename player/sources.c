@@ -537,6 +537,153 @@ int sources_parse(const char *text, size_t len, source_t *out, int max, int *hls
     return n;
 }
 
+/* ---- HLS playlists saved from the web ---------------------------------------- */
+
+/* a name inside URI="..." on a tag line: where it starts, its length */
+static const char *uri_attr(const char *a, const char *b, size_t *len)
+{
+    const char *u = a;
+    while ((u = memchr(u, 'U', (size_t)(b - u))) && u + 5 <= b) {
+        if (!memcmp(u, "URI=\"", 5) && (u == a || u[-1] == ',' || u[-1] == ':')) {
+            const char *q = memchr(u + 5, '"', (size_t)(b - u - 5));
+            if (!q)
+                return NULL;
+            *len = (size_t)(q - u - 5);
+            return u + 5;
+        }
+        u++;
+    }
+    return NULL;
+}
+
+int sources_hls_relative(const char *text)
+{
+    const char *p = text, *end = text + strlen(text);
+    int hls = 0, rel = 0;
+    while (p < end) {
+        const char *e = memchr(p, '\n', (size_t)(end - p)), *a = p, *b;
+        size_t ulen;
+        const char *u;
+        if (!e)
+            e = end;
+        b = e;
+        p = e < end ? e + 1 : end;
+        while (a < b && (*a == ' ' || *a == '\t'))
+            a++;
+        while (b > a && (b[-1] == '\r' || b[-1] == ' ' || b[-1] == '\t'))
+            b--;
+        if (a == b)
+            continue;
+        if (*a == '#') {
+            if (b - a > 7 && !memcmp(a, "#EXT-X-", 7)) {
+                hls = 1;
+                if ((u = uri_attr(a, b, &ulen)) && ulen && !is_address(u, ulen))
+                    rel = 1;
+            }
+            continue;
+        }
+        if (!is_address(a, (size_t)(b - a)))
+            rel = 1;
+    }
+    return hls && rel;
+}
+
+/* rel resolved against base, appended to out */
+static int join(char **out, size_t *n, size_t *cap, const char *base, const char *rel, size_t rlen)
+{
+    size_t keep, need;
+    const char *host = strstr(base, "://"), *path;
+    if (is_address(rel, rlen))
+        keep = 0;
+    else if (rlen >= 2 && rel[0] == '/' && rel[1] == '/')
+        keep = (size_t)(host - base) + 1;                 /* "https:" */
+    else if (rlen && rel[0] == '/') {
+        path = strchr(host + 3, '/');
+        keep = path ? (size_t)(path - base) : strlen(base);
+    } else {
+        size_t q = strcspn(base, "?#");
+        keep = q;
+        while (keep > (size_t)(host - base) + 3 && base[keep - 1] != '/')
+            keep--;
+        if (keep <= (size_t)(host - base) + 3) {          /* "https://host" with no path */
+            keep = q;
+            need = *n + keep + 1 + rlen + 1;
+            if (need > *cap) {
+                char *t = realloc(*out, *cap = need * 2);
+                if (!t) return -1;
+                *out = t;
+            }
+            memcpy(*out + *n, base, keep); *n += keep;
+            (*out)[(*n)++] = '/';
+            memcpy(*out + *n, rel, rlen); *n += rlen;
+            return 0;
+        }
+    }
+    need = *n + keep + rlen + 1;
+    if (need > *cap) {
+        char *t = realloc(*out, *cap = need * 2);
+        if (!t) return -1;
+        *out = t;
+    }
+    memcpy(*out + *n, base, keep); *n += keep;
+    memcpy(*out + *n, rel, rlen); *n += rlen;
+    return 0;
+}
+
+static int put(char **out, size_t *n, size_t *cap, const char *s, size_t len)
+{
+    if (*n + len + 1 > *cap) {
+        char *t = realloc(*out, *cap = (*n + len + 1) * 2);
+        if (!t) return -1;
+        *out = t;
+    }
+    memcpy(*out + *n, s, len);
+    *n += len;
+    return 0;
+}
+
+char *sources_hls_rebase(const char *text, const char *base)
+{
+    const char *p = text, *end = text + strlen(text);
+    char *out = NULL;
+    size_t n = 0, cap = 0;
+    if (!is_address(base, strlen(base)))
+        return NULL;
+    while (p < end) {
+        const char *e = memchr(p, '\n', (size_t)(end - p)), *a = p, *b, *line = p;
+        int r = 0;
+        if (!e)
+            e = end;
+        b = e;
+        p = e < end ? e + 1 : end;
+        while (a < b && (*a == ' ' || *a == '\t'))
+            a++;
+        while (b > a && (b[-1] == '\r' || b[-1] == ' ' || b[-1] == '\t'))
+            b--;
+        if (a < b && *a == '#') {
+            size_t ulen;
+            const char *u = uri_attr(a, b, &ulen);
+            if (u && ulen && !is_address(u, ulen))
+                r = put(&out, &n, &cap, line, (size_t)(u - line)) || join(&out, &n, &cap, base, u, ulen) ||
+                    put(&out, &n, &cap, u + ulen, (size_t)(b - u - ulen));
+            else
+                r = put(&out, &n, &cap, line, (size_t)(b - line));
+        } else if (a < b) {
+            r = join(&out, &n, &cap, base, a, (size_t)(b - a));
+        }
+        if (r || put(&out, &n, &cap, "\n", 1)) {
+            free(out);
+            return NULL;
+        }
+    }
+    if (put(&out, &n, &cap, "", 0)) {
+        free(out);
+        return NULL;
+    }
+    out[n] = 0;
+    return out;
+}
+
 int sources_from_file(const char *path, source_t *out, int max)
 {
     FILE *f = fopen(path, "rb");

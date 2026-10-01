@@ -154,6 +154,44 @@ int main(void)
         remove("/tmp/reel_src_bin"); remove("/tmp/reel_src_txt"); remove("/tmp/reel_src_url");
     }
 
+    /* HLS playlists saved from the web: relative names, and rebasing them */
+    {
+        const char *master =
+            "#EXTM3U\n#EXT-X-VERSION:4\n"
+            "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"en\",URI=\"audio/en.m3u8\"\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,AUDIO=\"a\"\r\n"
+            "chunklist_360.m3u8?token=1\r\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=3000000\n"
+            "/live/abs_1080.m3u8\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=4000000\n"
+            "//cdn.example/other.m3u8\n"
+            "#EXT-X-STREAM-INF:BANDWIDTH=5000000\n"
+            "https://cdn.example/full.m3u8\n";
+        const char *whole = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nhttps://a.example/v.m3u8\n"
+                            "#EXT-X-MEDIA:TYPE=AUDIO,URI=\"https://a.example/a.m3u8\"\n";
+        char *r;
+        CHECK(sources_hls_relative(master), "relative names not seen");
+        CHECK(!sources_hls_relative(whole), "whole addresses taken as relative");
+        CHECK(!sources_hls_relative("chunk.m3u8\nother.mp4\n"), "not HLS, but called relative");
+        CHECK(sources_hls_relative("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\nhttps://a/s1.m4s\n"), "a relative MAP URI not seen");
+        r = sources_hls_rebase(master, "https://tv.example/live/stream/master.m3u8?session=9");
+        CHECK(r && strstr(r, "URI=\"https://tv.example/live/stream/audio/en.m3u8\"\n"), "MEDIA URI: %s", r ? r : "");
+        CHECK(r && strstr(r, "\nhttps://tv.example/live/stream/chunklist_360.m3u8?token=1\n"), "relative line: %s", r ? r : "");
+        CHECK(r && strstr(r, "\nhttps://tv.example/live/abs_1080.m3u8\n"), "host-relative line: %s", r ? r : "");
+        CHECK(r && strstr(r, "\nhttps://cdn.example/other.m3u8\n"), "scheme-relative line: %s", r ? r : "");
+        CHECK(r && strstr(r, "\nhttps://cdn.example/full.m3u8\n"), "whole address changed: %s", r ? r : "");
+        CHECK(r && strstr(r, "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,AUDIO=\"a\"\n"), "tag line changed: %s", r ? r : "");
+        CHECK(r && !sources_hls_relative(r), "still relative after rebasing:\n%s", r ? r : "");
+        free(r);
+        r = sources_hls_rebase(master, "http://tv.example");
+        CHECK(r && strstr(r, "\nhttp://tv.example/chunklist_360.m3u8?token=1\n"), "no path: %s", r ? r : "");
+        free(r);
+        r = sources_hls_rebase(master, "http://tv.example/dir/");
+        CHECK(r && strstr(r, "\nhttp://tv.example/dir/chunklist_360.m3u8?token=1\n"), "a directory: %s", r ? r : "");
+        free(r);
+        CHECK(!sources_hls_rebase(master, "not an address"), "rebased against text");
+    }
+
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;
 }

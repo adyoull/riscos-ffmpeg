@@ -164,6 +164,8 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/net_test" 
 echo "== net_test (reelcore: addresses read by a thread; video and sound apart)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/net_test" "http://127.0.0.1:$NP" "http://127.0.0.1:$((NP + 1))/x.mp4" "$NS" \
   "$O/net_headers.log" 2>&1 | grep -v "swscaler\|reelcore: " || bad=1
+ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -c copy -f hls -hls_time 2 -hls_list_size 0 \
+  -hls_playlist_type vod "$NS/hlsv.m3u8"                     # (a saved master names it relatively: reel_test P_HLSREL)
 echo '<!DOCTYPE html><html><head><title>A video</title></head><body><p>A page about a video.</p></body></html>' > "$NS/page.html"
 export REEL_TEST_URL="http://127.0.0.1:$NP"    # Reel's Open address and yt-dlp output (reel_test)
 

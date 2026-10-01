@@ -111,6 +111,8 @@ static int *st(int w) { return state[w == FULL ? 1 : w == INFO ? 2 : w == MINI ?
 static const char *base_url;
 static int url_created, url_open, url_nicons, msg_refs = 1000;
 static char *url_field;                 /* the address field's text (the icon's buffer) */
+static char *url_label_text;            /* the label above it (icon 0's buffer) */
+static ReelCore *hls_before;            /* what played before the saved HLS playlist */
 static int sent_action, sent_code, sent_to, sent_my_ref, sent_your_ref, sent_flags, sent_win;
 static char scrap[64];
 static char last_report[256];
@@ -183,7 +185,7 @@ enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT
        P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
        P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_SUBDROP, P_SUBHIDE, P_SUBSHOW, P_SUBNEXT, P_STEP, P_STEPPLAY, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
-       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_QUIT };
+       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_QUIT };
 static int phase = -1, phase_step;
 /* the phases that play (deliver nulls) */
 static int next_is_null(void)
@@ -191,7 +193,7 @@ static int next_is_null(void)
     return phase == P_PLAY1 || phase == P_PLAY2 || phase == P_PLAY3 || phase == P_PLAYFULL || phase == P_PLAY4 ||
            phase == P_PLAY5 || phase == P_PLAY6 || phase == P_SUBDROP || phase == P_SUBHIDE || phase == P_SUBSHOW || phase == P_SUBNEXT || phase == P_STEPPLAY || phase == P_INFOPLAY || phase == P_PANEL || phase == P_PANELOFF || phase == P_SPEEDPLAY || phase == P_AB ||
            phase == P_ABPLAY || phase == P_MINIPLAY || phase == P_ONTOP || phase == P_URLPLAY || phase == P_URLFILEPLAY ||
-           phase == P_URLOPENING || phase == P_URLFILEOPENING || phase == P_OVLREFUSE || phase == P_OVLPLAY || phase == P_OVLWAIT ||
+           phase == P_URLOPENING || phase == P_URLFILEOPENING || phase == P_HLSRELOPENING || phase == P_OVLREFUSE || phase == P_OVLPLAY || phase == P_OVLWAIT ||
            phase == P_OVLCOVER || phase == P_OVLUNCOVER || phase == P_OVLRESUME || phase == P_OVLFEWER ||
            phase == P_OVLOFF || phase == P_OVLMODE;
 }
@@ -1079,6 +1081,72 @@ static int next_event(int *b)
             printf("  a web page: %s\n", last_report);
             break;
         }
+        case P_HLSREL: {                                              /* a saved HLS playlist with relative names */
+            static char master[64];
+            if (!base_url)
+                break;
+            if (phase_step == 0) {
+                FILE *f;
+                phase_step++;
+                setenv("Wimp$ScrapDir", "/tmp/reel_test_scrap", 1);
+                strcpy(master, "/tmp/reel_masterXXXXXX");
+                close(mkstemp(master));
+                f = fopen(master, "w");
+                fprintf(f, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=322x184\nhlsv.m3u8\n");
+                fclose(f);
+                if (url_open) { key_event(b, URLW, 27); return 8; }   /* (start with the window shut) */
+                return 0;
+            }
+            if (phase_step == 1) {
+                phase_step++;
+                message(b, 3, -2, 1, 0xFFF, master);                   /* dropped on the icon */
+                return 18;
+            }
+            if (phase_step == 2) {
+                phase_step++;
+                CHECK(url_open && url_label_text && strstr(url_label_text, "came from"),
+                      "a relative HLS playlist: the window should ask where it came from (open %d, label '%s')",
+                      url_open, url_label_text ? url_label_text : "");
+                snprintf(url_field, 1024, "not an address");
+                key_event(b, URLW, 13);
+                return 8;
+            }
+            if (phase_step == 3) {
+                phase_step++;
+                CHECK(url_open && strstr(last_report, "isn't a web address"), "text given: '%s', open %d", last_report, url_open);
+                snprintf(url_field, 1024, "%s/live/master.m3u8?session=1", base_url);
+                fake_time += 1.0;                                     /* (typing it takes a while: not a playlist add) */
+                hls_before = reel_test_video();
+                key_event(b, URLW, 13);
+                return 8;
+            }
+            unlink(master);
+            {
+                char want[256], got[512] = "";
+                FILE *f = fopen("/tmp/reel_test_scrap.ReelHLS", "r");
+                if (f) { size_t n = fread(got, 1, sizeof(got) - 1, f); got[n] = 0; fclose(f); }
+                snprintf(want, sizeof(want), "\n%s/live/hlsv.m3u8\n", base_url);
+                CHECK(!url_open && strstr(got, want) && url_label_text && strstr(url_label_text, "yt-dlp"),
+                      "made whole: open %d, label '%s', file:\n%s", url_open, url_label_text ? url_label_text : "", got);
+            }
+            break;
+        }
+        case P_HLSRELOPENING: {
+            ReelCore *was = hls_before;                               /* (a local file: it may open at once) */
+            if (!base_url)
+                break;
+            if (phase_step++ < 5000 && (reel_test_video() == was || !reel_test_video())) {
+                fake_time += 0.01;
+                usleep(2000);
+                return 0;
+            }
+            v = reel_test_video();
+            CHECK(v && v != was && reelcore_width(v) == 322, "the rebased HLS playlist didn't open (%d nulls; last report '%s')", phase_step, last_report);
+            CHECK(title_ptr && strstr((char *)title_ptr, "reel_master"), "HLS title: '%s'", title_ptr ? (char *)title_ptr : "");
+            printf("  a saved HLS playlist, given its address, opened after %d nulls\n", phase_step);
+            unsetenv("Wimp$ScrapDir");
+            break;
+        }
         case P_CLOSE: case P_CLOSE2:
             if (phase_step++ == 0) { memset(b, 0, 4); b[0] = WIN; return 3; }
             CHECK(!reel_test_video() && !win_open, "close didn't close");
@@ -1320,6 +1388,7 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         if (b[7] == (int)0x87000002) {                                    /* Open address */
             url_created++; url_nicons = b[21];
             url_field = (char *)(intptr_t)b[22 + 8 * 1 + 5];              /* icon 1's text */
+            url_label_text = (char *)(intptr_t)b[22 + 8 * 0 + 5];         /* icon 0's text */
             out->r[0] = URLW; return NULL;
         }
         if ((b[7] & 0x80000040) == 0x80000040 && !(b[7] & 0x04000000)) { out->r[0] = FULL; return NULL; }

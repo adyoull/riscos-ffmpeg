@@ -3,7 +3,7 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next Reel): the pointer hides full screen, a sound track key, file types
+## Unreleased (next Reel): the pointer hides full screen, a sound track key, file types, saved HLS playlists
 
 Three requests from Chris on the ROOL forum:
 
@@ -35,6 +35,21 @@ Three requests from Chris on the ROOL forum:
   when the mouse moves, hidden again, back on leaving full screen; # with
   a two-track file (second, then first); File types > AVI ticked (the
   RunType and the Types file) and unticked. Mutations caught for each.
+- **A saved HLS playlist with relative names** (Raik on the ROOL forum: a
+  master .m3u8 saved from a site names its streams "hlsv.m3u8", relative
+  to where it came from): dropped on Reel, it opens Open address asking
+  "The address this playlist came from". Given that, Reel writes
+  `<Wimp$ScrapDir>.ReelHLS` with each stream and segment name (and the
+  `URI="..."` of `#EXT-X-MEDIA` and similar lines) made whole from it -
+  `//host/x`, `/x` and `x` as a browser would, the address's own query
+  left off - and plays that, titled by the dropped file. Text that isn't
+  an http(s) address is refused with a message; Escape or Close forgets
+  the playlist and puts the window's usual label back. Playlists that
+  already name whole addresses play as before.
+- reel_test: a saved master naming "hlsv.m3u8" dropped, the window asks,
+  "not an address" refused, `<server>/live/master.m3u8?session=1` given:
+  the scrap file names `<server>/live/hlsv.m3u8` and it plays (322x184).
+  sources_test: what counts as relative, and the three kinds of join.
 
 ## Unreleased: UnixLib 5.0.3.1-rc8
 

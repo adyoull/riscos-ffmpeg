@@ -143,6 +143,13 @@ Give Reel an address by:
     URI or URL file, a text file with one address a line (several make
     a playlist), an M3U playlist, or yt-dlp's output (below).
 
+A saved HLS playlist (.m3u8) usually names its parts relative to the
+address it was downloaded from ("hlsv.m3u8", "seg1.ts"), so on its own
+it leads nowhere. Drop one like that and Reel opens Open address asking
+"The address this playlist came from": give it (paste it), press Return,
+and Reel plays the playlist with each name made whole from that address.
+A playlist that already names whole addresses plays as it is.
+
 Reel reads ahead in the background (up to 10 seconds, or 32MB), so a
 slow connection doesn't hold up the desktop. While an address opens,
 what was playing carries on (with nothing playing, the window opens and
