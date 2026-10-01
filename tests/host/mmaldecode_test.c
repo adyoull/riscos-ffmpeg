@@ -23,7 +23,9 @@
 #include "kernel.h"
 
 int probe_main(int argc, char **argv);
-void probe_svc_copy(void *dst, const void *src, size_t n) { memcpy(dst, src, n); }
+static void pci_open(int rw);
+/* SVC mode: PCI_RAMAlloc memory is reachable only here (and by the "VideoCore") */
+void probe_svc_copy(void *dst, const void *src, size_t n) { pci_open(1); memcpy(dst, src, n); pci_open(0); }
 
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } } while (0)
@@ -237,6 +239,11 @@ typedef void stub_fn(uint32_t param, uint32_t reason, uint32_t h);
    physically contiguous); every bulk range must lie inside one block */
 static uint32_t pci_lo[32], pci_hi[32];
 static int npci_blocks, pci_live, no_pci_mem;
+static void pci_open(int rw)
+{
+    for (int i = 0; i < npci_blocks; i++)
+        if (pci_lo[i]) mprotect((void *)(uintptr_t)pci_lo[i], (pci_hi[i] - pci_lo[i] + 4095) & ~4095u, rw ? PROT_READ | PROT_WRITE : PROT_NONE);
+}
 static int in_pci(uint32_t a, uint32_t n)
 {
     for (int i = 0; i < npci_blocks; i++)
@@ -283,7 +290,9 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
         void *p;
         CHECK(R[1] == 4096, "PCI alignment %u", R[1]);
         if (no_pci_mem) return &err;
-        p = aligned_alloc(4096, (R[0] + 4095) & ~4095u);
+        /* privileged on RISC OS: no access from "USR mode" here (a stray
+           access is a SIGSEGV); probe_svc_copy and the fake VideoCore open it */
+        p = mmap(NULL, (R[0] + 4095) & ~4095u, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         pci_lo[npci_blocks] = (uint32_t)(uintptr_t)p; pci_hi[npci_blocks++] = (uint32_t)(uintptr_t)p + R[0];
         pci_live++;
         R[0] = (uint32_t)(uintptr_t)p; R[1] = 0x01000000;
@@ -291,7 +300,10 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
     }
     case 0x50101:
         for (int i = 0; i < npci_blocks; i++)
-            if (pci_lo[i] == R[0]) { free((void *)(uintptr_t)R[0]); pci_lo[i] = 0; pci_live--; return NULL; }
+            if (pci_lo[i] == R[0]) {
+                munmap((void *)(uintptr_t)R[0], (pci_hi[i] - pci_lo[i] + 4095) & ~4095u);
+                pci_lo[i] = 0; pci_live--; return NULL;
+            }
         CHECK(0, "PCI_RAMFree of an unknown block");
         return &err;
     case 0x59203:                            /* BulkQueueTransmit */
@@ -299,7 +311,9 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
         CHECK(uses > releases, "transmit while not in use");
         CHECK(pending_tx && R[2] == pending_tx && R[3] == 4 && (R[1] & 3) == 0, "transmit %u (expected %u), flags %u",
               R[2], pending_tx, R[3]);
+        pci_open(1);
         memcpy(got_stream + got_len, (const void *)(uintptr_t)R[1], R[2]);
+        pci_open(0);
         got_len += R[2];
         bulks_tx++;
         buffer_back(1, pending_tx_ctx, 0, 0);
@@ -311,7 +325,9 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
               R[2], rx_len_expected, R[3]);
         CHECK((R[1] & 63) == 0, "receive buffer not aligned");
         CHECK(in_pci(R[1], R[2]), "receive into memory that isn't PCI_RAMAlloc'd");
+        pci_open(1);
         if (need_rx == 1) memcpy((void *)(uintptr_t)R[1], cur_frame, R[2]);
+        pci_open(0);
         need_rx = 0;
         bulks_rx++;
         ((stub_fn *)(uintptr_t)stub)(stub + 64, 4, R[4]);      /* the real callback */

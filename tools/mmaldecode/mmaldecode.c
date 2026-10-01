@@ -365,6 +365,7 @@ static int simple(uint32_t type, const char *what)
 /* ---- buffers ---- */
 
 static uint8_t *in_buf[IN_BUFS], *out_buf[OUT_BUFS];
+static uint8_t *frame;                     /* a picture copied out of PCI memory, to check */
 static int in_busy[IN_BUFS], out_busy[OUT_BUFS];
 static uint32_t out_size;
 
@@ -372,7 +373,9 @@ static uint32_t out_size;
    physically contiguous: RISC OS's VCHIQ module (0.14, +&CDC) asks
    OS_Memory 0 for the physical address of the first page only and builds
    the page list from there. So those buffers come from PCI_RAMAlloc
-   (physically contiguous, below 1 GB), and are given back at the end. */
+   (physically contiguous, below 1 GB), and are given back at the end.
+   That memory is privileged (a USR mode access aborts: the Pi's 0.4 run),
+   so this program only reaches it with probe_svc_copy. */
 #define MAXPCI 16
 static uint32_t pci_alloc_swi, pci_free_swi, pci_blocks[MAXPCI];
 static int npci;
@@ -395,7 +398,6 @@ static void *pci_alloc(size_t n)
     if (npci == MAXPCI) return NULL;
     if (swi((int)pci_alloc_swi, (uint32_t)n, 4096, 0, 0, &log, NULL) || !log) return NULL;
     pci_blocks[npci++] = log;
-    memset((void *)(uintptr_t)log, 0, n);
     return (void *)(uintptr_t)log;
 }
 
@@ -547,6 +549,7 @@ static int configure_output(void)
             if (!out_buf[i]) { say("No physically contiguous memory (PCI_RAMAlloc) for %u byte pictures\n", (unsigned)need); return -1; }
         }
         out_size = need;
+        if (!(frame = aligned(need + 4))) { say("Out of memory for a %u byte picture\n", (unsigned)need); return -1; }
     }
     if (out_info.port.buffer_size != out_size) {
         out_info.port.buffer_size = out_size;
@@ -692,7 +695,7 @@ int probe_main(int argc, char **argv)
             uint32_t n, flags = 0;
             if (in_busy[i]) continue;
             n = stream_len - sent < IN_SIZE ? stream_len - sent : IN_SIZE;
-            memcpy(in_buf[i], stream + sent, n);
+            probe_svc_copy(in_buf[i], stream + sent, (n + 3) & ~3u);   /* (the stream is padded) */
             sent += n;
             if (sent == stream_len) { flags = FLAG_EOS; eos_sent = 1; }
             if (buffer_to_vc(&in_info, i, in_buf[i], IN_SIZE, n, flags)) { fatal = 1; break; }
@@ -755,13 +758,14 @@ int probe_main(int argc, char **argv)
                 if (b.length && !b.payload_in_message) {
                     if (b.length > out_size) { say("A %u byte picture for a %u byte buffer\n", (unsigned)b.length, (unsigned)out_size); fatal = 1; break; }
                     if (bulk_in(out_buf[k], b.length, (uint32_t)k)) { fatal = 1; break; }
+                    probe_svc_copy(frame, out_buf[k], (b.length + 3) & ~3u);
                 } else if (b.length) {
-                    memcpy(out_buf[k], b.short_data, b.payload_in_message);
+                    memcpy(frame, b.short_data, b.payload_in_message);
                 } else if (b.flags & FLAG_EOS) {
                     if (bulk_in(out_buf[k], 8, (uint32_t)k)) { fatal = 1; break; }   /* keeps the order */
                 }
                 if (b.length) {
-                    uint32_t crc = frame_crc(out_buf[k], &b);
+                    uint32_t crc = frame_crc(frame, &b);
                     if (frames < nwant && crc != want[frames]) {
                         if (wrong < 5) say("Picture %d: checksum &%08X, FFmpeg's &%08X\n", frames, (unsigned)crc, (unsigned)want[frames]);
                         wrong++;
@@ -783,7 +787,7 @@ int probe_main(int argc, char **argv)
                     evsize = evbuf ? ev.length : 0;
                 }
                 if (!evbuf || bulk_in(evbuf, ev.length, 99)) { fatal = 1; break; }
-                memcpy(ev.data, evbuf, sizeof ev.data);
+                probe_svc_copy(ev.data, evbuf, sizeof ev.data);
             }
             if (ev.cmd == EV_FORMAT_CHANGED && ev.port_type == PORT_OUTPUT) {
                 format_changed_t fc;
