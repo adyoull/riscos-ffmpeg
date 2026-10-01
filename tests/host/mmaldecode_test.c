@@ -233,6 +233,17 @@ static void firmware(const uint32_t *m, uint32_t len)
 
 typedef void stub_fn(uint32_t param, uint32_t reason, uint32_t h);
 
+/* PCI_RAMAlloc: the only memory VCHIQ's bulk transfers handle (it assumes
+   physically contiguous); every bulk range must lie inside one block */
+static uint32_t pci_lo[32], pci_hi[32];
+static int npci_blocks, pci_live, no_pci_mem;
+static int in_pci(uint32_t a, uint32_t n)
+{
+    for (int i = 0; i < npci_blocks; i++)
+        if (pci_lo[i] && a >= pci_lo[i] && a + n <= pci_hi[i]) return 1;
+    return 0;
+}
+
 _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
 {
     uint32_t *R = (uint32_t *)r->r;
@@ -263,7 +274,28 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
     case 0x5920D: uses++; return NULL;
     case 0x5920E: releases++; return NULL;
     case 0x59205: CHECK(uses > releases, "queue while not in use"); firmware((const uint32_t *)(uintptr_t)R[1], R[2]); return NULL;
+    case 0x39: {
+        const char *nm = (const char *)(uintptr_t)R[1];
+        R[0] = !strcmp(nm, "PCI_RAMAlloc") ? 0x50100 : !strcmp(nm, "PCI_RAMFree") ? 0x50101 : 0;
+        return R[0] ? NULL : &err;
+    }
+    case 0x50100: {
+        void *p;
+        CHECK(R[1] == 4096, "PCI alignment %u", R[1]);
+        if (no_pci_mem) return &err;
+        p = aligned_alloc(4096, (R[0] + 4095) & ~4095u);
+        pci_lo[npci_blocks] = (uint32_t)(uintptr_t)p; pci_hi[npci_blocks++] = (uint32_t)(uintptr_t)p + R[0];
+        pci_live++;
+        R[0] = (uint32_t)(uintptr_t)p; R[1] = 0x01000000;
+        return NULL;
+    }
+    case 0x50101:
+        for (int i = 0; i < npci_blocks; i++)
+            if (pci_lo[i] == R[0]) { free((void *)(uintptr_t)R[0]); pci_lo[i] = 0; pci_live--; return NULL; }
+        CHECK(0, "PCI_RAMFree of an unknown block");
+        return &err;
     case 0x59203:                            /* BulkQueueTransmit */
+        CHECK(in_pci(R[1], R[2]), "transmit from memory that isn't PCI_RAMAlloc'd");
         CHECK(uses > releases, "transmit while not in use");
         CHECK(pending_tx && R[2] == pending_tx && R[3] == 4 && (R[1] & 3) == 0, "transmit %u (expected %u), flags %u",
               R[2], pending_tx, R[3]);
@@ -278,6 +310,7 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
         CHECK(need_rx && R[2] == ((rx_len_expected + 3) & ~3u) && R[3] == 6, "receive %u (expected %u), flags %u",
               R[2], rx_len_expected, R[3]);
         CHECK((R[1] & 63) == 0, "receive buffer not aligned");
+        CHECK(in_pci(R[1], R[2]), "receive into memory that isn't PCI_RAMAlloc'd");
         if (need_rx == 1) memcpy((void *)(uintptr_t)R[1], cur_frame, R[2]);
         need_rx = 0;
         bulks_rx++;
@@ -359,6 +392,8 @@ static void cleaned(const char *what)
     CHECK(uses == releases, "%s: use/release %d/%d", what, uses, releases);
     CHECK(opens == closes && connects == disconnects && freed == 1, "%s: open/close %d/%d, connect %d/%d, freed %d",
           what, opens, closes, connects, disconnects, freed);
+    CHECK(pci_live == 0, "%s: %d PCI blocks not freed", what, pci_live);
+    npci_blocks = 0;
     CHECK(!comp_enabled && !port_on[1] && !port_on[2] && created == destroyed, "%s: left enabled (%d %d %d), %d/%d",
           what, comp_enabled, port_on[1], port_on[2], created, destroyed);
 }
@@ -411,6 +446,12 @@ int main(void)
     o = run(&ret, 0);
     CHECK(ret == 1 && strstr(o, "reports an error"), "error event (%d)", ret);
     cleaned("error");
+
+    no_pci_mem = 1;
+    o = run(&ret, 0);
+    CHECK(ret == 1 && strstr(o, "No physically contiguous memory") && !opens && !pci_live, "no PCI memory (%d)", ret);
+    npci_blocks = 0;
+    no_pci_mem = 0;
 
     printf(fails ? "mmaldecode_test: %d failures\n" : "mmaldecode_test: all passed\n", fails);
     return fails != 0;

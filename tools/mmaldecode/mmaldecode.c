@@ -368,6 +368,42 @@ static uint8_t *in_buf[IN_BUFS], *out_buf[OUT_BUFS];
 static int in_busy[IN_BUFS], out_busy[OUT_BUFS];
 static uint32_t out_size;
 
+/* Memory the VideoCore reads or writes by bulk transfer must be
+   physically contiguous: RISC OS's VCHIQ module (0.14, +&CDC) asks
+   OS_Memory 0 for the physical address of the first page only and builds
+   the page list from there. So those buffers come from PCI_RAMAlloc
+   (physically contiguous, below 1 GB), and are given back at the end. */
+#define MAXPCI 16
+static uint32_t pci_alloc_swi, pci_free_swi, pci_blocks[MAXPCI];
+static int npci;
+static uint8_t *evbuf;                     /* for event data that comes by bulk */
+static uint32_t evsize;
+
+static void *pci_alloc(size_t n)
+{
+    uint32_t log = 0;
+    _kernel_swi_regs r;
+    if (!pci_alloc_swi) {
+        memset(&r, 0, sizeof r);
+        r.r[1] = (int)(uintptr_t)"PCI_RAMAlloc";
+        if (probe_swi(0x39, &r)) return NULL;              /* OS_SWINumberFromString */
+        pci_alloc_swi = (uint32_t)r.r[0];
+        r.r[1] = (int)(uintptr_t)"PCI_RAMFree";
+        if (probe_swi(0x39, &r)) return NULL;
+        pci_free_swi = (uint32_t)r.r[0];
+    }
+    if (npci == MAXPCI) return NULL;
+    if (swi((int)pci_alloc_swi, (uint32_t)n, 4096, 0, 0, &log, NULL) || !log) return NULL;
+    pci_blocks[npci++] = log;
+    memset((void *)(uintptr_t)log, 0, n);
+    return (void *)(uintptr_t)log;
+}
+
+static void pci_free_all(void)
+{
+    while (npci) swi((int)pci_free_swi, pci_blocks[--npci], 0, 0, 0, NULL, NULL);
+}
+
 static void *aligned(size_t n)
 {
     uint8_t *p = malloc(n + 4096);
@@ -507,8 +543,8 @@ static int configure_output(void)
     if (out_info.port.buffer_size_min > need) need = out_info.port.buffer_size_min;
     if (need > out_size) {
         for (int i = 0; i < OUT_BUFS; i++) {
-            out_buf[i] = aligned(need);
-            if (!out_buf[i]) { say("Out of memory for %u byte pictures\n", (unsigned)need); return -1; }
+            out_buf[i] = pci_alloc(need);
+            if (!out_buf[i]) { say("No physically contiguous memory (PCI_RAMAlloc) for %u byte pictures\n", (unsigned)need); return -1; }
         }
         out_size = need;
     }
@@ -534,7 +570,7 @@ int probe_main(int argc, char **argv)
                                       0x05903004u, 0x02833001u, 0x05803004u, 0xe1a0f00eu };
 
     /* (a fresh start each time: the host tests call this more than once) */
-    free(want); want = NULL; nwant = want_w = want_h = 0; npend = 0; out_size = 0; stub = 0; comp = 0;
+    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; evbuf = NULL; evsize = 0; npend = 0; out_size = 0; stub = 0; comp = 0;
     memset(in_busy, 0, sizeof in_busy); memset(out_busy, 0, sizeof out_busy); out2 = NULL; verbose = 0;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out2 = fopen(argv[++i], "a");   /* (added to: Test runs three) */
@@ -564,7 +600,7 @@ int probe_main(int argc, char **argv)
     }
     say("%u bytes, %dx%d, %d pictures expected\n\n", (unsigned)stream_len, want_w, want_h, nwant);
     for (i = 0; i < IN_BUFS; i++)
-        if (!(in_buf[i] = aligned(IN_SIZE))) { say("Out of memory\n"); goto done; }
+        if (!(in_buf[i] = pci_alloc(IN_SIZE))) { say("No physically contiguous memory (PCI_RAMAlloc; is the PCI module loaded?)\n"); goto done; }
 
     /* the callback */
     if ((e = swi(OS_Module, 6, 0, 0, 72, NULL, &stub)) != NULL) { say("No RMA: %s\n", e->errmess); goto done; }
@@ -742,10 +778,8 @@ int probe_main(int argc, char **argv)
             memcpy(&ev, reply_payload(), sizeof ev);
             events++;
             if (ev.length > sizeof ev.data) {    /* the rest comes by bulk transfer (userland does this) */
-                static uint8_t *evbuf;
-                static uint32_t evsize;
                 if (ev.length > evsize) {
-                    evbuf = aligned(ev.length + 4);
+                    evbuf = pci_alloc(ev.length + 4);
                     evsize = evbuf ? ev.length : 0;
                 }
                 if (!evbuf || bulk_in(evbuf, ev.length, 99)) { fatal = 1; break; }
@@ -813,6 +847,7 @@ done:
     }
     if (connected) swi(VCHIQ_Disconnect, instance, 0, 0, 0, NULL, NULL);
     if (stub) swi(OS_Module, 7, 0, stub, 0, NULL, NULL);
+    pci_free_all();
     {
         int ok = eos_seen && !fatal && !wrong && frames == nwant;
         say("\nResult: %s\n", ok ? "OK - the VideoCore decoded every picture exactly as FFmpeg does" :
