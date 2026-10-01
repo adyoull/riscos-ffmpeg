@@ -36,7 +36,22 @@ Three requests from Chris on the ROOL forum:
   a two-track file (second, then first); File types > AVI ticked (the
   RunType and the Types file) and unticked. Mutations caught for each.
 
-## Unreleased: UnixLib 5.0.3
+## Unreleased: UnixLib 5.0.3.1-rc8
+
+- **Relinked with UnixLib 5.0.3.1-rc8** (github.com/adyoull/riscos-unixlib
+  pre-release v5.0.3.1-rc8; `libunixlib.a` sha256 44cb5481…, the same
+  library as rc7). Since 5.0.3: `fork()` works in EABI programs (a fork
+  child exiting no longer frees its parent's stack), `_exit(n)` exits with
+  code n, `mmap()` offsets, and the review fixes of the rc series. The
+  installed headers are unchanged (sched.h differs by a comment only), so
+  FFmpeg's libraries weren't rebuilt; the programs were relinked.
+  `tools/check-unixlib.sh` checks for rc8's library.
+- **PThreadTicker 0.02** (from the same pre-release) replaces 0.01 in the
+  apps: it updates its count of programs with interrupts off. The !Run
+  files still ask for 0.01, as the module's ReadMe advises (a loaded,
+  in-use older copy can't be replaced).
+
+## Earlier, unreleased: UnixLib 5.0.3
 
 - **Relinked with UnixLib 5.0.3** (github.com/adyoull/riscos-unixlib
   v5.0.3; `libunixlib.a` sha256 761305fa…). Its fixes: `read()` into a

@@ -1,5 +1,5 @@
 #!/bin/sh
-# check-unixlib.sh ELF... - the toolchain's library is UnixLib 5.0.3, and
+# check-unixlib.sh ELF... - the toolchain's library is UnixLib 5.0.3.1-rc8, and
 # each program was linked with UnixLib 5.0.1 or later (the thread timer that can run from the PThreadTicker module), and
 # a program with FFmpeg's file protocol with UnixLib 5.0.2's files over
 # 2GB: its libavformat built against 5.0.2's headers calls
@@ -15,15 +15,16 @@
 CROSS=${CROSS:-/root/gccsdk/env/bin/arm-riscos-gnueabihf-}
 EXPECTED=${EXPECTED:-472}
 bad=0
-# UnixLib 5.0.3 (its read() into a stack buffer and ctime() fixes) exports
-# the same symbols as 5.0.2, so a program can't tell them apart: check the
-# library the programs were just linked with is the 5.0.3 release's.
-UNIXLIB_SHA256=${UNIXLIB_SHA256:-761305fa54046c21fd533e2bf6695d1b637f3c2c4c631773a138a2ecfc0f7ce0}
+# UnixLib 5.0.3.1-rc8 (fork in EABI programs, _exit(n), mmap offsets, the
+# rc fixes since 5.0.3) can't be told from 5.0.2/5.0.3 by a program's
+# symbols: check the library the programs were just linked with is that
+# release's (pre-release v5.0.3.1-rc8; the same library as rc7).
+UNIXLIB_SHA256=${UNIXLIB_SHA256:-44cb5481ec4f1c6784ec81b2d2ddd6f2de72b063bcde2b13725a9443b1de8078}
 LIB=$(${CROSS}gcc -print-file-name=libunixlib.a 2>/dev/null)
 if [ -f "$LIB" ] && [ "$(sha256sum "$LIB" | cut -d' ' -f1)" != "$UNIXLIB_SHA256" ]; then
-  echo "$LIB: not UnixLib 5.0.3's libunixlib.a (sha256 ${UNIXLIB_SHA256%${UNIXLIB_SHA256#????????}}...)" >&2; bad=1
+  echo "$LIB: not UnixLib 5.0.3.1-rc8's libunixlib.a (sha256 ${UNIXLIB_SHA256%${UNIXLIB_SHA256#????????}}...)" >&2; bad=1
 elif [ -f "$LIB" ]; then
-  echo "  the toolchain's libunixlib.a: UnixLib 5.0.3"
+  echo "  the toolchain's libunixlib.a: UnixLib 5.0.3.1-rc8"
 fi
 for f in "$@"; do
   if ! ${CROSS}nm "$f" 2>/dev/null | grep -q ' __pthread_call_every_code$'; then
