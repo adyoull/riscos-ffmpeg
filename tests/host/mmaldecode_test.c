@@ -10,8 +10,11 @@
  *     the message, EOS, an EFCH that needs no change, every picture right;
  *   - an EFCH to a bigger size: disable, reformat, re-enable, buffers again;
  *   - as the Pi, the fake answers nothing while data it's sending waits for
- *     a receive: the EFCH's disable goes out with the next event's data
- *     waiting, and only gets its reply once that's received;
+ *     a receive; and output buffers given before its format change cost
+ *     the first one (a 44 byte cmd 0 "event", no data), picture 0, and any
+ *     answer to a disable of the output (0.6-0.9 on the Pi);
+ *   - a decoder that wants buffers before its format change: handed over
+ *     after 200 cs anyway;
  *   - a wrong picture: stops there (and with -n goes on and counts);
  *   - a decoder that goes quiet: gives up; an error event: stops;
  *   - every run: component disabled and destroyed, ports disabled,
@@ -40,7 +43,7 @@ static int fails;
 static _kernel_oserror err = { 1, "fake error" }, empty = { 2, "none" };
 
 /* scenario */
-static int first_event_sent, swap_frames;
+static int hijacked, vc_stuck, efch_late, swap_frames;
 static int big_efch, corrupt_at = -1, go_quiet, error_event, long_event, awaiting_reformat;
 /* counters */
 static int uses, releases, opens, closes, connects, disconnects, freed, created, destroyed, comp_enabled,
@@ -107,19 +110,9 @@ static void produce(void)
 {
     uint8_t vals[64];
     int n;
-    if (!eos_in || need_rx || go_quiet || awaiting_reformat) return;
+    if (!eos_in || need_rx || go_quiet || awaiting_reformat || vc_stuck) return;
     n = frame_values(vals);
-    if (!nout) return;
-    if (long_event == 1) {                   /* an event whose data comes by bulk transfer */
-        uint32_t ev[5 + 64 + 1];
-        memset(ev, 0, sizeof ev);
-        ev[1] = 2; ev[3] = 0x48435045u; ev[4] = 300;
-        post(16, ev, sizeof ev, 0);
-        need_rx = 3; rx_len_expected = 300;  /* its data follows by bulk */
-        long_event = 2;
-        return;
-    }
-    if (!efch_sent) {                        /* the first thing out: a format change */
+    if (!efch_sent && (!efch_late || nout)) {   /* the first thing out: a format change (no buffers needed) */
         uint32_t ev[5 + 256 / 4 + 1];
         uint32_t *fc;
         memset(ev, 0, sizeof ev);
@@ -133,7 +126,29 @@ static void produce(void)
         fc[13 + 4] = W; fc[13 + 5] = H;                                   /* crop w/h */
         post(16, ev, sizeof ev, 0);
         efch_sent = 1;
+        if (nout && !efch_late) {
+            /* as the Pi (0.6-0.9): output buffers there before the format
+               change: the first becomes a 44 byte cmd 0 "event" with a
+               picture's length and no data, picture 0 is lost with it, and
+               the buffer is held: a disable of the output never answers */
+            uint32_t pw = (out_w + 31) & ~31u, ph = (out_h + 15) & ~15u;
+            uint32_t e0[5] = { 1, 3, 0, 0, pw * ph * 3 / 2 };
+            post(16, e0, sizeof e0, 0);
+            nout--;
+            hijacked = 1;
+            frames_made++;
+        }
         if (big_efch) { awaiting_reformat = 1; return; }   /* nothing more until the port is re-enabled */
+    }
+    if (!nout) return;
+    if (long_event == 1) {                   /* an event whose data comes by bulk transfer */
+        uint32_t ev[5 + 64 + 1];
+        memset(ev, 0, sizeof ev);
+        ev[1] = 2; ev[3] = 0x48435045u; ev[4] = 300;
+        post(16, ev, sizeof ev, 0);
+        need_rx = 3; rx_len_expected = 300;  /* its data follows by bulk */
+        long_event = 2;
+        return;
     }
     if (error_event && frames_made == 2) {
         uint32_t ev[5 + 64 + 1];
@@ -145,13 +160,6 @@ static void produce(void)
     }
     if (frames_made < n) {
         uint32_t pw = (out_w + 31) & ~31u, ph = (out_h + 15) & ~15u, size = pw * ph * 3 / 2;
-        if (!frames_made && !first_event_sent) {   /* as the Pi: a 44 byte event (cmd 0, length = a picture's size), data by bulk */
-            uint32_t ev[5] = { 1, 3, 0, 0, size };
-            post(16, ev, sizeof ev, 0);
-            need_rx = 3; rx_len_expected = size;
-            first_event_sent = 1;
-            return;
-        }
         render(vals[swap_frames && frames_made == 1 ? 2 : swap_frames && frames_made == 2 ? 1 : frames_made], cur_frame);
         if (frames_made == corrupt_at) cur_frame[5] ^= 1;
         buffer_back(2, (uint32_t)out_bufs[--nout], size, 0);
@@ -175,6 +183,8 @@ static void firmware(const uint32_t *m, uint32_t len)
 {
     const uint32_t *p = m + 6;
     CHECK(m[0] == MAGIC && len <= 512, "bad message");
+    if (vc_stuck) return;                    /* (until the machine is restarted) */
+    if (m[1] == 10 && p[1] == 2 && p[2] == 2 && hijacked) { vc_stuck = 1; return; }
     if (need_rx) {
         CHECK(ndeferred < 8, "too many messages while sending");
         if (ndeferred < 8) { memcpy(deferred[ndeferred], m, len); deferred_len[ndeferred++] = len; deferred_ever++; }
@@ -344,6 +354,10 @@ _kernel_oserror *probe_swi(int n, _kernel_swi_regs *r)
         produce();
         return NULL;
     case 0x5920F: {                          /* BulkQueueReceive */
+        if (!need_rx) {                      /* nothing being sent: it waits (for good, here) */
+            CHECK(0, "a receive with nothing being sent (%u bytes)", R[2]);
+            return NULL;
+        }
         CHECK(need_rx && R[2] == ((rx_len_expected + 3) & ~3u) && R[3] == 6, "receive %u (expected %u), flags %u",
               R[2], rx_len_expected, R[3]);
         CHECK((R[1] & 63) == 0, "receive buffer not aligned");
@@ -427,7 +441,7 @@ static char *run(int *ret, int keep_going)
     uses = releases = opens = closes = connects = disconnects = freed = created = destroyed = comp_enabled = 0;
     memset(port_on, 0, sizeof port_on);
     shorts = bulks_tx = bulks_rx = efch_sent = disables_out = 0;
-    got_len = pending_tx = 0; awaiting_reformat = 0; first_event_sent = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
+    got_len = pending_tx = 0; awaiting_reformat = 0; hijacked = vc_stuck = 0; out_w = W; out_h = H; nout = frames_made = eos_in = eos_out_sent = need_rx = 0;
     noutq = 0; ndeferred = deferred_ever = 0;
     remove("/tmp/mmaldecode_test.out");
     if (with_sig) {
@@ -466,10 +480,16 @@ int main(void)
     CHECK(ret == 0 && strstr(o, "9 pictures decoded") && strstr(o, "9 of 9 checked against FFmpeg: 0 wrong") &&
           strstr(o, "Result: OK"), "normal path (%d)", ret);
     CHECK(bulks_tx == 6 && shorts == 0, "pieces: %d by bulk, %d in the message", bulks_tx, shorts);
-    CHECK(bulks_rx == 11 && disables_out == 2, "receives %d (event + 9 pictures + EOS), disables %d (the EFCH reformat + the end)", bulks_rx, disables_out);
+    CHECK(bulks_rx == 10 && disables_out == 1, "receives %d (9 pictures + EOS), disables %d (only the end: the format was the one set)", bulks_rx, disables_out);
     CHECK(got_len == 9 * (FILLER + 5), "stream arrived whole: %u", got_len);
-    CHECK(deferred_ever, "the Output disable should have been sent while the event's data was waiting (as on the Pi)");
+    CHECK(!hijacked && !vc_stuck, "output buffers given before the format change (a buffer swallowed, %d)", vc_stuck);
     cleaned("normal");
+
+    efch_late = 1;                            /* a decoder that waits for buffers before its format change */
+    o = run(&ret, 0);
+    CHECK(ret == 0 && strstr(o, "handed over anyway") && strstr(o, "Result: OK"), "late format change (%d):\n%s", ret, o);
+    cleaned("late EFCH");
+    efch_late = 0;
 
     big_efch = 1;
     o = run(&ret, 0);
@@ -495,7 +515,7 @@ int main(void)
 
     long_event = 1;
     o = run(&ret, 0);
-    CHECK(ret == 0 && long_event == 2 && bulks_rx == 12 && strstr(o, "Event EPCH (&48435045, 300 bytes) on port type 2"),
+    CHECK(ret == 0 && long_event == 2 && bulks_rx == 11 && strstr(o, "Event EPCH (&48435045, 300 bytes) on port type 2"),
           "long event (%d, %d receives):\n%s", ret, bulks_rx, o);
     cleaned("long event");
     long_event = 0;

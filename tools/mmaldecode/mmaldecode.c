@@ -12,7 +12,13 @@
  *   3. the stream goes in, in 64 KB pieces: each a BUFFER_FROM_HOST
  *      message, the data after it by VCHIQ bulk transfer (or in the
  *      message itself if 128 bytes or less); the last piece carries EOS;
- *   4. empty output buffers are handed over; each picture comes back as
+ *   4. empty output buffers are handed over once the decoder has said
+ *      what it will make (its first FORMAT_CHANGED event): given before
+ *      that, the Pi turns the first into a 44 byte event (cmd 0, length a
+ *      picture's size, no data), FFmpeg's picture 0 is lost with it, and
+ *      a port disable never gets a reply while it's held (0.6-0.9 on the
+ *      Pi; 200 cs without that event and they're handed over anyway);
+ *      each picture comes back as
  *      BUFFER_TO_HOST, then its bytes by a bulk receive into our memory,
  *      whose completion the RMA callback counts; an empty EOS buffer
  *      still gets an 8 byte receive (as Linux's driver), to keep order.
@@ -20,8 +26,9 @@
  *      waiting for the reply to something else: the VideoCore answers
  *      nothing more until the data it's sending has been taken (0.8 sent
  *      a port disable with an event's data still waiting: no reply);
- *   5. a FORMAT_CHANGED event on the output is honoured: port disabled,
- *      the new format set, re-enabled, the buffers handed over again;
+ *   5. a FORMAT_CHANGED event to a format other than the one set is
+ *      honoured: port disabled, the new format set, re-enabled, the
+ *      buffers handed over again (the same format: nothing to do);
  *   6. each picture's visible part is checksummed (Adler-32 of the packed
  *      I420, as FFmpeg's -f framecrc) and compared with the list made by
  *      FFmpeg's own decoder; the time from first input to EOS is timed.
@@ -89,6 +96,7 @@ enum { ES_VIDEO = 3 };
 #define OUT_BUFS       3
 #define REPLY_CS       300
 #define IDLE_CS        500                 /* no progress for this long: give up */
+#define EFCH_WAIT_CS   200                 /* the output's buffers handed over anyway after this */
 
 typedef struct { uint32_t magic, type, control_service, context, status, padding; } hdr_t;
 typedef struct {
@@ -276,6 +284,8 @@ static int send_msg(uint32_t type, const void *payload, uint32_t len, uint32_t *
 
 static int take_data(void);
 static int data_failed;                    /* a receive failed: the session can't go on */
+static const char *waiting = "";           /* -v: " (waiting for <reply>)" while transact waits */
+static char waiting_buf[64];
 
 /* one message into msg[]: its length, or 0 if none waiting. Any data that
    follows it by bulk transfer is received at once (take_data). */
@@ -289,6 +299,18 @@ static uint32_t poll_msg(void)
         say("(a %u byte message that isn't MMAL's)\n", (unsigned)got);
         return 0;
     }
+    if (verbose) {                          /* every message as it arrives (0.9 hid those during a wait) */
+        const uint32_t *w = (const uint32_t *)((hdr_t *)msg + 1);
+        if (((hdr_t *)msg)->type == T_BUFFER_TO_HOST)
+            say("  rx%s: buffer back, status %u, port %u, buffer %u, length %u, flags &%X, in message %u\n", waiting,
+                (unsigned)((hdr_t *)msg)->status, (unsigned)w[2], (unsigned)w[3], (unsigned)w[8 + 5],
+                (unsigned)w[8 + 7], (unsigned)((const buffer_msg_t *)w)->payload_in_message);
+        else
+            say("  rx%s: type %u, status %u, %u bytes: %08X %08X %08X %08X %08X %08X %08X %08X\n", waiting,
+                (unsigned)((hdr_t *)msg)->type, (unsigned)((hdr_t *)msg)->status, (unsigned)got,
+                (unsigned)w[0], (unsigned)w[1], (unsigned)w[2], (unsigned)w[3], (unsigned)w[4], (unsigned)w[5],
+                (unsigned)w[6], (unsigned)w[7]);
+    }
     if (take_data()) data_failed = 1;
     return got;
 }
@@ -300,10 +322,12 @@ static int transact(uint32_t type, const void *payload, uint32_t len, const char
     uint32_t t0, got;
     if (send_msg(type, payload, len, NULL)) return -1;
     t0 = now_cs();
+    snprintf(waiting_buf, sizeof waiting_buf, " (waiting for %s)", what);
+    waiting = waiting_buf;
     while (now_cs() - t0 < REPLY_CS) {
         if (!(got = poll_msg())) continue;
-        if (data_failed) return -1;
-        if (((hdr_t *)msg)->type == type) return (int)(got - sizeof(hdr_t));
+        if (data_failed) { waiting = ""; return -1; }
+        if (((hdr_t *)msg)->type == type) { waiting = ""; return (int)(got - sizeof(hdr_t)); }
         if (npend < MAXPEND) {
             memcpy(pend[npend], msg, got);
             pend_len[npend++] = got;
@@ -311,6 +335,7 @@ static int transact(uint32_t type, const void *payload, uint32_t len, const char
             say("%s: too many messages waiting; one dropped\n", what);
         }
     }
+    waiting = "";
     say("%s: no reply in %d cs\n", what, REPLY_CS);
     return -1;
 }
@@ -517,7 +542,10 @@ static int take_data(void)
     }
     if (h->type == T_EVENT_TO_HOST) {
         const event_msg_t *ev = (const event_msg_t *)w;
-        if (ev->length <= sizeof ev->data) return 0;
+        /* cmd 0 isn't an event: the Pi's 44 byte "event" with a picture's
+           length sends no data (0.7's receive for it took the next
+           picture's; 0.9's never finished) */
+        if (!ev->cmd || ev->length <= sizeof ev->data) return 0;
         if (ev->length > evsize) {
             evbuf = pci_alloc(ev->length + 4);
             evsize = evbuf ? ev->length : 0;
@@ -693,13 +721,13 @@ int probe_main(int argc, char **argv)
     uint8_t *stream = NULL;
     uint32_t stream_len = 0, sent = 0, instance = 0, setup[11], t_start = 0, t_end = 0, last_progress;
     int connected = 0, opened = 0, created = 0, enabled = 0, in_on = 0, out_on = 0, keep_going = 0;
-    int frames = 0, wrong = 0, eos_sent = 0, eos_seen = 0, fatal = 0, i, format_changes = 0, events = 0;
+    int frames = 0, wrong = 0, eos_sent = 0, eos_seen = 0, fatal = 0, i, format_changes = 0, events = 0, outputs_given = 0;
     _kernel_oserror *e;
     static const uint32_t code[9] = { 0xe3510004u, 0x05903000u, 0x02833001u, 0x05803000u, 0xe3510012u,
                                       0x05903004u, 0x02833001u, 0x05803004u, 0xe1a0f00eu };
 
     /* (a fresh start each time: the host tests call this more than once) */
-    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; evbuf = NULL; evsize = 0; dump_dir = NULL; big_events = 0; nsig = 0; npend = 0; data_failed = 0; out_size = 0; stub = 0; comp = 0;
+    free(want); want = NULL; nwant = want_w = want_h = 0; npci = 0; pci_alloc_swi = 0; evbuf = NULL; evsize = 0; dump_dir = NULL; big_events = 0; nsig = 0; npend = 0; data_failed = 0; waiting = ""; out_size = 0; stub = 0; comp = 0;
     memset(in_busy, 0, sizeof in_busy); memset(out_busy, 0, sizeof out_busy); out2 = NULL; verbose = 0;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out2 = fopen(argv[++i], "a");   /* (added to: Test runs three) */
@@ -815,7 +843,7 @@ int probe_main(int argc, char **argv)
     in_on = 1;
     if (port_action(&out_info, ACTION_ENABLE, "Output enable")) goto done;
     out_on = 1;
-    if (give_outputs()) goto done;
+    /* (the output's buffers: after the decoder's first format change) */
 
     /* 3-6. feed, collect, check */
     t_start = last_progress = now_cs();
@@ -840,6 +868,12 @@ int probe_main(int argc, char **argv)
             memmove(pend_len, pend_len + 1, sizeof pend_len[0] * (size_t)(npend - 1));
             npend--;
         } else if (!(got = poll_msg())) {
+            if (!outputs_given && now_cs() - t_start > EFCH_WAIT_CS) {
+                say("No format change from the decoder in %d cs: the output buffers handed over anyway\n", EFCH_WAIT_CS);
+                outputs_given = 1;
+                if (give_outputs()) fatal = 1;
+                continue;
+            }
             if (now_cs() - last_progress > IDLE_CS) {
                 say("Nothing from the decoder for %d cs (%d pictures so far)\n", IDLE_CS, frames);
                 say("  %u of %u bytes sent; input buffers with the decoder: %d %d %d; output: %d %d %d; "
@@ -852,18 +886,6 @@ int probe_main(int argc, char **argv)
         }
         if (data_failed) { fatal = 1; break; }
         last_progress = now_cs();
-        if (verbose) {
-            const uint32_t *w = reply_payload();
-            if (((hdr_t *)msg)->type == T_BUFFER_TO_HOST)
-                say("  rx: buffer back, status %u, port %u, buffer %u, length %u, flags &%X, in message %u\n",
-                    (unsigned)((hdr_t *)msg)->status, (unsigned)w[2], (unsigned)w[3], (unsigned)w[8 + 5],
-                    (unsigned)w[8 + 7], (unsigned)((buffer_msg_t *)w)->payload_in_message);
-            else
-                say("  rx: type %u, status %u, %u bytes: %08X %08X %08X %08X %08X %08X %08X %08X\n",
-                    (unsigned)((hdr_t *)msg)->type, (unsigned)((hdr_t *)msg)->status, (unsigned)got,
-                    (unsigned)w[0], (unsigned)w[1], (unsigned)w[2], (unsigned)w[3], (unsigned)w[4], (unsigned)w[5],
-                    (unsigned)w[6], (unsigned)w[7]);
-        }
         if (((hdr_t *)msg)->type == T_BUFFER_TO_HOST) {
             buffer_msg_t b;
             memcpy(&b, reply_payload(), sizeof b);
@@ -926,7 +948,7 @@ int probe_main(int argc, char **argv)
                     frames++;
                 }
                 if (b.flags & FLAG_EOS) { eos_seen = 1; t_end = now_cs(); }
-                else if (give_outputs()) fatal = 1;
+                else if (outputs_given && give_outputs()) fatal = 1;
             }
         } else if (((hdr_t *)msg)->type == T_EVENT_TO_HOST) {
             event_msg_t ev;
@@ -935,14 +957,10 @@ int probe_main(int argc, char **argv)
             events++;
             /* An event's length can exceed the 256 bytes the message holds;
                then its data follows by bulk transfer (userland's client
-               queues a receive for it). The Pi sends one such event (cmd 0,
-               length = a picture's size) on the output before the first
-               picture: 0.6, which didn't receive it, got every picture one
-               transfer late and the decoder stuck at the end waiting to
-               send its last one. So it's received (into PCI memory), and
-               with -v checksummed as if it were a picture, and with -d
-               saved, to see what it is. */
-            if (ev.length > sizeof ev.data) {       /* (received as it arrived: take_data) */
+               queues a receive for it), received into evbuf by take_data;
+               with -v checksummed as if it were a picture, with -d saved.
+               Not for cmd 0 (see take_data). */
+            if (ev.cmd && ev.length > sizeof ev.data) {       /* (received as it arrived: take_data) */
                 if (ev.length <= out_size) {
                     buffer_msg_t none;
                     memset(&none, 0, sizeof none);
@@ -972,12 +990,19 @@ int probe_main(int argc, char **argv)
                 say("Format changed: %s %ux%u (crop %dx%d), buffers %u x %u bytes\n", fourcc(fc.format.encoding, c),
                     (unsigned)fc.video.width, (unsigned)fc.video.height, (int)fc.video.crop[2], (int)fc.video.crop[3],
                     (unsigned)fc.buffer_num_recommended, (unsigned)fc.buffer_size_recommended);
-                /* MMAL's clients always answer a format change by disabling
-                   the port, setting the format it gives and enabling it again
-                   (userland's examples, Linux's codec driver); 0.7 skipped it
-                   when the size hadn't changed, and the decoder then sent its
-                   first picture as an event and lost one: so always. */
-                {
+                /* The format set already (as 0.7 did; 0.8-0.9's disable never
+                   got a reply, with the swallowed buffer held): nothing to do
+                   but hand the buffers over. Otherwise the port is disabled,
+                   the format it gives set, and it's enabled again. */
+                if (fc.format.encoding == out_info.format.encoding && fc.video.width == out_info.video.width &&
+                    fc.video.height == out_info.video.height && fc.buffer_size_min <= out_size) {
+                    out_info.video.crop[2] = fc.video.crop[2];
+                    out_info.video.crop[3] = fc.video.crop[3];
+                    if (!outputs_given) {
+                        outputs_given = 1;
+                        if (give_outputs()) { fatal = 1; break; }
+                    }
+                } else {
                     /* the output's buffers come back when it's disabled */
                     if (port_action(&out_info, ACTION_DISABLE, "Output disable")) { fatal = 1; break; }
                     out_on = 0;
@@ -1007,11 +1032,15 @@ int probe_main(int argc, char **argv)
                             i++;
                         }
                     }
+                    outputs_given = 1;
                     if (give_outputs()) { fatal = 1; break; }
                 }
             } else if (ev.cmd == EV_ERROR) {
                 say("The decoder reports an error (port type %u)\n", (unsigned)ev.port_type);
                 fatal = 1;
+            } else if (!ev.cmd && ev.port_type == PORT_OUTPUT && ev.length) {
+                say("A %u byte \"event\" with no code on the output: an output buffer kept back by the decoder\n"
+                    "  (as when buffers are given before its format change; a picture is lost with it)\n", (unsigned)ev.length);
             } else {
                 say("Event %s (&%08X, %u bytes) on port type %u, number %u\n", fourcc(ev.cmd, c), (unsigned)ev.cmd,
                     (unsigned)ev.length, (unsigned)ev.port_type, (unsigned)ev.port_num);
