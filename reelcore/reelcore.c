@@ -46,6 +46,8 @@
 #endif
 
 #define QMAX          12     /* room for decoded frames kept ahead of the clock */
+#define QROOM         (QMAX - 2)  /* a decoder's frames taken while fewer than this wait (yadif
+                                    can give 2 a frame): the rest stay in the decoder */
 #define HIST_N        10     /* pictures kept for stepping back */
 #define PICS_AHEAD    0.13   /* seconds of pictures decoded ahead: rides out a slow one */
 #define PICS_MIN      3      /* (as before, for 24-30 fps) */
@@ -191,6 +193,8 @@ struct ReelCore {
     int fast;                          /* fast decoding: no deblocking filter */
     int vc;                            /* the video decoded by the Pi's VideoCore (h264_vchiq) */
     int vc_failed;                     /* ... which failed part way: the ARM's decoder from here on */
+    int vmore;                         /* the video decoder has frames not taken yet (the queue was full) */
+    unsigned q_overflow;               /* pictures pushed out of a full queue (should never happen) */
     int auto_fast;                     /* too slow: deblocking off by itself (while fast is off) */
     unsigned auto_fast_spells;
     double auto_fast_since;            /* when turned off (real seconds; for FAST_HOLD) */
@@ -1800,7 +1804,9 @@ static void queue_picture(ReelCore *v, AVFrame *f, double pts)
         if (v->seek_skip)
             skip_restore(v);
     }
-    if (v->qn == QMAX) {                  /* full: the oldest goes */
+    if (v->qn == QMAX) {                  /* full: the oldest goes (receive_all stops short of this) */
+        if (!v->q_overflow++)
+            av_log(NULL, AV_LOG_WARNING, "reelcore: a picture pushed out of the full queue\n");
         av_frame_free(&v->q[0]);
         memmove(v->q, v->q + 1, (QMAX - 1) * sizeof(v->q[0]));
         memmove(v->qpts, v->qpts + 1, (QMAX - 1) * sizeof(v->qpts[0]));
@@ -2082,6 +2088,15 @@ static AVPacket *vpk_pop(ReelCore *v)
     return p;
 }
 
+/* p back at the head (a decoder that couldn't take it yet) */
+static void vpk_unpop(ReelCore *v, AVPacket *p)
+{
+    v->vpk_head = (v->vpk_head + v->vpk_cap - 1) % v->vpk_cap;
+    v->vpk[v->vpk_head] = p;
+    v->vpk_n++;
+    v->vpk_bytes += p->size;
+}
+
 static void vpk_clear(ReelCore *v)
 {
     AVPacket *p;
@@ -2134,7 +2149,7 @@ static void apk_clear(ReelCore *v)
     v->apk_head = 0;
 }
 
-static void decode(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video);
+static int decode(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video);
 
 /* Sound packets decoded while the sound queued is short of v->ahead (all
    of them with no device, or a stalled one); at the end, the decoder's
@@ -2155,13 +2170,13 @@ static void audio_drain(ReelCore *v)
 }
 
 /* Sends pkt (NULL = flush) to a decoder and takes all it gives back. */
-static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video);
+static int decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video);
 
-static void decode(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
+static int decode(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
 {
     int64_t t0 = av_gettime_relative();
     unsigned n0 = v->n_decoded;
-    decode_frames(v, dec, pkt, video);
+    int taken = decode_frames(v, dec, pkt, video);
     if (video) {
         int64_t t = av_gettime_relative() - t0;
         v->t_decode += t;
@@ -2171,14 +2186,24 @@ static void decode(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
             v->dec_avg = v->dec_avg > 0 ? v->dec_avg * 0.9 + t / 1e6 * 0.1 : t / 1e6;
     } else
         v->t_audio += av_gettime_relative() - t0;
+    return taken;
 }
 
 /* Takes every frame the decoder has: 1 at the end of the stream, 0 when it
-   wants more input, or a decoder error */
+   wants more input, 2 when the pictures waiting are QROOM (the rest are
+   left in the decoder, v->vmore: the VideoCore gives them in bursts), or a
+   decoder error */
 static int receive_all(ReelCore *v, AVCodecContext *dec, int video)
 {
+    if (video)
+        v->vmore = 0;
     for (;;) {
-        int ret = avcodec_receive_frame(dec, v->frame);
+        int ret;
+        if (video && v->qn >= QROOM) {
+            v->vmore = 1;
+            return 2;
+        }
+        ret = avcodec_receive_frame(dec, v->frame);
         if (ret == AVERROR_EOF) {
             if (video) {
                 if (v->dgraph && av_buffersrc_add_frame(v->din, NULL) >= 0)
@@ -2200,23 +2225,31 @@ static int receive_all(ReelCore *v, AVCodecContext *dec, int video)
     }
 }
 
-static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
+/* 1 if the decoder took pkt, 0 if it's to be sent again later (its input
+   full and the pictures waiting are QROOM) */
+static int decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
 {
-    int ret = avcodec_send_packet(dec, pkt), r = 0;
+    int ret, r = 0;
+    if (video && v->vmore && (r = receive_all(v, dec, video)) == 2)
+        return 0;                          /* still full: nothing sent */
+    ret = r ? 0 : avcodec_send_packet(dec, pkt);
     /* A decoder whose input is full (the VideoCore's) refuses the packet
        for now: take its frames, then the packet again (the ARM's decoders
        always take it) */
-    for (int tries = 0; ret == AVERROR(EAGAIN) && tries < 16; tries++) {
+    for (int tries = 0; !r && ret == AVERROR(EAGAIN) && tries < 16; tries++) {
         if ((r = receive_all(v, dec, video)) != 0)
             break;
         ret = avcodec_send_packet(dec, pkt);
     }
+    if (r == 2 && ret == AVERROR(EAGAIN))
+        return 0;                          /* kept for later: the queue is full */
     if (!r && (ret >= 0 || ret == AVERROR_EOF || ret == AVERROR(EAGAIN)))
         r = receive_all(v, dec, video);
     if (r < 0 && video && v->vc && r == AVERROR_EXTERNAL && !v->vc_failed) {
         v->vc_failed = 1;                  /* switched at the next update: see vc_fallback */
         av_log(NULL, AV_LOG_WARNING, "reelcore: the VideoCore's decoder failed: decoding on the ARM from here\n");
     }
+    return 1;
 }
 
 /* Behind the clock: stop decoding the frames nothing else refers to (most
@@ -2356,6 +2389,13 @@ static void fill(ReelCore *v)
            fill up after a slow one) would make it late, and the next ... */
         if (v->qn && !v->need_first && !v->paused && v->qpts[0] <= clock_now(v) + 0.005)
             break;
+        if (v->vmore && !v->vpk_n && v->vflushed) {
+            /* the end sent: the decoder's last frames, as there's room */
+            decode(v, v->vdec, NULL, 1);
+            if (v->vmore)
+                break;
+            continue;
+        }
         AVPacket *p = vpk_pop(v);
         if (p) {
             check_late(v);
@@ -2370,7 +2410,10 @@ static void fill(ReelCore *v)
                     v->seek_skip = 1;
                 }
             }
-            decode(v, v->vdec, p, 1);
+            if (!decode(v, v->vdec, p, 1)) {
+                vpk_unpop(v, p);           /* the decoder full and so is the queue: later */
+                break;
+            }
             av_packet_free(&p);
         } else if (v->eof_demux && !v->vflushed) {
             v->vflushed = 1;
@@ -2424,6 +2467,7 @@ static void vc_fallback(ReelCore *v)
     }
     avcodec_free_context(&v->vdec);
     v->vdec = c;
+    v->vmore = 0;
     v->vc = 0;
     av_log(NULL, AV_LOG_INFO, "reelcore: h264 on the ARM from %.2f s\n", at);
     reelcore_seek(v, at);
@@ -2541,7 +2585,7 @@ static double reelcore_idle_time_play(ReelCore *v)
     if (v->need_first)
         return 0;
     /* pictures still to decode */
-    if (v->qn < pics_wanted(v) && (v->vpk_n || !v->eof_demux || !v->vflushed))
+    if (v->qn < pics_wanted(v) && (v->vpk_n || !v->eof_demux || !v->vflushed || v->vmore))
         return 0;
     /* the sound to top up (fill() keeps it at v->ahead) */
     if (v->dev && !v->stalled && !v->eof_demux && queued_audio(v) < v->ahead - IDLE_MAX - 0.05)
@@ -2610,6 +2654,7 @@ int reelcore_seek(ReelCore *v, double seconds)
         }
     }
     avcodec_flush_buffers(v->vdec);
+    v->vmore = 0;
     if (v->adec)
         avcodec_flush_buffers(v->adec);
     if (v->sdec) {

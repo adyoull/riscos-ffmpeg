@@ -9,6 +9,11 @@
  *   - it refuses the stream at open (AVERROR(ENOSYS), as for High 10 or
  *     1080p with gpu_mem 64): reelcore uses h264 on the ARM;
  *   - REELCORE_NO_VIDEOCORE: it isn't even asked for;
+ *   - it gives its pictures in bursts of 16 (the real one holds them while
+ *     its input is full, then hands over many at once), refusing packets
+ *     while it does: reelcore keeps the packet and leaves pictures in the
+ *     decoder rather than push any out of its queue (a picture lost there
+ *     was the stutter seen on the Pi: the picture jumping ahead);
  *   - it fails part way (AVERROR_EXTERNAL from receive_frame, as when the
  *     VideoCore stops answering): reelcore goes on with h264 on the ARM,
  *     from where it was, to the end.
@@ -29,6 +34,16 @@ static int fails;
 
 static int asked, pending, refuse_open, refuse_send, fail_after = -1, refused, vc_frames, failed;
 static AVCodecContext *vc_ctx;
+#define BURST 16
+static int burst, releasing, stash_n, stash_max;
+static AVFrame *stash[64];
+
+static void stash_clear(void)
+{
+    while (stash_n)
+        av_frame_free(&stash[--stash_n]);
+    releasing = 0;
+}
 
 const AVCodec *__real_avcodec_find_decoder_by_name(const char *name);
 const AVCodec *__wrap_avcodec_find_decoder_by_name(const char *name)
@@ -56,6 +71,8 @@ int __wrap_avcodec_open2(AVCodecContext *c, const AVCodec *codec, AVDictionary *
 int __real_avcodec_send_packet(AVCodecContext *c, const AVPacket *p);
 int __wrap_avcodec_send_packet(AVCodecContext *c, const AVPacket *p)
 {
+    if (c == vc_ctx && burst && releasing)
+        return AVERROR(EAGAIN);              /* its input full while it hands pictures over */
     if (c == vc_ctx && p && refuse_send) {
         if (!refused) { refused = 1; return AVERROR(EAGAIN); }   /* full: the same packet again later */
         refused = 0;
@@ -69,6 +86,28 @@ int __wrap_avcodec_receive_frame(AVCodecContext *c, AVFrame *f)
     int r;
     if (c == vc_ctx && failed)
         return AVERROR_EXTERNAL;
+    if (c == vc_ctx && burst) {
+        for (;;) {
+            if (releasing && stash_n) {
+                av_frame_move_ref(f, stash[0]);
+                av_frame_free(&stash[0]);
+                memmove(stash, stash + 1, --stash_n * sizeof stash[0]);
+                return 0;
+            }
+            releasing = 0;
+            AVFrame *t = av_frame_alloc();
+            r = __real_avcodec_receive_frame(c, t);
+            if (r >= 0) {
+                stash[stash_n++] = t;
+                if (stash_n > stash_max) stash_max = stash_n;
+                if (stash_n >= BURST) releasing = 1;
+                continue;
+            }
+            av_frame_free(&t);
+            if (r == AVERROR_EOF && stash_n) { releasing = 1; continue; }
+            return r;                        /* EAGAIN: holding them */
+        }
+    }
     r = __real_avcodec_receive_frame(c, f);
     if (c == vc_ctx && r >= 0 && ++vc_frames == fail_after) {
         av_frame_unref(f);
@@ -78,19 +117,33 @@ int __wrap_avcodec_receive_frame(AVCodecContext *c, AVFrame *f)
     return r;
 }
 
+void __real_avcodec_flush_buffers(AVCodecContext *c);
+void __wrap_avcodec_flush_buffers(AVCodecContext *c)
+{
+    if (c == vc_ctx)
+        stash_clear();
+    __real_avcodec_flush_buffers(c);
+}
+
 void __real_avcodec_free_context(AVCodecContext **c);
 void __wrap_avcodec_free_context(AVCodecContext **c)
 {
-    if (c && *c == vc_ctx)
+    if (c && *c == vc_ctx) {
         vc_ctx = NULL;
+        stash_clear();
+    }
     __real_avcodec_free_context(c);
 }
 
 static char last_log[256];
-static int fell_back;
+static int fell_back, pushed_out;
 static void log_line(int level, const char *line)
 {
     (void)level;
+    if (strstr(line, "pushed out")) {
+        pushed_out++;
+        printf("    %s%s", line, strchr(line, '\n') ? "" : "\n");
+    }
     if (strstr(line, "on the ARM") || strstr(line, "VideoCore")) {
         printf("    %s%s", line, strchr(line, '\n') ? "" : "\n");
         if (strstr(line, "h264 on the ARM from")) fell_back++;
@@ -98,7 +151,9 @@ static void log_line(int level, const char *line)
     }
 }
 
-typedef struct { int end, decoder, decoder_early; unsigned decoded, shown; double pos; char info[4096]; } run_t;
+typedef struct { int end, decoder, decoder_early, jumps; unsigned decoded, shown; double pos, last; char info[4096]; } run_t;
+
+static double seek_at = -1, seek_to;
 
 static void play(const char *clip, int flags, run_t *out)
 {
@@ -107,13 +162,25 @@ static void play(const char *clip, int flags, run_t *out)
     int r = 0;
     double t0 = fake_time;
     memset(out, 0, sizeof *out);
-    vc_ctx = NULL; vc_frames = 0; failed = 0; refused = 0; fell_back = 0;
+    vc_ctx = NULL; vc_frames = 0; failed = 0; refused = 0; fell_back = 0; pushed_out = 0; stash_max = 0;
     v = reelcore_open(clip, flags | REELCORE_NO_AUDIO);
     CHECK(v != NULL, "open %s", clip);
     if (!v) return;
     reelcore_media_info(v, out->info, sizeof out->info);
     for (int i = 0; i < 40000 && r != REELCORE_END && fake_time - t0 < 30; i++) {
         r = reelcore_update(v);
+        if (seek_at >= 0 && reelcore_position(v) >= seek_at) {
+            reelcore_seek(v, seek_to);
+            seek_at = -1;
+            out->last = -1;
+            continue;
+        }
+        if (r == REELCORE_NEW_FRAME) {
+            double at = reelcore_position(v);   /* a picture skipped: a jump of over 1.5 frames */
+            if (out->last > 0 && at - out->last > 1.5 / 25)
+                out->jumps++;
+            out->last = at;
+        }
         if (r == REELCORE_NEW_FRAME && ++out->shown == 10) {
             reelcore_stats(v, &st);
             out->decoder_early = st.decoder;  /* (what the stats say while it plays) */
@@ -166,12 +233,30 @@ int main(int argc, char **argv)
           "VideoCore: stats decoder %d, %d", a.decoder_early, a.decoder);
     refuse_send = 0;
 
+    /* bursts of 16 pictures, packets refused while it hands them over */
+    burst = 1;
+    play(argv[1], 0, &a);
+    printf("  bursts of %d: %u decoded, %u shown, %d jumps, %d pushed out, up to %d held in the stand-in\n", BURST, a.decoded,
+           a.shown, a.jumps, pushed_out, stash_max);
+    CHECK(stash_max == BURST, "bursts: the stand-in held %d (not bursting?)", stash_max);
+    CHECK(a.end && a.decoded == ref.decoded && a.shown == ref.shown && !a.jumps && !pushed_out,
+          "bursts: end %d, %u decoded, %u shown of %u, %d jumps, %d pictures pushed out of the queue", a.end, a.decoded,
+          a.shown, ref.shown, a.jumps, pushed_out);
+    /* ... and a seek while it holds some */
+    seek_at = 2.0; seek_to = 0.5;
+    play(argv[1], 0, &a);
+    printf("  bursts, a seek from 2 s to 0.5 s: %u shown, %d jumps, ended %d at %.2f\n", a.shown, a.jumps, a.end, a.pos);
+    CHECK(a.end && !a.jumps && !pushed_out && a.shown > ref.shown, "bursts, a seek: end %d, %u shown, %d jumps, %d pushed out",
+          a.end, a.shown, a.jumps, pushed_out);
+    burst = 0;
+
     /* refused at open */
     refuse_open = 1;
+    int asked0 = asked;
     play(argv[1], 0, &a);
     printf("  refused at open: %u decoded, decoder %s\n", a.decoded, decoder_line(a.info));
-    CHECK(asked == 2 && a.end && a.decoded == ref.decoded && strstr(decoder_line(a.info), "h264, 1 thread") &&
-          strstr(last_log, "can't take this H.264"), "refused: asked %d, end %d, %u decoded, '%s'", asked, a.end, a.decoded,
+    CHECK(asked == asked0 + 1 && a.end && a.decoded == ref.decoded && strstr(decoder_line(a.info), "h264, 1 thread") &&
+          strstr(last_log, "can't take this H.264"), "refused: asked %d, end %d, %u decoded, '%s'", asked - asked0, a.end, a.decoded,
           decoder_line(a.info));
     CHECK(a.decoder == REELCORE_DECODER_ARM, "refused: stats decoder %d", a.decoder);
     refuse_open = 0;

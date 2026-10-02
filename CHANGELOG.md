@@ -21,6 +21,16 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   VideoCore decodes (it decodes every frame). Media info: "Decoder
   VideoCore (h264_vchiq)", or "h264, 1 thread (the VideoCore failed part
   way)".
+- **Fixed: H.264 on the VideoCore stuttered and jumped** (seen on a Pi 4
+  with the first test build). The VideoCore hands pictures back in
+  bursts (around big keyframes, and at the start), and reelcore, which
+  keeps at most 12 ready, pushed the oldest out of its queue without a
+  word: the picture jumped ahead. Now it takes a decoder's pictures only
+  while there's room, leaves the rest in the decoder and keeps the packet
+  it couldn't send yet; a picture pushed out is logged (it shouldn't
+  happen). vc_test: a stand-in that gives bursts of 16 and refuses
+  packets meanwhile, with a seek: every picture shown, no jumps (before
+  the fix: 90 of 150 shown, 8 jumps).
 - **Reel shows which decoder is at work while it plays**: the picture's
   stats (**S**) have a Decoder row, "VideoCore (hardware)", "ARM
   (software)" or "ARM (software: the VideoCore failed part way)"; Media
