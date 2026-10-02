@@ -189,6 +189,8 @@ struct ReelCore {
     AVFilterContext *tempo_in, *tempo_out;
     AVFrame *tempo_frame;
     int fast;                          /* fast decoding: no deblocking filter */
+    int vc;                            /* the video decoded by the Pi's VideoCore (h264_vchiq) */
+    int vc_failed;                     /* ... which failed part way: the ARM's decoder from here on */
     int auto_fast;                     /* too slow: deblocking off by itself (while fast is off) */
     unsigned auto_fast_spells;
     double auto_fast_since;            /* when turned off (real seconds; for FAST_HOLD) */
@@ -699,9 +701,8 @@ static void timer_set(ReelCore *v, double pts)
 
 /* ---------------------------------------------------------------- open */
 
-static AVCodecContext *open_decoder(AVStream *st)
+static AVCodecContext *open_with(AVStream *st, const AVCodec *codec)
 {
-    const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
     AVCodecContext *c;
     if (!codec || !(c = avcodec_alloc_context3(codec)))
         return NULL;
@@ -714,6 +715,33 @@ static AVCodecContext *open_decoder(AVStream *st)
     if (avcodec_open2(c, codec, NULL) < 0)
         avcodec_free_context(&c);
     return c;
+}
+
+static AVCodecContext *open_decoder(AVStream *st)
+{
+    return open_with(st, avcodec_find_decoder(st->codecpar->codec_id));
+}
+
+/* The video's decoder: for H.264, the Pi's VideoCore first (h264_vchiq,
+   riscos-reelhwaccel's vcdec), unless REELCORE_NO_VIDEOCORE. It refuses
+   streams it can't take (High 10, 4:2:2, over 1920x1088, 1080p with
+   gpu_mem under 128 MB, no VCHIQ), and builds without it don't have it:
+   then FFmpeg's own decoder on the ARM. */
+static AVCodecContext *open_video_decoder(ReelCore *v, AVStream *st)
+{
+    AVCodecContext *c = NULL;
+    const AVCodec *vc;
+    v->vc = 0;
+    if (st->codecpar->codec_id == AV_CODEC_ID_H264 && !(v->flags & REELCORE_NO_VIDEOCORE) && !v->vc_failed &&
+        (vc = avcodec_find_decoder_by_name("h264_vchiq")) != NULL) {
+        if ((c = open_with(st, vc)) != NULL) {
+            v->vc = 1;
+            av_log(NULL, AV_LOG_INFO, "reelcore: H.264 decoded by the VideoCore (h264_vchiq)\n");
+            return c;
+        }
+        av_log(NULL, AV_LOG_INFO, "reelcore: the VideoCore can't take this H.264: decoding on the ARM\n");
+    }
+    return open_decoder(st);
 }
 
 static int open_audio(ReelCore *v)
@@ -867,7 +895,7 @@ static int select_streams(ReelCore *v)
 static int setup_decoders(ReelCore *v)
 {
     AVStream *st = v->fmt->streams[v->vs];
-    if (!(v->vdec = open_decoder(st))) {
+    if (!(v->vdec = open_video_decoder(v, st))) {
         set_error("no decoder for the video (%s)", avcodec_get_name(st->codecpar->codec_id));
         return -1;
     }
@@ -1574,7 +1602,11 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
         ADD("Bit rate\t%s\n", b);
         if (st->nb_frames > 0)
             ADD("Frames\t%lld\n", (long long)st->nb_frames);
-        ADD("Decoder\t%s, 1 thread\n", v->vdec && v->vdec->codec ? v->vdec->codec->name : "?");
+        if (v->vc)
+            ADD("Decoder\tVideoCore (h264_vchiq)\n");
+        else
+            ADD("Decoder\t%s, 1 thread%s\n", v->vdec && v->vdec->codec ? v->vdec->codec->name : "?",
+                v->vc_failed ? " (the VideoCore failed part way)" : "");
         if (v->vdec && v->vdec->has_b_frames)
             ADD("Reordering\t%d frame%s (B-frames)\n", v->vdec->has_b_frames, v->vdec->has_b_frames == 1 ? "" : "s");
     }
@@ -2140,13 +2172,12 @@ static void decode(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
         v->t_audio += av_gettime_relative() - t0;
 }
 
-static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
+/* Takes every frame the decoder has: 1 at the end of the stream, 0 when it
+   wants more input, or a decoder error */
+static int receive_all(ReelCore *v, AVCodecContext *dec, int video)
 {
-    int ret = avcodec_send_packet(dec, pkt);
-    if (ret < 0 && ret != AVERROR_EOF && ret != AVERROR(EAGAIN))
-        return;                            /* a damaged packet: skip it */
     for (;;) {
-        ret = avcodec_receive_frame(dec, v->frame);
+        int ret = avcodec_receive_frame(dec, v->frame);
         if (ret == AVERROR_EOF) {
             if (video) {
                 if (v->dgraph && av_buffersrc_add_frame(v->din, NULL) >= 0)
@@ -2159,12 +2190,31 @@ static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int v
                 if (v->dev && !v->stalled)
                     aud_flush(v);
             }
-            return;
+            return 1;
         }
         if (ret < 0)
-            return;
+            return ret == AVERROR(EAGAIN) ? 0 : ret;
         if (video) got_video(v, v->frame); else got_audio(v, v->frame);
         av_frame_unref(v->frame);
+    }
+}
+
+static void decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
+{
+    int ret = avcodec_send_packet(dec, pkt), r = 0;
+    /* A decoder whose input is full (the VideoCore's) refuses the packet
+       for now: take its frames, then the packet again (the ARM's decoders
+       always take it) */
+    for (int tries = 0; ret == AVERROR(EAGAIN) && tries < 16; tries++) {
+        if ((r = receive_all(v, dec, video)) != 0)
+            break;
+        ret = avcodec_send_packet(dec, pkt);
+    }
+    if (!r && (ret >= 0 || ret == AVERROR_EOF || ret == AVERROR(EAGAIN)))
+        r = receive_all(v, dec, video);
+    if (r < 0 && video && v->vc && r == AVERROR_EXTERNAL && !v->vc_failed) {
+        v->vc_failed = 1;                  /* switched at the next update: see vc_fallback */
+        av_log(NULL, AV_LOG_WARNING, "reelcore: the VideoCore's decoder failed: decoding on the ARM from here\n");
     }
 }
 
@@ -2222,8 +2272,8 @@ static void check_late(ReelCore *v)
                                    "decoding only keyframes" };
     double lag, last;
     int want;
-    if (v->paused || !v->cur || v->need_first)
-        return;
+    if (v->paused || !v->cur || v->need_first || v->vc)
+        return;                            /* (the VideoCore decodes every frame, whatever skip_frame says) */
     last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
     lag = clock_now(v) - last;
     check_slow(v, lag);
@@ -2360,6 +2410,24 @@ static void take_frame(ReelCore *v)
     v->qn--;
 }
 
+/* The VideoCore failed part way: FFmpeg's decoder on the ARM instead, from
+   where the picture is (a seek there: it flushes and refills) */
+static void vc_fallback(ReelCore *v)
+{
+    AVCodecContext *c = open_decoder(v->fmt->streams[v->vs]);
+    double at = reelcore_position(v);
+    if (!c) {
+        av_log(NULL, AV_LOG_ERROR, "reelcore: no ARM decoder to take over from the VideoCore\n");
+        v->vc = 0;
+        return;
+    }
+    avcodec_free_context(&v->vdec);
+    v->vdec = c;
+    v->vc = 0;
+    av_log(NULL, AV_LOG_INFO, "reelcore: h264 on the ARM from %.2f s\n", at);
+    reelcore_seek(v, at);
+}
+
 int reelcore_update(ReelCore *v)
 {
     double now;
@@ -2383,6 +2451,8 @@ int reelcore_update(ReelCore *v)
         }
         return REELCORE_READY;
     }
+    if (v->vc && v->vc_failed)
+        vc_fallback(v);
     if (v->net) {
         int low;
         pthread_mutex_lock(&v->net->lock);

@@ -154,6 +154,7 @@ for l in avcodec avdevice avfilter avformat avutil postproc swresample swscale \
          x264 dav1d mp3lame opus ogg vorbis vorbisenc vorbisfile reelcore ffegl; do
   ${CROSS}strip --strip-debug -o "$K/lib/lib$l.a" "$STAGE/lib/lib$l.a"
 done
+[ -f "$STAGE/lib/libvcdec.a" ] && cp "$STAGE/lib/libvcdec.a" "$K/lib/"   # riscos-reelhwaccel's, for h264_vchiq
 for pc in "$STAGE"/lib/pkgconfig/*.pc; do
   case $(basename "$pc") in sdl2.pc|zlib.pc) continue ;; esac   # from riscos-mesa
   sed "s#$STAGE#\${pcfiledir}/../..#g" "$pc" > "$K/lib/pkgconfig/$(basename "$pc")"
@@ -173,6 +174,9 @@ SDL2, zlib, EGL and OpenGL are not here: take them from the riscos-mesa
 devkit, 20.3.5-7pre12 or later (EGLImage textures for ffegl; libavdevice's
 egl output device needs libEGL and libOSMesa).
 Point PKG_CONFIG_LIBDIR at lib/pkgconfig and use pkg-config --static.
+libavcodec includes h264_vchiq (H.264 on the Raspberry Pi's VideoCore)
+when lib/libvcdec.a is here (riscos-reelhwaccel's vcdec, GPL v2 or
+later): link with -lvcdec after -lavcodec (pkg-config adds it).
 Licence: GPL version 2 or later (x264); see Licences.
 EOF
 rm -f "$DIST/riscos-ffmpeg-devkit-$V.tgz"

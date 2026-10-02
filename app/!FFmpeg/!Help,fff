@@ -182,6 +182,17 @@ tests all pass under an emulator that traps like RISC OS.
 "Bench" (in this directory) measures the speed on your machine: double-
 click it. It compares the NEON code with plain C.
 
+On a Raspberry Pi, H.264 can be decoded by the Pi's own video decoder
+(the VideoCore) instead of the CPU: ask for it with -c:v h264_vchiq
+before the input, for example
+  ffmpeg -c:v h264_vchiq -i film/mp4 -c:v libx264 out/mkv
+  ffplay -vcodec h264_vchiq film/mp4
+Up to 1920x1080, 8-bit 4:2:0 (Baseline, Main and High); 1080p needs
+gpu_mem=128 or more in !Boot.Loader.CONFIG/TXT. A stream it can't take
+is refused with a message; leave the option out to use the CPU (the
+default). Its pictures can differ from the CPU's by 1 in a few colour
+values (the VideoCore's own rounding).
+
 Why 5.1 and not 7.x/8.x: 5.1 is the last FFmpeg with NEON code for the
 AAC, AC-3, Vorbis and WMA audio decoders on 32-bit ARM (6.0 replaced it
 with generic C), and the last whose ffmpeg command doesn't need threads

@@ -3,7 +3,34 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next Reel): long web addresses, File types as Iris does it
+## Unreleased (next FFmpeg and Reel): H.264 on the Pi's VideoCore, long web addresses, File types as Iris does it
+
+- **h264_vchiq: H.264 decoded by the Raspberry Pi's VideoCore** (patch
+  0021, from riscos-reelhwaccel's devkit, with its vcdec library). Built
+  in when `third_party/reelhwaccel` has the devkit (`--enable-vchiq`);
+  FFmpeg is built as before without it. Not FFmpeg's default H.264
+  decoder: `-c:v h264_vchiq` (ffplay `-vcodec h264_vchiq`). Up to
+  1920x1088, Baseline/Main/High 8-bit 4:2:0; 1080p needs gpu_mem=128.
+- **Reel and ReelEGL use the VideoCore for H.264 by themselves** (reelcore:
+  `open_video_decoder`): h264_vchiq first, FFmpeg's h264 on the ARM when
+  it refuses the stream (or isn't built in); if it fails part way
+  (AVERROR_EXTERNAL), the ARM's decoder takes over at the next update,
+  from the same place (a seek there). `REELCORE_NO_VIDEOCORE`, from
+  `*Set Reel$NoVideoCore 1` (ReelEGL$NoVideoCore), keeps to the ARM.
+  Frame skipping and automatic deblocking-off don't apply while the
+  VideoCore decodes (it decodes every frame). Media info: "Decoder
+  VideoCore (h264_vchiq)", or "h264, 1 thread (the VideoCore failed part
+  way)".
+- **reelcore no longer loses a packet a decoder refuses for now**
+  (`avcodec_send_packet` EAGAIN, as h264_vchiq gives while the
+  VideoCore's input is full): it takes the decoder's frames and sends the
+  same packet again. FFmpeg's own decoders never refused, so nothing
+  changes for them.
+- vc_test (host): a stand-in h264_vchiq (FFmpeg's h264 with its calls
+  wrapped): every packet refused once and not a picture lost; refused at
+  open; REELCORE_NO_VIDEOCORE; failing at the 40th picture and playing
+  on to the end on the ARM. Mutations (no resend, no fallback) caught.
+
 
 - **File types: Never / While Reel is running / Always** (Chris on the
   ROOL forum, after Iris's choice for PDF files). The ticks now say which

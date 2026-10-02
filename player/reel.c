@@ -2058,7 +2058,8 @@ static void play_source(const source_t *src)
     cs.user_agent = src->user_agent;
     cs.title = src->title;
     v = reelcore_open_source(&cs, (S.loop && S.list_n <= 1 ? REELCORE_LOOP : 0) | (net ? REELCORE_ASYNC : 0) |
-                             (getenv(APP "$NoAutoFast") ? REELCORE_NO_AUTOFAST : 0));
+                             (getenv(APP "$NoAutoFast") ? REELCORE_NO_AUTOFAST : 0) |
+                             (getenv(APP "$NoVideoCore") ? REELCORE_NO_VIDEOCORE : 0));
     if (!v) {
         char msg[300];
         snprintf(msg, sizeof(msg), "%s: %s", name, reelcore_last_error());

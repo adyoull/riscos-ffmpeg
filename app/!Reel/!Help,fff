@@ -253,7 +253,19 @@ and the display itself scales it to the window and turns it into RGB on
 its way to the monitor. Converting, scaling and plotting each picture are
 gone: on a Pi 4 that is about a third of the work for a 720p video in a
 window, and more full screen, so files that were only just too much for
-the machine play smoothly. Decoding is still done by the CPU.
+the machine play smoothly.
+
+On a Raspberry Pi, H.264 video (most MP4 files, and YouTube's avc1) is
+decoded by the Pi's own video decoder (the VideoCore) instead of the
+CPU, up to 1920x1080: 1080p plays at full rate with the CPU nearly free.
+Media info's Decoder line says "VideoCore (h264_vchiq)". For 1080p the
+VideoCore needs gpu_mem=128 (or more) in !Boot.Loader.CONFIG/TXT, then a
+restart: with less, Reel decodes 1080p on the CPU as before. Anything
+the VideoCore can't take (High 10, 4:2:2, over 1920x1080, and every other
+codec) is decoded on the CPU, with no message; if the VideoCore fails
+part way, Reel carries on on the CPU from the same place. To use the CPU
+only: *Set Reel$NoVideoCore 1 (ReelEGL$NoVideoCore for ReelEGL) before
+starting Reel.
 On the Pi the overlay sits on top of everything on the screen, so Reel
 hides it, and draws the picture as before, whenever a window or menu is
 over the picture, while paused, at the end, and while it asks you

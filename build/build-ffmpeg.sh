@@ -46,6 +46,17 @@ if [ ! -f ffbuild/config.mak ] || [ -n "${RECONFIGURE:-}" ]; then
     LINK=-no-pie
   else
     VARIANT="--enable-zlib --enable-sdl2 --enable-ffplay --enable-riscos-egl --enable-riscos-acornssl"
+    # h264_vchiq (patch 0021): H.264 on the Pi's VideoCore through
+    # riscos-reelhwaccel's vcdec, when its devkit is in third_party/reelhwaccel
+    # (RHW= another place). Without it, FFmpeg is built as before.
+    RHW=${RHW:-$TOP/third_party/reelhwaccel}
+    if [ -f "$RHW/lib/libvcdec.a" ] && [ -f "$RHW/include/vcdec.h" ]; then
+      cp "$RHW/include/vcdec.h" "$STAGE/include/" && cp "$RHW/lib/libvcdec.a" "$STAGE/lib/"
+      VARIANT="$VARIANT --enable-vchiq"
+    else
+      echo "(no reelhwaccel devkit in $RHW: FFmpeg without h264_vchiq)"
+      rm -f "$STAGE/include/vcdec.h" "$STAGE/lib/libvcdec.a"
+    fi
     OUTDEVS="--enable-outdev=egl"   # after --disable-outdevs
     LINK=-static
   fi

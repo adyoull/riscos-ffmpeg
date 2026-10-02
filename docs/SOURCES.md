@@ -27,6 +27,13 @@ Test-only (not in any release):
 Toolchain: GCCSDK GCC 10.2.0 Release 2 (riscos-warzone2100), built from
 GCCSDK 64c6f81 (`Warzone2100/dist/gccsdk-gcc10.2-x86_64-linux-env.tgz`, md5
 caea90c3cc14abb4387f2c8d2e009355), with its UnixLib replaced by
+**riscos-reelhwaccel devkit** (github.com/adyoull/riscos-reelhwaccel, GPL
+v2 or later): `vcdec.h` and `libvcdec.a` in `third_party/reelhwaccel`,
+which `build/build-ffmpeg.sh` copies into the stage and builds FFmpeg
+with `--enable-vchiq` (patch 0021, `h264_vchiq`, also from that devkit);
+`third_party/reelhwaccel/SOURCE.md` names the devkit and its sha256.
+Without it, FFmpeg is built without h264_vchiq.
+
 **UnixLib 5.0.3.1** from github.com/adyoull/riscos-unixlib (an unofficial
 fork of GCCSDK's UnixLib; release v5.0.3.1: `libunixlib.a` sha256
 fa98152f…0658 into `arm-riscos-gnueabihf/lib/`; its installed headers are

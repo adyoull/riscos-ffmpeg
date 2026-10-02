@@ -46,6 +46,7 @@ typedef struct ReelCore ReelCore;
 #define REELCORE_ASYNC      8   /* reelcore_open_source: return at once; see below */
 #define REELCORE_NO_ROTATE 16   /* show the picture as stored, not turned as the file says */
 #define REELCORE_NO_AUTOFAST 32 /* never turn the deblocking filter off by itself (see reelcore_set_fast) */
+#define REELCORE_NO_VIDEOCORE 64 /* don't try the Pi's VideoCore (h264_vchiq) for H.264: decode on the ARM */
 
 /* reelcore_update results */
 #define REELCORE_SAME_FRAME 0   /* nothing new to show */
