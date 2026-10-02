@@ -26,6 +26,11 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 - **`drop_before` for h264_vchiq** (patch 0022): pictures with an earlier
   pts are given back to the VideoCore unseen. Reel sets it when it falls
   behind and on the way to a seek's picture.
+- **ReelHWAccel** (https://github.com/adyoull/riscos-reelhwaccel) is a new
+  implementation: the VideoCore through RISC OS's VCHIQ module, with its
+  own MMAL client written using Linux's vchiq-mmal driver as a reference
+  (no code copied), so it's under the GPL version 2 (or later), as that
+  driver is. The packages' `docs.Licences.ReelHWAccel` says so.
 - **ReelHWAccel has its own project.** The hardware video decoding work
   (`reelhwaccel/`, the HEVCHW module, and the test tools
   `tools/hevcprobe`, `vchiqprobe`, `mmalprobe` and `mmaldecode` with

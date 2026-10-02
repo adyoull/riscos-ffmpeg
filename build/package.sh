@@ -56,6 +56,7 @@ cp "$SRC/libvorbis-1.3.7/COPYING" "$D/Licences/Vorbis,fff"
 cp "$SRC/SDL-release-2.26.0/LICENSE.txt" "$D/Licences/SDL2,fff"
 cp "$TOP/third_party/pthreadticker/Licence" "$D/Licences/PThreadTicker,fff"
 cp "$TOP/third_party/dejavu/Licence" "$D/Licences/DejaVu,fff"
+cp "$TOP/third_party/reelhwaccel/Licence" "$D/Licences/ReelHWAccel,fff"
 # Corresponding source for the GPL: this port's changes and how it is built
 # (the upstream tarballs are named, with checksums, in SOURCES).
 ( cd "$TOP" && tar cf - build patches tools app common third_party reelcore ffegl frontend player tests/qemu/*.sh tests/qemu/*.md tests/qemu/*.patch \
@@ -73,6 +74,7 @@ for p in videowin videocube; do
 done
 cp "$TOP/docs/EGL.md" "$E/ReadMe,fff"
 cp "$FF/COPYING.GPLv2" "$E/Licence,fff"
+cp "$TOP/third_party/reelhwaccel/Licence" "$E/ReelHWAccel,fff"   # (vcdec, linked into both)
 # (double-clicked: a plain directory's !Boot isn't run by the Filer). The
 # commands start the programs as desktop tasks of their own (*WimpTask), so
 # they work from a TaskWindow too; their messages go to a log in the scrap

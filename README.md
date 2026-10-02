@@ -193,9 +193,15 @@ fails part way. 1080p needs `gpu_mem=128` in `config.txt`. Its pictures
 reach Reel without being copied (devkit 0.2.1's zero-copy frames).
 
 The hardware side (vcdec, and HEVC on the Pi 4's HEVC block to come) is
-a separate project, ReelHWAccel: github.com/adyoull/riscos-reelhwaccel,
-whose devkit is in `third_party/reelhwaccel`. It started here; its test
-tools and the HEVCHW module moved there with their history.
+a separate project, **ReelHWAccel**:
+https://github.com/adyoull/riscos-reelhwaccel, whose devkit is in
+`third_party/reelhwaccel`. It is a new implementation: it drives the
+VideoCore through the VCHIQ module in RISC OS's ROM, with its own MMAL
+client written using Linux's VCHIQ MMAL driver (vchiq-mmal) as a
+reference, and no code copied from it. So it is under the GNU GPL
+version 2 (or later), the same version as that Linux driver. It started
+here; its test tools and the HEVCHW module moved there with their
+history.
 
 ## Licence
 
