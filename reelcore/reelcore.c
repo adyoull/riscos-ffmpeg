@@ -707,7 +707,7 @@ static void timer_set(ReelCore *v, double pts)
 
 /* ---------------------------------------------------------------- open */
 
-static AVCodecContext *open_with(AVStream *st, const AVCodec *codec)
+static AVCodecContext *open_with_opts(AVStream *st, const AVCodec *codec, AVDictionary **opts)
 {
     AVCodecContext *c;
     if (!codec || !(c = avcodec_alloc_context3(codec)))
@@ -718,10 +718,17 @@ static AVCodecContext *open_with(AVStream *st, const AVCodec *codec)
     }
     c->pkt_timebase = st->time_base;
     c->thread_count = 1;              /* one core; no point in threads */
-    if (avcodec_open2(c, codec, NULL) < 0)
+    if (avcodec_open2(c, codec, opts) < 0)
         avcodec_free_context(&c);
     return c;
 }
+
+static AVCodecContext *open_with(AVStream *st, const AVCodec *codec)
+{
+    return open_with_opts(st, codec, NULL);
+}
+
+static int pics_for(double rate);
 
 static AVCodecContext *open_decoder(AVStream *st)
 {
@@ -740,7 +747,17 @@ static AVCodecContext *open_video_decoder(ReelCore *v, AVStream *st)
     v->vc = 0;
     if (st->codecpar->codec_id == AV_CODEC_ID_H264 && !(v->flags & REELCORE_NO_VIDEOCORE) && !v->vc_failed &&
         (vc = avcodec_find_decoder_by_name("h264_vchiq")) != NULL) {
-        if ((c = open_with(st, vc)) != NULL) {
+        /* Its frames are the VideoCore's own picture buffers (devkit 0.2.1,
+           zero-copy): enough of them for the pictures reelcore keeps (those
+           decoded ahead, the one shown, one coming in; the decoder keeps 3),
+           else the extra ones are copies */
+        AVRational fr = st->avg_frame_rate.num > 0 ? st->avg_frame_rate : st->r_frame_rate;
+        int keep = pics_for(fr.num > 0 && fr.den > 0 ? av_q2d(fr) : 25) + 2;
+        AVDictionary *opts = NULL;
+        av_dict_set_int(&opts, "out_buffers", 3 + keep > 16 ? 16 : 3 + keep, 0);
+        c = open_with_opts(st, vc, &opts);
+        av_dict_free(&opts);
+        if (c) {
             v->vc = 1;
             v->vc_drop = INT64_MIN;
             av_log(NULL, AV_LOG_INFO, "reelcore: H.264 decoded by the VideoCore (h264_vchiq)\n");
@@ -2196,13 +2213,23 @@ static int decode(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int video)
    wants more input, 2 when the pictures waiting are QROOM (the rest are
    left in the decoder, v->vmore: the VideoCore gives them in bursts), or a
    decoder error */
+/* The VideoCore's pictures taken at most: those wanted ahead and one
+   more, so that what reelcore holds fits the decoder's buffers (see
+   open_video_decoder); the rest wait in the decoder. */
+static int pics_wanted(const ReelCore *v);
+static int vc_room(const ReelCore *v)
+{
+    int n = pics_wanted(v) + 1;
+    return n < QROOM ? n : QROOM;
+}
+
 static int receive_all(ReelCore *v, AVCodecContext *dec, int video)
 {
     if (video)
         v->vmore = 0;
     for (;;) {
         int ret;
-        if (video && v->qn >= QROOM) {
+        if (video && v->qn >= (v->vc ? vc_room(v) : QROOM)) {
             v->vmore = 1;
             return 2;
         }
@@ -2353,11 +2380,15 @@ static void check_late(ReelCore *v)
    only 3, a 60 fps video had 50 ms in hand, and one slow picture (or the
    desktop busy for a moment) made the next one late though decoding
    averaged twice real time. */
-static int pics_wanted(const ReelCore *v)
+static int pics_for(double rate)
 {
-    double rate = v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25;
     int n = (int)ceil(PICS_AHEAD * rate);
     return n < PICS_MIN ? PICS_MIN : n > PICS_MAX ? PICS_MAX : n;
+}
+
+static int pics_wanted(const ReelCore *v)
+{
+    return pics_for(v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
 }
 
 static void fill(ReelCore *v)

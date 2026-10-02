@@ -1,4 +1,4 @@
-From 6411325da4496c22ffc3ff75bf576e853a930981 Mon Sep 17 00:00:00 2001
+From 228f0281996c1dc33cc59998d083c3d172044e44 Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Fri, 2 Oct 2026 12:40:07 +0100
 Subject: [PATCH] avcodec: h264_vchiq, H.264 decoded by the Raspberry Pi's
@@ -25,15 +25,15 @@ Options: sync_receive, gpu_mem_check.
  configure              |   6 +
  libavcodec/Makefile    |   1 +
  libavcodec/allcodecs.c |   1 +
- libavcodec/vchiqdec.c  | 338 +++++++++++++++++++++++++++++++++++++++++
- 4 files changed, 346 insertions(+)
+ libavcodec/vchiqdec.c  | 405 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 413 insertions(+)
  create mode 100644 libavcodec/vchiqdec.c
 
 diff --git a/configure b/configure
-index d9b4b6f..f4e1f51 100755
+index db8b953..60d92c4 100755
 --- a/configure
 +++ b/configure
-@@ -345,6 +345,8 @@ External library support:
+@@ -343,6 +343,8 @@ External library support:
    --enable-libmfx          enable Intel MediaSDK (AKA Quick Sync Video) code via libmfx [no]
    --enable-libnpp          enable Nvidia Performance Primitives-based code [no]
    --enable-mmal            enable Broadcom Multi-Media Abstraction Layer (Raspberry Pi) via MMAL [no]
@@ -42,7 +42,7 @@ index d9b4b6f..f4e1f51 100755
    --disable-nvdec          disable Nvidia video decoding acceleration (via hwaccel) [autodetect]
    --disable-nvenc          disable Nvidia video encoding code [autodetect]
    --enable-omx             enable OpenMAX IL code [no]
-@@ -1786,6 +1788,7 @@ EXTERNAL_LIBRARY_GPL_LIST="
+@@ -1784,6 +1786,7 @@ EXTERNAL_LIBRARY_GPL_LIST="
      libxavs
      libxavs2
      libxvid
@@ -50,7 +50,7 @@ index d9b4b6f..f4e1f51 100755
  "
  
  EXTERNAL_LIBRARY_NONFREE_LIST="
-@@ -3191,6 +3194,8 @@ h264_rkmpp_decoder_deps="rkmpp"
+@@ -3187,6 +3190,8 @@ h264_rkmpp_decoder_deps="rkmpp"
  h264_rkmpp_decoder_select="h264_mp4toannexb_bsf"
  h264_vaapi_encoder_select="cbs_h264 vaapi_encode"
  h264_v4l2m2m_decoder_deps="v4l2_m2m h264_v4l2_m2m"
@@ -59,7 +59,7 @@ index d9b4b6f..f4e1f51 100755
  h264_v4l2m2m_decoder_select="h264_mp4toannexb_bsf"
  h264_v4l2m2m_encoder_deps="v4l2_m2m h264_v4l2_m2m"
  hevc_amf_encoder_deps="amf"
-@@ -6683,6 +6688,7 @@ enabled libvpx            && {
+@@ -6677,6 +6682,7 @@ enabled libvpx            && {
      fi
  }
  
@@ -93,10 +93,10 @@ index bdfc2f6..5014510 100644
  extern const FFCodec ff_hap_encoder;
 diff --git a/libavcodec/vchiqdec.c b/libavcodec/vchiqdec.c
 new file mode 100644
-index 0000000..6b0f3d4
+index 0000000..43820bd
 --- /dev/null
 +++ b/libavcodec/vchiqdec.c
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,405 @@
 +/*
 + * h264_vchiq: H.264 decoded by the Raspberry Pi's VideoCore on RISC OS,
 + * through the VCHIQ module and the firmware's MMAL service (vcdec, from
@@ -105,8 +105,13 @@ index 0000000..6b0f3d4
 + * The packets go to the VideoCore as Annex B access units (the
 + * h264_mp4toannexb filter turns an MP4's avcC packets into those), each
 + * with its pts; the pictures come back in display order with their pts
-+ * and are copied into ordinary YUV420P frames. Nothing is decoded on the
-+ * ARM.
++ * as YUV420P frames. Nothing is decoded on the ARM. By default (zero_copy)
++ * a frame's planes are vcdec's own picture buffer, held until the frame
++ * is freed (read only; the buffer is the decoder's again after that, so
++ * it has out_buffers of them: 3 + the frames a caller keeps at once);
++ * when one can't be held (PCI memory, or too many held), the picture is
++ * copied into an ordinary frame instead. Free frames in the thread that
++ * decodes (vcdec isn't thread safe).
 + *
 + * This decoder only waits for the VideoCore when its input is full (about
 + * one picture's time) or at the end of the stream; otherwise
@@ -165,6 +170,9 @@ index 0000000..6b0f3d4
 +    int failed;                             /* the AVERROR every call returns from now on */
 +    int sync_receive;                       /* option */
 +    int gpu_mem_check;                      /* option */
++    int pci_memory;                         /* option */
++    int zero_copy;                          /* option */
++    int out_buffers;                        /* option */
 +} VCHIQContext;
 +
 +static void vchiq_log(void *h, const char *text)
@@ -249,7 +257,8 @@ index 0000000..6b0f3d4
 +    c.width = w;
 +    c.height = h;
 +    c.flags = (s->sync_receive ? VCDEC_SYNC_RECEIVE : 0) | (s->gpu_mem_check ? 0 : VCDEC_NO_GPU_MEM_CHECK) |
-+              (av_log_get_level() >= AV_LOG_TRACE ? VCDEC_LOG_MESSAGES : 0);
++              (s->pci_memory ? VCDEC_OUT_PCI : 0) | (av_log_get_level() >= AV_LOG_TRACE ? VCDEC_LOG_MESSAGES : 0);
++    c.out_buffers = s->out_buffers ? s->out_buffers : s->zero_copy ? 6 : 3;
 +    c.log = vchiq_log;
 +    c.log_handle = avctx;
 +    r = vcdec_open(&s->d, &c);
@@ -259,8 +268,9 @@ index 0000000..6b0f3d4
 +        return r == VCDEC_UNSUPPORTED || r == VCDEC_EINVAL ? AVERROR(ENOSYS) : AVERROR_EXTERNAL;
 +    }
 +    avctx->pix_fmt = AV_PIX_FMT_YUV420P;
-+    av_log(avctx, AV_LOG_VERBOSE, "H.264 on the VideoCore (vcdec %s), %dx%d, gpu_mem %u MB\n", VCDEC_VERSION, w, h,
-+           vcdec_gpu_mem());
++    av_log(avctx, AV_LOG_VERBOSE, "H.264 on the VideoCore (vcdec %s), %dx%d, gpu_mem %u MB, %d buffers%s%s\n",
++           VCDEC_VERSION, w, h, vcdec_gpu_mem(), c.out_buffers, s->pci_memory ? ", pictures in PCI memory" : "",
++           s->zero_copy ? ", zero-copy" : "");
 +    return 0;
 +}
 +
@@ -308,6 +318,52 @@ index 0000000..6b0f3d4
 +    return 1;
 +}
 +
++/* a held picture's frame freed: its buffer back to the decoder (or, after
++   close, freed) */
++static void release_hold(void *opaque, uint8_t *data)
++{
++    vcdec_release(opaque);
++}
++
++/* the picture at the head as a frame of vcdec's own buffer: 1, or 0 if it
++   can't be held (then it's copied), or an AVERROR */
++static int hold_frame(AVCodecContext *avctx, VCHIQContext *s, AVFrame *frame)
++{
++    uint8_t *planes[3];
++    int strides[3], r;
++    vcdec_hold *h;
++    r = vcdec_receive_hold(s->d, NULL, planes, strides, &h);
++    if (r == VCDEC_UNSUPPORTED)
++        return 0;
++    if (r != VCDEC_OK)
++        return r < 0 ? map_result(avctx, s, r, "Receiving") : AVERROR_BUG;
++    {                                       /* (the buffer: every plane, so each is inside it) */
++        uint8_t *end = planes[0];
++        for (int i = 0; i < 3; i++) {
++            uint8_t *e = planes[i] + strides[i] * (i ? (avctx->height + 1) / 2 : avctx->height);
++            if (e > end)
++                end = e;
++        }
++        frame->buf[0] = av_buffer_create(planes[0], end - planes[0], release_hold, h, AV_BUFFER_FLAG_READONLY);
++    }
++    if (!frame->buf[0]) {
++        vcdec_release(h);
++        return AVERROR(ENOMEM);
++    }
++    if ((r = ff_decode_frame_props(avctx, frame)) < 0) {
++        av_frame_unref(frame);
++        return r;
++    }
++    for (int i = 0; i < 3; i++) {
++        frame->data[i] = planes[i];
++        frame->linesize[i] = strides[i];
++    }
++    frame->width = avctx->width;
++    frame->height = avctx->height;
++    frame->format = AV_PIX_FMT_YUV420P;
++    return 1;
++}
++
 +static int output_frame(AVCodecContext *avctx, VCHIQContext *s, AVFrame *frame, const vcdec_picture *pic)
 +{
 +    int r;
@@ -316,12 +372,17 @@ index 0000000..6b0f3d4
 +            return r;
 +    }
 +    avctx->pix_fmt = AV_PIX_FMT_YUV420P;
-+    if ((r = ff_get_buffer(avctx, frame, 0)) < 0)
++    r = s->zero_copy ? hold_frame(avctx, s, frame) : 0;
++    if (r < 0)
 +        return r;
-+    r = vcdec_receive(s->d, NULL, frame->data, frame->linesize);
-+    if (r != VCDEC_OK) {
-+        av_frame_unref(frame);
-+        return r < 0 ? map_result(avctx, s, r, "Receiving") : AVERROR_BUG;
++    if (!r) {
++        if ((r = ff_get_buffer(avctx, frame, 0)) < 0)
++            return r;
++        r = vcdec_receive(s->d, NULL, frame->data, frame->linesize);
++        if (r != VCDEC_OK) {
++            av_frame_unref(frame);
++            return r < 0 ? map_result(avctx, s, r, "Receiving") : AVERROR_BUG;
++        }
 +    }
 +    frame->pts = pic->pts;
 +    frame->pkt_dts = AV_NOPTS_VALUE;
@@ -407,6 +468,12 @@ index 0000000..6b0f3d4
 +      { .i64 = 0 }, 0, 1, VD },
 +    { "gpu_mem_check", "refuse 1080p when gpu_mem is under 128 MB", OFFSET(gpu_mem_check), AV_OPT_TYPE_BOOL,
 +      { .i64 = 1 }, 0, 1, VD },
++    { "pci_memory", "pictures arrive in PCI memory (vcdec 0.3's way), not a cacheable pool", OFFSET(pci_memory),
++      AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, VD },
++    { "zero_copy", "frames are the decoder's own picture buffers, not copies", OFFSET(zero_copy),
++      AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, VD },
++    { "out_buffers", "the decoder's picture buffers (0: 6 with zero_copy, else 3)", OFFSET(out_buffers),
++      AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 16, VD },
 +    { NULL }
 +};
 +

@@ -37,6 +37,7 @@
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } } while (0)
 
+static int out_buffers = -1;                 /* asked of h264_vchiq (zero-copy: devkit 0.2.1) */
 static int asked, pending, refuse_open, refuse_send, fail_after = -1, refused, vc_frames, failed;
 static AVCodecContext *vc_ctx;
 #define BURST 16
@@ -88,6 +89,8 @@ int __real_avcodec_open2(AVCodecContext *c, const AVCodec *codec, AVDictionary *
 int __wrap_avcodec_open2(AVCodecContext *c, const AVCodec *codec, AVDictionary **o)
 {
     if (pending) {
+        AVDictionaryEntry *e = o && *o ? av_dict_get(*o, "out_buffers", NULL, 0) : NULL;
+        out_buffers = e ? atoi(e->value) : -1;
         pending = 0;
         if (refuse_open)
             return AVERROR(ENOSYS);
@@ -269,6 +272,9 @@ int main(int argc, char **argv)
           a.decoded, ref.decoded);
     CHECK(!strcmp(decoder_line(a.info), "VideoCore (h264_vchiq)"), "VideoCore: decoder line '%s'", decoder_line(a.info));
     CHECK(!vc_dropped, "VideoCore, keeping up: %d dropped by the decoder", vc_dropped);
+    /* 25 fps: 4 decoded ahead, + the one shown + one coming in, + the decoder's 3 */
+    printf("  out_buffers asked for: %d\n", out_buffers);
+    CHECK(out_buffers == 9, "VideoCore: out_buffers %d, want 9 (3 + 4 ahead + 2)", out_buffers);
     CHECK(a.decoder_early == REELCORE_DECODER_VIDEOCORE && a.decoder == REELCORE_DECODER_VIDEOCORE,
           "VideoCore: stats decoder %d, %d", a.decoder_early, a.decoder);
     refuse_send = 0;

@@ -21,6 +21,16 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   VideoCore decodes (it decodes every frame). Media info: "Decoder
   VideoCore (h264_vchiq)", or "h264, 1 thread (the VideoCore failed part
   way)".
+- **riscos-reelhwaccel devkit 0.2.1: the VideoCore's pictures aren't
+  copied** (vcdec 0.4.1, sha256 749197ad…). h264_vchiq's frames are now
+  vcdec's own picture buffers (cacheable): on a Pi 4 at 1080p the ARM's
+  time in the decoder fell from about 10 ms a picture to 0.13 ms. Patch
+  0021 is the devkit's new patch; patch 0022 (`drop_before`) is redone on
+  top of it. reelcore asks h264_vchiq for `out_buffers` = 3 + the
+  pictures it keeps (those decoded ahead for the frame rate, the one
+  shown, one coming in: 9 at 25 fps, 13 at 60), and takes at most one
+  more than it wants ahead, so what it holds fits the decoder's buffers
+  (more would be copies). vc_test checks the `out_buffers` asked for.
 - **No log in release builds**: `!Run` sets `Reel$Log` (`ReelEGL$Log`)
   to `off` unless it's already set, as the log costs a little time while
   playing. Test builds (a version with a suffix) come with that line

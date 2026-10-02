@@ -8,7 +8,9 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
 - From github.com/adyoull/riscos-reelhwaccel's devkit (GPL version 2 or
   later): `include/vcdec.h`, `lib/libvcdec.a`, `COPYING`, `README.md`.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
-- Devkit 0.1, `riscos-reelhwaccel-devkit-0.1.tgz` (sha256
-  7cfcea8cdec7e51648698a9443bc47bbbbfc620c3635087c825a1a33cf2484ce),
-  riscos-reelhwaccel commit 2c3b8ca. Its `libvcdec.a` holds `vcdec.o` and
-  `vcdec_copy.o`.
+- Devkit 0.2.1, `riscos-reelhwaccel-devkit-0.2.1.tgz` (sha256
+  749197ad2828a939444678f14d7fbefcc0a51b723ff3b14cbf2d2d5e2cdbfbde),
+  vcdec 0.4.1: h264_vchiq's frames are vcdec's own picture buffers
+  (zero-copy). Its `libvcdec.a` holds `vcdec.o` and `vcdec_copy.o`. Patch
+  0021 is its `ffmpeg/0001-avcodec-h264_vchiq.patch` unchanged; patch 0022
+  (`drop_before`) is ours, on top. Before: devkit 0.1 (7cfcea8c…).

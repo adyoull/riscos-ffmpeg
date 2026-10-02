@@ -32,7 +32,7 @@ v2 or later): `vcdec.h` and `libvcdec.a` in `third_party/reelhwaccel`,
 which `build/build-ffmpeg.sh` copies into the stage and builds FFmpeg
 with `--enable-vchiq` (patch 0021, `h264_vchiq`, also from that devkit;
 patch 0022, its `drop_before` option, is ours);
-devkit 0.1 (sha256 7cfcea8c…); `third_party/reelhwaccel/SOURCE.md` has
+devkit 0.2.1 (sha256 749197ad…); `third_party/reelhwaccel/SOURCE.md` has
 the full sha256.
 Without it, FFmpeg is built without h264_vchiq.
 
