@@ -3,7 +3,32 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next Reel): long web addresses
+## Unreleased (next Reel): long web addresses, File types as Iris does it
+
+- **File types: Never / While Reel is running / Always** (Chris on the
+  ROOL forum, after Iris's choice for PDF files). The ticks now say which
+  types Reel opens: unticked, it doesn't claim them at all (0.1.22 claimed
+  every video type while running, ticked or not). While running: it
+  claims ticked types' double-clicks (Message_DataOpen) and sets no Run
+  aliases. Always: it also sets the ticked types' `Alias$@RunType_XXX`
+  (and Data's RunData) and writes them to `Choices:Reel.Types` for !Boot;
+  choosing another takes Reel's aliases off again and gives Data's back
+  to the program that had it. The choice and ticks are kept in
+  `Choices:Reel.Choices` (`open_mode`, `open_types`, `open_data`). With
+  none saved yet, types whose Run alias is already Reel's mean Always
+  with those ticked; otherwise While running with all ticked, as before.
+- **A second copy started with a file hands it to the running one**
+  (Message_DataLoad to its icon bar icon) instead of quitting with it:
+  a ticked type's Run alias pointing at Reel did nothing while Reel was
+  running and hadn't claimed the double-click (Chris: "nothing happens").
+- The File types menu's title was cut short ("Double-click opens" is
+  longer than a menu title can be): it's "File types".
+- reel_test: the default sets no aliases; Always sets them and the Types
+  file and keeps the other program's Data alias; unticking AVI removes
+  its alias and an AVI double-click isn't claimed; While running takes
+  every alias off and gives Data's back; Never claims nothing; a file from
+  a second copy is taken; and a second copy started with a file sends it
+  to the running one. Mutations caught.
 
 - **Open address takes addresses up to 8191 characters** (it held 1023
   and cut longer ones off without a word: Raik on the ROOL forum). A

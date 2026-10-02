@@ -127,7 +127,9 @@ static const char *long_query(void)
     }
     return q;
 }            /* what played before the saved HLS playlist */
-static int sent_action, sent_code, sent_to, sent_my_ref, sent_your_ref, sent_flags, sent_win;
+static int sent_action, sent_code, sent_to, sent_my_ref, sent_your_ref, sent_flags, sent_win, sent_icon;
+static char sent_name[256];
+static int other_copy;                    /* another copy running: its task handle (the start-up check) */
 static char scrap[64];
 static char last_report[256];
 
@@ -1169,48 +1171,71 @@ static int next_event(int *b)
             CHECK(fake_surfaces == 0, "close left %d EGL surfaces", fake_surfaces);
 #endif
             break;
-        case P_TYPES: {                                               /* File types: a double-click opens with Reel */
+        case P_TYPES: {                                               /* File types: Never / While running / Always, and ticks */
+            /* items: 0 Never, 1 While running, 2 Always; 3 AVI, 4 MPEG (the fake MimeMap's); 5 Data, by name */
+            static int acks0;
             char want[400], types[600] = "", var[48];
             FILE *f;
             const char *dir = getenv(APP_NAME "$Dir");
             snprintf(var, sizeof(var), "Alias$@RunType_FB2");
-            if (phase_step == 0) { phase_step++; click(b, 1000, 40, 2, -2, 1); return 6; }    /* the icon bar menu */
-            if (phase_step == 1) { phase_step++; b[0] = 2; b[1] = 0; b[2] = -1; return 9; }  /* File types > AVI */
             snprintf(want, sizeof(want), "/%s %%*0", dir ? dir : "?");
             snprintf(types, sizeof(types), "%s/Types", choices_dir);
             if ((f = fopen(types, "r")) != NULL) { size_t n = fread(types, 1, sizeof(types) - 1, f); types[n] = 0; fclose(f); }
             else types[0] = 0;
-            if (phase_step == 2) {
-                int i = fvar_find(var);
-                CHECK(i >= 0 && !strcmp(fvar_val[i], want), "AVI ticked: %s = '%s' (want '%s')", var, i >= 0 ? fvar_val[i] : "(unset)", want);
-                CHECK(strstr(types, "Set Alias$@RunType_FB2 /<" APP_NAME "$Dir> %%*0\n") != NULL, "Types file: '%s'", types);
-                phase_step++; click(b, 1000, 40, 2, -2, 1); return 6;
-            }
-            if (phase_step == 3) { phase_step++; b[0] = 2; b[1] = 0; b[2] = -1; return 9; }  /* AVI again: off */
-            if (phase_step == 4) {
-                CHECK(fvar_find(var) < 0 && !strstr(types, "RunType_FB2"), "AVI unticked: %s still set, Types '%s'", var, types);
-                /* Data, by name: the last item (AVI, MPEG, then Data); another program ran Data files before */
-                snprintf(fvar_name[fvar_n], sizeof(fvar_name[0]), "Alias$@RunType_FFD");
+            if (phase_step == 0) {
+                /* the default (While running, all ticked): no Run aliases of ours */
+                CHECK(fvar_find(var) < 0 && fvar_find("Alias$@RunType_BF8") < 0, "While running set a Run alias");
+                snprintf(fvar_name[fvar_n], sizeof(fvar_name[0]), "Alias$@RunType_FFD");   /* another program ran Data files */
                 snprintf(fvar_val[fvar_n++], sizeof(fvar_val[0]), "Run <Other$Dir> %%*0");
+                phase_step++; click(b, 1000, 40, 2, -2, 1); return 6;                  /* the icon bar menu */
+            }
+            if (phase_step == 1) { phase_step++; b[0] = 2; b[1] = 2; b[2] = -1; return 9; }   /* File types > Always */
+            if (phase_step == 2) {
+                int i = fvar_find(var), d = fvar_find("Alias$@RunType_FFD"), o = fvar_find("Alias$" APP_NAME "OldRunData");
+                char wd[300];
+                snprintf(wd, sizeof(wd), "Obey %s.RunData %%*0", dir ? dir : "?");
+                CHECK(i >= 0 && !strcmp(fvar_val[i], want), "Always: %s = '%s' (want '%s')", var, i >= 0 ? fvar_val[i] : "(unset)", want);
+                CHECK(fvar_find("Alias$@RunType_BF8") >= 0, "Always: MPEG's Run alias not set");
+                CHECK(d >= 0 && !strcmp(fvar_val[d], wd) && o >= 0 && !strcmp(fvar_val[o], "Run <Other$Dir> %*0"),
+                      "Always, Data: RunType_FFD '%s' (want '%s'), old '%s'", d >= 0 ? fvar_val[d] : "(unset)", wd, o >= 0 ? fvar_val[o] : "(unset)");
+                CHECK(strstr(types, "Set Alias$@RunType_FB2 /<" APP_NAME "$Dir> %%*0\n") &&
+                      strstr(types, "Set Alias$@RunType_FFD Obey <" APP_NAME "$Dir>.RunData %%*0"), "Types file: '%s'", types);
+                CHECK(choices_has("open_mode always") && choices_has("open_types FB2 BF8") && choices_has("open_data 1"),
+                      "the choice wasn't saved in Choices");
                 phase_step++; click(b, 1000, 40, 2, -2, 1); return 6;
             }
-            if (phase_step == 5) { phase_step++; b[0] = 2; b[1] = 2; b[2] = -1; return 9; }
-            if (phase_step == 6) {
-                int i = fvar_find("Alias$@RunType_FFD"), o = fvar_find("Alias$" APP_NAME "OldRunData");
-                snprintf(want, sizeof(want), "Obey %s.RunData %%*0", dir ? dir : "?");
-                CHECK(i >= 0 && !strcmp(fvar_val[i], want) && o >= 0 && !strcmp(fvar_val[o], "Run <Other$Dir> %*0"),
-                      "Data ticked: RunType_FFD '%s' (want '%s'), old '%s'", i >= 0 ? fvar_val[i] : "(unset)", want, o >= 0 ? fvar_val[o] : "(unset)");
-                CHECK(strstr(types, "Set Alias$@RunType_FFD Obey <" APP_NAME "$Dir>.RunData %%*0") &&
-                      strstr(types, "Then Set Alias$" APP_NAME "OldRunData <Alias$@RunType_FFD>"), "Types file for Data: '%s'", types);
+            if (phase_step == 3) { phase_step++; b[0] = 2; b[1] = 3; b[2] = -1; return 9; }   /* AVI: off */
+            if (phase_step == 4) {
+                CHECK(fvar_find(var) < 0 && !strstr(types, "RunType_FB2") && fvar_find("Alias$@RunType_BF8") >= 0,
+                      "AVI unticked: %s still set, Types '%s'", var, types);
+                CHECK(choices_has("open_types BF8\n"), "unticked AVI not saved");
+                acks0 = acks;
+                phase_step++; message(b, 5, 0, 0, 0xFB2, "/tmp/reel_test_other/avi"); return 17;  /* an AVI double-clicked */
+            }
+            if (phase_step == 5) {
+                CHECK(acks == acks0, "an unticked type's double-click was claimed");
                 phase_step++; click(b, 1000, 40, 2, -2, 1); return 6;
             }
-            if (phase_step == 7) { phase_step++; b[0] = 2; b[1] = 2; b[2] = -1; return 9; }
-            {
-                int i = fvar_find("Alias$@RunType_FFD");
-                CHECK(i >= 0 && !strcmp(fvar_val[i], "Run <Other$Dir> %*0") && fvar_find("Alias$" APP_NAME "OldRunData") < 0,
-                      "Data unticked: RunType_FFD '%s' (want the other program's back)", i >= 0 ? fvar_val[i] : "(unset)");
+            if (phase_step == 6) { phase_step++; b[0] = 2; b[1] = 1; b[2] = -1; return 9; }   /* While running */
+            if (phase_step == 7) {
+                int d = fvar_find("Alias$@RunType_FFD");
+                CHECK(fvar_find("Alias$@RunType_BF8") < 0 && !strstr(types, "Set Alias"), "While running left Run aliases: '%s'", types);
+                CHECK(d >= 0 && !strcmp(fvar_val[d], "Run <Other$Dir> %*0") && fvar_find("Alias$" APP_NAME "OldRunData") < 0,
+                      "While running: RunType_FFD '%s' (want the other program's back)", d >= 0 ? fvar_val[d] : "(unset)");
+                phase_step++; click(b, 1000, 40, 2, -2, 1); return 6;
             }
-            printf("  File types: AVI ticked (%s = %s) and unticked; Data by name ticked and given back\n", var, want);
+            if (phase_step == 8) { phase_step++; b[0] = 2; b[1] = 0; b[2] = -1; return 9; }   /* Never */
+            if (phase_step == 9) {
+                acks0 = acks;
+                phase_step++; message(b, 5, 0, 0, 0xBF8, clip1); return 17;           /* an MPEG double-clicked */
+            }
+            if (phase_step == 10) {
+                CHECK(acks == acks0 && choices_has("open_mode never"), "Never: a double-click was claimed (%d acks)", acks - acks0);
+                phase_step++; message(b, 3, -2, -1, 0xFFF, "/tmp/reel_test_other/none"); return 17;   /* from a second copy */
+            }
+            CHECK(acks == acks0 + 1, "a file from a second copy wasn't taken");
+            printf("  File types: Always (%s = %s, Types file), AVI unticked (not claimed), While running (aliases off,\n"
+                   "  Data's given back), Never (not claimed); a second copy's file taken\n", var, want);
             break;
         }
         case P_QUIT:
@@ -1380,7 +1405,16 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x59CC9: for (int i = 0; i < 6; i++) ovl_pos[i] = in->r[1 + i]; return NULL;  /* SetPosition */
     case 0x59CCA: ovl_redraws++; return NULL;                             /* RedrawWindow */
     case 0x400C0: out->r[1] = 0x1234; return NULL;                        /* Wimp_Initialise */
-    case 0x42681: out->r[0] = -1; return NULL;                            /* EnumerateTasks */
+    case 0x42681:                                                         /* EnumerateTasks */
+        if (other_copy) {                                                 /* another copy of this program */
+            static char other_name[16];
+            int *t = (int *)(intptr_t)in->r[1];
+            snprintf(other_name, sizeof(other_name), "%s\r", APP_NAME);
+            t[0] = other_copy; t[1] = (int)(intptr_t)other_name; t[2] = 640 << 10; t[3] = 0;
+            out->r[1] = (int)(intptr_t)(t + 4);
+        }
+        out->r[0] = -1;
+        return NULL;
     case 0x35:                                                            /* OS_ReadModeVariable */
         out->r[2] = in->r[1] == 4 || in->r[1] == 5 ? 1 : in->r[1] == 9 ? 5 : in->r[1] == 11 ? SCR_W - 1 :
                     in->r[1] == 12 ? SCR_H - 1 : 0;
@@ -1516,11 +1550,12 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         sent_action = b[4]; sent_code = in->r[0]; sent_to = in->r[2]; sent_my_ref = b[2]; sent_your_ref = b[3];
         if (b[4] == 0x10) { sent_win = b[5]; sent_flags = b[9]; }
         if (b[4] == 2) snprintf(scrap, sizeof(scrap), "%s", (const char *)&b[11]);
+        if (b[4] == 3) { sent_win = b[5]; sent_icon = b[6]; snprintf(sent_name, sizeof(sent_name), "%s", (const char *)&b[11]); }
         return NULL;
     case 0x400D3:                                                         /* GetCaretPosition */
         b[0] = caret_win; b[1] = caret_win == URLW ? 1 : -1; b[5] = -1;
         return NULL;
-    case 0x400DD: final_checks(); return NULL;                            /* CloseDown */
+    case 0x400DD: if (!other_copy) final_checks(); return NULL;           /* CloseDown */
     case 0x42: out->r[0] = (int)(fake_time * 100); return NULL;           /* OS_ReadMonotonicTime */
     case 0x65: return &err;                                               /* OS_ScreenMode: TBGR anyway */
     case 0x50B00:                                                         /* MimeMap_Translate */
@@ -1593,6 +1628,18 @@ int main(int argc, char **argv)
         return 1;
     setenv("Reel$ChoicesDir", choices_dir, 1);
     setenv("ReelEGL$ChoicesDir", choices_dir, 1);
+    {   /* started with a file while another copy runs (its Run alias): the file goes to that copy */
+        char *two[3] = { "reel", (char *)"/tmp/reel_test_other/avi", NULL };
+        other_copy = 0x4E21;
+        reel_main(2, two);
+        CHECK(sent_code == 17 && sent_to == 0x4E21 && sent_action == 3 && sent_win == -2 && sent_icon == -1 &&
+              !strcmp(sent_name, "/tmp/reel_test_other/avi"),
+              "a second copy with a file: sent %x (code %d) to %x, window %d icon %d, '%s' (want a DataLoad to the running one)",
+              sent_action, sent_code, sent_to, sent_win, sent_icon, sent_name);
+        printf("  a second copy passed its file to the running one\n");
+        other_copy = 0;
+        sent_action = sent_code = sent_to = 0;
+    }
     reel_main(1, args);
     return 1;
 }

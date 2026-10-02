@@ -1636,6 +1636,21 @@ static void choices_path(char *buf, size_t n, const char *leafname, int write)
         snprintf(buf, n, "Choices:" APP ".%s", leafname);
 }
 
+/* the File types choice (see ftypes_find): here for Choices */
+static const char *const ftype_exts[] = {
+    "avi", "mp4", "m4v", "mkv", "webm", "mov", "mpg", "mpeg", "ts", "vob", "wmv", "flv", "ogv", "3gp"
+};
+static const int ftype_ext_n = sizeof(ftype_exts) / sizeof(ftype_exts[0]);
+#define FTYPES_MAX 14
+static struct { int type; char name[12], ext[8]; } ftype[FTYPES_MAX];
+static int ftype_n = -1;                /* -1: not looked for yet */
+enum { OPEN_NEVER, OPEN_RUNNING, OPEN_ALWAYS };
+static const char *const open_names[] = { "never", "running", "always" };
+static int open_mode = OPEN_RUNNING, open_data = 1;
+static unsigned char ftype_on[FTYPES_MAX];
+/* as read from Choices (before the types are known): -1 = not there */
+static int saved_mode = -1, saved_data = -1, saved_ntypes = -1, saved_types[FTYPES_MAX];
+
 static FILE *choices_open(const char *leafname, int write)
 {
     char path[300];
@@ -1658,6 +1673,13 @@ static void choices_save(void)
     fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_width %d\nmini_right %d\nmini_bottom %d\ndeinterlace %s\n"
             "hardware_acceleration %d\n",
             APP, S.vol, S.ontop, S.mini_w, S.mini_right, S.mini_bottom, deint_names[S.deint_i], S.hw_accel);
+    if (ftype_n >= 0) {                 /* double-clicks: when, and which types */
+        fprintf(f, "open_mode %s\nopen_data %d\nopen_types", open_names[open_mode], open_data);
+        for (int i = 0; i < ftype_n; i++)
+            if (ftype_on[i])
+                fprintf(f, " %03X", ftype[i].type);
+        fprintf(f, "\n");
+    }
     fclose(f);
 }
 
@@ -1691,7 +1713,20 @@ static void choices_load(void)
                 S.mini_right = n;
             else if (sscanf(line, "mini_bottom %d", &n) == 1 && n >= -1)
                 S.mini_bottom = n;
-            else if (!strncmp(line, "deinterlace ", 12))
+            else if (!strncmp(line, "open_mode ", 10)) {
+                for (int i = 0; i < 3; i++)
+                    if (!strncmp(line + 10, open_names[i], strlen(open_names[i])))
+                        saved_mode = i;
+            } else if (sscanf(line, "open_data %d", &n) == 1)
+                saved_data = n != 0;
+            else if (!strncmp(line, "open_types", 10)) {
+                char *p = line + 10, *e;
+                saved_ntypes = 0;
+                while (saved_ntypes < FTYPES_MAX && (n = (int)strtol(p, &e, 16), e != p)) {
+                    saved_types[saved_ntypes++] = n;
+                    p = e;
+                }
+            } else if (!strncmp(line, "deinterlace ", 12))
                 for (int i = 0; i < 3; i++)
                     if (!strncmp(line + 12, deint_names[i], strlen(deint_names[i])))
                         S.deint_i = i;
@@ -3348,17 +3383,18 @@ static void menu_end(menu_t *m, int n)
 
 /* The video files a double-click in the Filer can open with Reel: the
    filetypes MimeMap gives these extensions (types it doesn't know are left
-   out). Reel claims a double-clicked video while it's running anyway
-   (Message_DataOpen); a type ticked here also starts Reel when it isn't:
-   its Alias$@RunType_XXX is Reel, set now and at every start-up by
-   Choices:Reel.Types, an Obey file !Boot runs. */
-static const char *const ftype_exts[] = {
-    "avi", "mp4", "m4v", "mkv", "webm", "mov", "mpg", "mpeg", "ts", "vob", "wmv", "flv", "ogv", "3gp"
-};
-static const int ftype_ext_n = sizeof(ftype_exts) / sizeof(ftype_exts[0]);
-#define FTYPES_MAX 14
-static struct { int type; char name[12], ext[8]; } ftype[FTYPES_MAX];
-static int ftype_n = -1;                /* -1: not looked for yet */
+   out), and Data files named like a video. File types on the icon bar menu
+   says which (the ticks) and when, as Iris does for PDFs (Chris on the
+   ROOL forum):
+     Never           Reel claims no double-click;
+     While running   it claims a ticked type's double-click while it's
+                     running (Message_DataOpen), and sets no Run aliases;
+     Always          also when it isn't: a ticked type's
+                     Alias$@RunType_XXX is Reel, set now and at every
+                     start-up by Choices:Reel.Types, an Obey file !Boot
+                     runs.
+   0.1.22 claimed every video type while running, ticked or not. The
+   choice and the ticks are kept in Choices:Reel.Choices. */
 
 static void ftypes_find(void)
 {
@@ -3459,56 +3495,116 @@ static void var_set(const char *name, const char *val)   /* NULL: delete it */
    Obey file in the app), which runs Reel for film/mp4 and the like and
    passes anything else to what ran Data files before (kept in
    Alias$<APP>OldRunData). */
-static void data_toggle(void)
+static void data_set(int on)
 {
     char val[300], old[300];
     const char *dir = getenv(APP "$Dir");
-    if (!dir || !*dir)
+    if (!dir || !*dir || on == ftype_ours(0xFFD))
         return;
-    if (ftype_ours(0xFFD)) {
+    if (!on) {
         if (var_read("Alias$" APP "OldRunData", old, sizeof(old)) == 0 && old[0]) {
             var_set("Alias$@RunType_FFD", old);
             var_set("Alias$" APP "OldRunData", NULL);
         } else
             var_set("Alias$@RunType_FFD", NULL);
-        lg("Data files by extension: no longer opened with %s", APP);
+        lg("Data files by extension: no longer run %s", APP);
     } else {
         if (var_read("Alias$@RunType_FFD", old, sizeof(old)) == 0 && old[0])
             var_set("Alias$" APP "OldRunData", old);        /* what ran them before */
         snprintf(val, sizeof(val), "Obey %s.RunData %%*0", dir);
         var_set("Alias$@RunType_FFD", val);
-        lg("Data files by extension: opened with %s (film/mp4 and the like)", APP);
+        lg("Data files by extension: run %s (film/mp4 and the like)", APP);
     }
+}
+
+/* The Run aliases as the choice says: Reel's for the ticked types when
+   Always, none of Reel's otherwise (another program's are left alone);
+   then the Types file for !Boot */
+static void ftypes_apply(void)
+{
+    const char *dir = getenv(APP "$Dir");
+    if (!dir || !*dir)
+        return;
+    for (int i = 0; i < ftype_n; i++) {
+        char name[40], val[300];
+        int want = open_mode == OPEN_ALWAYS && ftype_on[i];
+        if (want == ftype_ours(ftype[i].type))
+            continue;
+        ftype_var(name, sizeof(name), ftype[i].type);
+        if (want) {
+            snprintf(val, sizeof(val), "/%s %%*0", dir);
+            var_set(name, val);
+        } else
+            var_set(name, NULL);
+        lg("file type %s (&%03X): %s %s", ftype[i].name, ftype[i].type, want ? "runs" : "no longer runs", APP);
+    }
+    data_set(open_mode == OPEN_ALWAYS && open_data);
     ftypes_save();
 }
 
-static void ftype_toggle(int i)
+static int ftype_index(int type)
 {
-    if (i == ftype_n) {
-        data_toggle();
-        return;
-    }
-    char name[40], val[300];
-    const char *dir = getenv(APP "$Dir");
-    _kernel_swi_regs r;
-    if (i < 0 || i >= ftype_n || !dir || !*dir)
-        return;
-    ftype_var(name, sizeof(name), ftype[i].type);
-    r.r[0] = (intptr_t)name;
-    r.r[3] = 0;
-    r.r[4] = 4;                         /* a literal string */
-    if (ftype_ours(ftype[i].type)) {
-        r.r[1] = (intptr_t)"";
-        r.r[2] = -1;                    /* delete it */
-        lg("file type %s (&%03X): no longer opens with %s", ftype[i].name, ftype[i].type, APP);
+    for (int i = 0; i < ftype_n; i++)
+        if (ftype[i].type == type)
+            return i;
+    return -1;
+}
+
+/* At start-up: the types, and the choice. With none saved yet (before
+   0.1.23), types whose Run alias is already Reel's mean Always with those
+   ticked (what 0.1.22's ticks did); otherwise While running, all ticked. */
+static void ftypes_setup(void)
+{
+    ftypes_find();
+    if (saved_mode < 0) {
+        int any = ftype_ours(0xFFD);
+        for (int i = 0; i < ftype_n; i++)
+            any |= ftype_ours(ftype[i].type);
+        open_mode = any ? OPEN_ALWAYS : OPEN_RUNNING;
+        for (int i = 0; i < ftype_n; i++)
+            ftype_on[i] = any ? ftype_ours(ftype[i].type) : 1;
+        open_data = any ? ftype_ours(0xFFD) : 1;
     } else {
-        snprintf(val, sizeof(val), "/%s %%*0", dir);
-        r.r[1] = (intptr_t)val;
-        r.r[2] = (int)strlen(val);
-        lg("file type %s (&%03X): opens with %s", ftype[i].name, ftype[i].type, APP);
+        open_mode = saved_mode;
+        for (int i = 0; i < ftype_n; i++)
+            ftype_on[i] = saved_ntypes < 0;
+        for (int k = 0; k < saved_ntypes; k++) {
+            int i = ftype_index(saved_types[k]);
+            if (i >= 0)
+                ftype_on[i] = 1;
+        }
+        open_data = saved_data < 0 ? 1 : saved_data;
     }
-    swi(0x24, &r);                      /* OS_SetVarVal */
-    ftypes_save();
+    ftypes_apply();
+}
+
+/* File types > item i: the three choices, then the types, then Data */
+static void ftype_select(int i)
+{
+    if (i >= 0 && i < 3) {
+        open_mode = i;
+        lg("double-clicks: %s", open_names[i]);
+    } else if (i - 3 >= 0 && i - 3 < ftype_n)
+        ftype_on[i - 3] = !ftype_on[i - 3];
+    else if (i - 3 == ftype_n)
+        open_data = !open_data;
+    else
+        return;
+    ftypes_apply();
+    choices_save();
+}
+
+static int name_is_video(const char *path);
+
+/* Does Reel take this double-click? (Message_DataOpen) */
+static int open_claims(int type, const char *path)
+{
+    int i;
+    if (open_mode == OPEN_NEVER)
+        return 0;
+    if (type == 0xFFD)
+        return open_data && name_is_video(path);
+    return (i = ftype_index(type)) >= 0 && ftype_on[i];
 }
 
 static void menu_open(int bar, int x, int y)
@@ -3524,14 +3620,18 @@ static void menu_open(int bar, int x, int y)
         {
             int k = 0;
             if (ftype_n < 0)
-                ftypes_find();
-            menu_start(&m_types, "Double-click opens");
+                ftypes_setup();
+            menu_start(&m_types, "File types");
+            menu_add(&m_types, 1, &k, "Never", open_mode == OPEN_NEVER, NULL, 0);
+            menu_add(&m_types, 1, &k, "While " APP " is running", open_mode == OPEN_RUNNING, NULL, 0);
+            menu_add(&m_types, 1, &k, "Always, even when not running", open_mode == OPEN_ALWAYS, NULL, 0);
+            m_types.item[k - 1].flags |= 2;             /* a dotted line, then the types */
             for (int i = 0; i < ftype_n; i++) {
                 char t[40];
                 snprintf(t, sizeof(t), "%s (%s)", ftype[i].name, ftype[i].ext);
-                menu_add(&m_types, 1, &k, t, ftype_ours(ftype[i].type), NULL, 0);
+                menu_add(&m_types, 1, &k, t, ftype_on[i], NULL, open_mode == OPEN_NEVER);
             }
-            menu_add(&m_types, 1, &k, "Data, by name (film/mp4...)", ftype_ours(0xFFD), NULL, 0);
+            menu_add(&m_types, 1, &k, "Data, by name (film/mp4...)", open_data, NULL, open_mode == OPEN_NEVER);
             menu_end(&m_types, k);
             menu_add(&menu, 0, &n, "File types", 0, &m_types, 0);
         }
@@ -3920,7 +4020,7 @@ static void menu_select(const int *sel)
         switch (sel[0]) {
         case 0: break;                  /* Info: its window is the submenu */
         case 1: url_open(); break;
-        case 2: ftype_toggle(sel[1]); break;
+        case 2: ftype_select(sel[1]); break;
         case 3: S.loop = !S.loop; break;
         case 4: log_show(); break;
         case 5: quit();
@@ -4208,20 +4308,6 @@ static void tick(void)
 
 /* ---- messages ------------------------------------------------------------------ */
 
-static int is_video_type(int type)
-{
-    char mime[64];
-    _kernel_swi_regs r;
-    r.r[0] = 0;                         /* from a filetype */
-    r.r[1] = type;
-    r.r[2] = 1;                         /* to a MIME type */
-    r.r[3] = (intptr_t)mime;
-    mime[0] = 0;
-    if (swi(MimeMap_Translate, &r))
-        return 0;
-    return !strncmp(mime, "video/", 6);
-}
-
 /* A Data file named like a video (film/mp4, as files from other computers
    often are: MP4 has no settled RISC OS filetype) */
 static int name_is_video(const char *path)
@@ -4306,7 +4392,7 @@ static char *read_text(const char *path)
 
 static int to_us(int w, int icon)
 {
-    return (w == -2 && icon == S.bar_icon) || (S.win && w == S.win) || (S.full && w == S.full) ||
+    return (w == -2 && (icon == S.bar_icon || icon == -1)) || (S.win && w == S.win) || (S.full && w == S.full) ||
            (S.url_win && w == S.url_win);
 }
 
@@ -4366,7 +4452,7 @@ static void message(int *b)
         }
         break;
     case MSG_DATAOPEN:
-        if (is_video_type(b[10]) || (b[10] == 0xFFD && name_is_video((const char *)&b[11]))) {
+        if (open_claims(b[10], (const char *)&b[11])) {
             snprintf(file, sizeof(file), "%s", (const char *)&b[11]);
             ack(b);                     /* claims it */
             list_arrived(file);
@@ -4394,6 +4480,7 @@ static void message(int *b)
 
 /* ---- set up and the poll loop ---------------------------------------------------- */
 
+/* Another copy of this program running: its task handle, or 0 */
 static int already_running(void)
 {
     int buf[16 * 4];
@@ -4409,7 +4496,7 @@ static int already_running(void)
                 const char *name = (const char *)(intptr_t)p[1];
                 size_t n = strlen(APP);
                 if (!strncmp(name, APP, n) && (unsigned char)name[n] < 32)
-                    return 1;
+                    return p[0];
             }
     } while (r.r[0] >= 0);
     return 0;
@@ -4453,13 +4540,35 @@ int reel_main(int argc, char **argv)
     if (swi(Wimp_Initialise, &r))
         return 1;
     S.task = r.r[1];
-    if (already_running()) {
-        r.r[0] = S.task;
-        swi(Wimp_CloseDown, &r);
-        return 0;
+    {
+        int other = already_running();
+        if (other) {
+            /* Started with a file while a copy runs (a double-click its Run
+               alias sent here, when the running one didn't claim it): the
+               file goes to that copy, as if dropped on its icon, rather
+               than nowhere (0.1.22 dropped it: Chris on the ROOL forum) */
+            if (argc > 1) {
+                int m[64];
+                memset(m, 0, sizeof(m));
+                m[4] = MSG_DATALOAD;
+                m[5] = -2;              /* the icon bar */
+                m[6] = -1;              /* (from another copy: see to_us) */
+                m[10] = 0xFFF;
+                snprintf((char *)&m[11], sizeof(m) - 44, "%s", argv[1]);
+                m[0] = (44 + (int)strlen((char *)&m[11]) + 1 + 3) & ~3;
+                r.r[0] = 17;
+                r.r[1] = (intptr_t)m;
+                r.r[2] = other;
+                swi(Wimp_SendMessage, &r);
+            }
+            r.r[0] = S.task;
+            swi(Wimp_CloseDown, &r);
+            return 0;
+        }
     }
     log_open();
     choices_load();
+    ftypes_setup();
     read_screen();
     iconbar_icon();
     S.proginfo = proginfo_create(APP, PURPOSE " (FFmpeg 5.1.10)", APP_AUTHOR,
