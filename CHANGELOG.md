@@ -3,7 +3,7 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next FFmpeg and Reel): H.264 on the Pi's VideoCore, long web addresses, File types as Iris does it
+## 5.1.10-riscos16 (2026-10-02): H.264 on the Raspberry Pi's VideoCore
 
 - **h264_vchiq: H.264 decoded by the Raspberry Pi's VideoCore** (patch
   0021, from riscos-reelhwaccel's devkit, with its vcdec library). Built
@@ -11,16 +11,6 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   FFmpeg is built as before without it. Not FFmpeg's default H.264
   decoder: `-c:v h264_vchiq` (ffplay `-vcodec h264_vchiq`). Up to
   1920x1088, Baseline/Main/High 8-bit 4:2:0; 1080p needs gpu_mem=128.
-- **Reel and ReelEGL use the VideoCore for H.264 by themselves** (reelcore:
-  `open_video_decoder`): h264_vchiq first, FFmpeg's h264 on the ARM when
-  it refuses the stream (or isn't built in); if it fails part way
-  (AVERROR_EXTERNAL), the ARM's decoder takes over at the next update,
-  from the same place (a seek there). `REELCORE_NO_VIDEOCORE`, from
-  `*Set Reel$NoVideoCore 1` (ReelEGL$NoVideoCore), keeps to the ARM.
-  Frame skipping and automatic deblocking-off don't apply while the
-  VideoCore decodes (it decodes every frame). Media info: "Decoder
-  VideoCore (h264_vchiq)", or "h264, 1 thread (the VideoCore failed part
-  way)".
 - **riscos-reelhwaccel devkit 0.2.1: the VideoCore's pictures aren't
   copied** (vcdec 0.4.1, sha256 749197ad…). h264_vchiq's frames are now
   vcdec's own picture buffers (cacheable): on a Pi 4 at 1080p the ARM's
@@ -31,6 +21,30 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   shown, one coming in: 9 at 25 fps, 13 at 60), and takes at most one
   more than it wants ahead, so what it holds fits the decoder's buffers
   (more would be copies). vc_test checks the `out_buffers` asked for.
+- Built with riscos-reelhwaccel devkit 0.2.1 (sha256 749197ad…) in
+  `third_party/reelhwaccel`.
+- **`drop_before` for h264_vchiq** (patch 0022): pictures with an earlier
+  pts are given back to the VideoCore unseen. Reel sets it when it falls
+  behind and on the way to a seek's picture.
+- **ReelHWAccel has its own project.** The hardware video decoding work
+  (`reelhwaccel/`, the HEVCHW module, and the test tools
+  `tools/hevcprobe`, `vchiqprobe`, `mmalprobe` and `mmaldecode` with
+  their host tests) moved, with its history, to riscos-reelhwaccel
+  (github.com/adyoull/riscos-reelhwaccel). FFmpeg and Reel will use its
+  decoders through its devkit, as they use riscos-mesa's.
+
+## Reel 0.1.23 (2026-10-02): H.264 on the VideoCore, long web addresses, File types as Iris does it
+
+- **Reel and ReelEGL use the VideoCore for H.264 by themselves** (reelcore:
+  `open_video_decoder`): h264_vchiq first, FFmpeg's h264 on the ARM when
+  it refuses the stream (or isn't built in); if it fails part way
+  (AVERROR_EXTERNAL), the ARM's decoder takes over at the next update,
+  from the same place (a seek there). `REELCORE_NO_VIDEOCORE`, from
+  `*Set Reel$NoVideoCore 1` (ReelEGL$NoVideoCore), keeps to the ARM.
+  Frame skipping and automatic deblocking-off don't apply while the
+  VideoCore decodes (it decodes every frame). Media info: "Decoder
+  VideoCore (h264_vchiq)", or "h264, 1 thread (the VideoCore failed part
+  way)".
 - **No log in release builds**: `!Run` sets `Reel$Log` (`ReelEGL$Log`)
   to `off` unless it's already set, as the log costs a little time while
   playing. Test builds (a version with a suffix) come with that line
@@ -74,10 +88,6 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   on to the end on the ARM. Mutations (no resend, no fallback) caught.
   The stats' decoder is checked too (VideoCore while it decodes, then
   ARM after the failure), and reel_test checks the panel's Decoder row.
-- Built with riscos-reelhwaccel devkit 0.1 (sha256 7cfcea8c…) in
-  `third_party/reelhwaccel`.
-
-
 - **File types: Never / While Reel is running / Always** (Chris on the
   ROOL forum, after Iris's choice for PDF files). The ticks now say which
   types Reel opens: unticked, it doesn't claim them at all (0.1.22 claimed
@@ -121,14 +131,6 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   lines and modules, then says whether any copy is newer than the one
   loaded. Host test: Raik's suspected machine (1.02 loaded, 1.05 in
   !Iris), all 1.05, an old one loaded at boot, none loaded, no Iris.
-
-## Unreleased: ReelHWAccel has its own project
-
-The hardware video decoding work (`reelhwaccel/`, the HEVCHW module, and
-the test tools `tools/hevcprobe`, `vchiqprobe`, `mmalprobe` and
-`mmaldecode` with their host tests) moved, with its history, to
-riscos-reelhwaccel (github.com/adyoull/riscos-reelhwaccel). FFmpeg and
-Reel will use its decoders through its devkit, as they use riscos-mesa's.
 
 ## 5.1.10-riscos15 (2026-10-01): UnixLib 5.0.3.1
 

@@ -185,10 +185,17 @@ docs/       ALIGNMENT.md, EGL.md, SOURCES.md
 
 ## Hardware decoding
 
-Decoding with the Raspberry Pi's own hardware (H.264 on the VideoCore,
-HEVC on the Pi 4's HEVC block) is a separate project, ReelHWAccel:
-github.com/adyoull/riscos-reelhwaccel. It started here; its test tools
-and the HEVCHW module moved there with their history.
+**H.264 on the Raspberry Pi's VideoCore** (Pi 1 to 4, up to 1920x1088):
+FFmpeg has an `h264_vchiq` decoder (patch 0021, `-c:v h264_vchiq`), and
+Reel and ReelEGL use it for H.264 by themselves, falling back to the ARM
+for streams it can't take (High 10, 4:2:2, larger than 1080p) or if it
+fails part way. 1080p needs `gpu_mem=128` in `config.txt`. Its pictures
+reach Reel without being copied (devkit 0.2.1's zero-copy frames).
+
+The hardware side (vcdec, and HEVC on the Pi 4's HEVC block to come) is
+a separate project, ReelHWAccel: github.com/adyoull/riscos-reelhwaccel,
+whose devkit is in `third_party/reelhwaccel`. It started here; its test
+tools and the HEVCHW module moved there with their history.
 
 ## Licence
 
