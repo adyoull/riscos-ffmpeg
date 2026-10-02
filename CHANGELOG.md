@@ -3,6 +3,17 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next Reel): long web addresses
+
+- **Open address takes addresses up to 8191 characters** (it held 1023
+  and cut longer ones off without a word: Raik on the ROOL forum). A
+  googlevideo address from yt-dlp often passes 1500 characters, and
+  `-g` gives two. Pasted text, dropped files and playlists had no limit;
+  only the field and its copy for saved HLS playlists did.
+- reel_test pastes a 3000-character address (a googlevideo-like query
+  ending "END") and plays it, and run.sh checks the whole of it reached
+  the test server. With the old limit: "pasted 1023 of 3042 characters".
+
 ## Unreleased: ReelHWAccel has its own project
 
 The hardware video decoding work (`reelhwaccel/`, the HEVCHW module, and

@@ -197,6 +197,10 @@ static const double speeds[N_SPEED] = { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 };
 static const char *const speed_names[N_SPEED] = { "0.5x", "0.75x", "Normal", "1.25x", "1.5x", "2x" };
 
 #define LIST_MAX 64                     /* files in the playlist */
+/* The Open address field. 0.1.22 and earlier held 1023 characters and
+   cut longer addresses off without a word (Raik on the ROOL forum): a
+   googlevideo address from yt-dlp often passes 1500, and -g gives two. */
+#define URL_TEXT_MAX 8192
 
 typedef struct { int x0, y0, x1, y1; } box_t;
 
@@ -268,7 +272,7 @@ static struct {
     int list_n, list_i;
     /* addresses: the Open address window, and text coming from other programs */
     int url_win;                        /* 0 = not made yet */
-    char url_text[1024];
+    char url_text[URL_TEXT_MAX];         /* (yt-dlp's googlevideo addresses can pass 2000 characters) */
     char hls_pending[256];              /* a saved HLS playlist waiting for its web address */
     int paste_ref;                      /* our Message_DataRequest (Ctrl-V), 0 = none */
     int save_ref;                       /* the DataSaveAck we sent: the DataLoad that follows */
@@ -2309,7 +2313,7 @@ static void url_field_refresh(void)
    given (the playlist's own, or its directory), in <Wimp$ScrapDir>.ReelHLS */
 static void hls_with_address(void)
 {
-    char *text = read_text(S.hls_pending), *fixed, addr[1024], name[300];
+    char *text = read_text(S.hls_pending), *fixed, addr[URL_TEXT_MAX], name[300];
     const char *scrap = getenv("Wimp$ScrapDir");
     size_t n;
     FILE *f;

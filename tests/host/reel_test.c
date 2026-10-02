@@ -112,7 +112,21 @@ static const char *base_url;
 static int url_created, url_open, url_nicons, msg_refs = 1000;
 static char *url_field;                 /* the address field's text (the icon's buffer) */
 static char *url_label_text;            /* the label above it (icon 0's buffer) */
-static ReelCore *hls_before;            /* what played before the saved HLS playlist */
+static ReelCore *hls_before;
+
+/* A query as long as a googlevideo address's (about 3000 characters, the
+   last of them "sig=...END"): the whole of it must reach the server
+   (run.sh looks for it in the server's log) */
+static const char *long_query(void)
+{
+    static char q[3200];
+    if (!q[0]) {
+        int n = snprintf(q, sizeof(q), "expire=1790000000&ei=AbCdEf&ip=192.0.2.1&id=o-AbC&itag=136&source=youtube&sig=");
+        while (n < 2990) q[n++] = (char)('A' + n % 26);
+        strcpy(q + n, "END");
+    }
+    return q;
+}            /* what played before the saved HLS playlist */
 static int sent_action, sent_code, sent_to, sent_my_ref, sent_your_ref, sent_flags, sent_win;
 static char scrap[64];
 static char last_report[256];
@@ -997,18 +1011,19 @@ static int next_event(int *b)
                 strcpy(scrap, "/tmp/reel_scrapXXXXXX");
                 close(mkstemp(scrap));
                 f = fopen(scrap, "w");
-                fprintf(f, "%s/long_h264_aac_322_184.mp4\n", base_url);
+                fprintf(f, "%s/long_h264_aac_322_184.mp4?%s\n", base_url, long_query());   /* as long as yt-dlp's */
                 fclose(f);
                 message(b, 3, URLW, 1, 0xFFF, scrap);                 /* DataLoad */
                 b[3] = sent_my_ref;
                 return 17;
             }
             if (phase_step == 5) {
-                char want[256];
+                static char want[4096];
                 phase_step++;
-                snprintf(want, sizeof(want), "%s/long_h264_aac_322_184.mp4", base_url);
+                snprintf(want, sizeof(want), "%s/long_h264_aac_322_184.mp4?%s", base_url, long_query());
                 CHECK(access(scrap, F_OK) != 0, "the scrap file wasn't deleted");
-                CHECK(url_field && !strcmp(url_field, want), "pasted: '%s'", url_field ? url_field : "");
+                CHECK(url_field && !strcmp(url_field, want), "pasted (%zu of %zu characters): '%.80s...'",
+                      url_field ? strlen(url_field) : 0, strlen(want), url_field ? url_field : "");
                 key_event(b, URLW, 13);                               /* Return: play it */
                 return 8;
             }
