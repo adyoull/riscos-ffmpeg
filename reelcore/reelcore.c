@@ -19,6 +19,7 @@
 #include "libavfilter/buffersink.h"
 #include "libavfilter/buffersrc.h"
 #include "libavcodec/avcodec.h"
+#include "libavutil/opt.h"
 #include "libavutil/avstring.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/display.h"
@@ -194,6 +195,7 @@ struct ReelCore {
     int vc;                            /* the video decoded by the Pi's VideoCore (h264_vchiq) */
     int vc_failed;                     /* ... which failed part way: the ARM's decoder from here on */
     int vmore;                         /* the video decoder has frames not taken yet (the queue was full) */
+    int64_t vc_drop;                   /* h264_vchiq's drop_before last set (INT64_MIN: off) */
     unsigned q_overflow;               /* pictures pushed out of a full queue (should never happen) */
     int auto_fast;                     /* too slow: deblocking off by itself (while fast is off) */
     unsigned auto_fast_spells;
@@ -740,6 +742,7 @@ static AVCodecContext *open_video_decoder(ReelCore *v, AVStream *st)
         (vc = avcodec_find_decoder_by_name("h264_vchiq")) != NULL) {
         if ((c = open_with(st, vc)) != NULL) {
             v->vc = 1;
+            v->vc_drop = INT64_MIN;
             av_log(NULL, AV_LOG_INFO, "reelcore: H.264 decoded by the VideoCore (h264_vchiq)\n");
             return c;
         }
@@ -2300,14 +2303,37 @@ static void check_slow(ReelCore *v, double lag)
     }
 }
 
+/* The VideoCore decodes every frame whatever skip_frame says; the cost to
+   the ARM is each picture's copy out of its memory, so the pictures that
+   would only be skipped as late (or that come before a seek's) are given
+   back to it uncopied: h264_vchiq's drop_before. */
+static void vc_drop(ReelCore *v)
+{
+    double before = -1;
+    int64_t want = INT64_MIN;
+    AVRational tb = v->fmt->streams[v->vs]->time_base;
+    if (v->seek_target >= 0 && !v->bstep)
+        before = v->seek_target - 0.001;     /* (queue_picture throws those away) */
+    else if (!v->paused && v->cur && !v->need_first && v->seek_target < 0)
+        before = clock_now(v) - 2.0 / (v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
+    if (before > 0 && tb.num > 0)
+        want = (int64_t)floor(before / av_q2d(tb));
+    if (want != v->vc_drop && av_opt_set_int(v->vdec, "drop_before", want, AV_OPT_SEARCH_CHILDREN) >= 0)
+        v->vc_drop = want;
+}
+
 static void check_late(ReelCore *v)
 {
     static const char *what[3] = { "decoding every frame", "skipping non-reference frames",
                                    "decoding only keyframes" };
     double lag, last;
     int want;
-    if (v->paused || !v->cur || v->need_first || v->vc)
-        return;                            /* (the VideoCore decodes every frame, whatever skip_frame says) */
+    if (v->vc) {
+        vc_drop(v);
+        return;
+    }
+    if (v->paused || !v->cur || v->need_first)
+        return;
     last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
     lag = clock_now(v) - last;
     check_slow(v, lag);
@@ -2655,6 +2681,8 @@ int reelcore_seek(ReelCore *v, double seconds)
     }
     avcodec_flush_buffers(v->vdec);
     v->vmore = 0;
+    if (v->vc)
+        vc_drop(v);                        /* (the pictures before the seek's) */
     if (v->adec)
         avcodec_flush_buffers(v->adec);
     if (v->sdec) {

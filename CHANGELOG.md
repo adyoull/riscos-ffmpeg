@@ -21,6 +21,17 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   VideoCore decodes (it decodes every frame). Media info: "Decoder
   VideoCore (h264_vchiq)", or "h264, 1 thread (the VideoCore failed part
   way)".
+- **1080p60 on the VideoCore: late pictures no longer copied** (seen on a
+  Pi 4: 10 of 60 pictures a second shown, the ARM never idle). The
+  VideoCore decodes every picture; what each costs the ARM is the copy
+  out of its memory (about 14 ms at 1080p), and the 50 a second that
+  came too late were copied and then thrown away. Patch 0022 gives
+  h264_vchiq a `drop_before` option: pictures before it go back to the
+  VideoCore uncopied. reelcore sets it two pictures' time behind the
+  clock, and to the seek point on the way to a seek's picture.
+  vc_test: a slow machine (60 ms a picture at 25 fps) with and without
+  bursts, and a seek: every picture accounted for (shown, late or
+  dropped), the decoder dropping some; none dropped while keeping up.
 - **Fixed: H.264 on the VideoCore stuttered and jumped** (seen on a Pi 4
   with the first test build). The VideoCore hands pictures back in
   bursts (around big keyframes, and at the start), and reelcore, which

@@ -60,7 +60,7 @@ ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=12 -f lavf
 # reelcore with the VideoCore's decoder (h264_vchiq, patch 0021): a stand-in for it here
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/vc_test.c" -o "$O/vc_test.o"
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcodec_find_decoder_by_name \
-  -Wl,--wrap=avcodec_open2 -Wl,--wrap=avcodec_send_packet -Wl,--wrap=avcodec_receive_frame -Wl,--wrap=avcodec_free_context -Wl,--wrap=avcodec_flush_buffers \
+  -Wl,--wrap=avcodec_open2 -Wl,--wrap=avcodec_send_packet -Wl,--wrap=avcodec_receive_frame -Wl,--wrap=avcodec_free_context -Wl,--wrap=avcodec_flush_buffers -Wl,--wrap=av_opt_set_int \
   -o "$O/vc_test" "$O/reelcore.o" "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/vc_test.o" $LIBS 2>/dev/null
 echo "== vc_test (the VideoCore first for H.264: input full, bursts, refused, switched off, failing part way)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/vc_test" "$SAMPLES/long_h264_aac_322_184.mp4" 2>&1 | grep -v "swscaler" || bad=1

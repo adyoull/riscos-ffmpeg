@@ -1,0 +1,63 @@
+From 2260eac248a5c2b3cc69d22a8979a2dc16c53408 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Fri, 2 Oct 2026 15:45:10 +0100
+Subject: [PATCH] avcodec/h264_vchiq: drop_before, late pictures released
+ without being copied
+
+A player that has fallen behind sets drop_before (a pts in pkt_timebase):
+pictures with an earlier pts go back to the VideoCore without the copy
+out of its memory, the most a picture costs the ARM (about 14 ms at
+1080p on a Pi 4). Off (INT64_MIN) by default.
+---
+ libavcodec/vchiqdec.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/libavcodec/vchiqdec.c b/libavcodec/vchiqdec.c
+index 6b0f3d4..3403009 100644
+--- a/libavcodec/vchiqdec.c
++++ b/libavcodec/vchiqdec.c
+@@ -66,6 +66,8 @@ typedef struct VCHIQContext {
+     int failed;                             /* the AVERROR every call returns from now on */
+     int sync_receive;                       /* option */
+     int gpu_mem_check;                      /* option */
++    int64_t drop_before;                    /* option: pictures with an earlier pts are released uncopied */
++    unsigned dropped;
+ } VCHIQContext;
+ 
+ static void vchiq_log(void *h, const char *text)
+@@ -115,6 +117,8 @@ static int check_profile(AVCodecContext *avctx)
+ static av_cold int vchiq_close(AVCodecContext *avctx)
+ {
+     VCHIQContext *s = avctx->priv_data;
++    if (s->dropped)
++        av_log(avctx, AV_LOG_VERBOSE, "%u late pictures released without being copied\n", s->dropped);
+     vcdec_close(s->d);
+     s->d = NULL;
+     av_packet_free(&s->pkt);
+@@ -250,6 +254,14 @@ static int vchiq_receive_frame(AVCodecContext *avctx, AVFrame *frame)
+         int progress = 0;
+         /* a picture ready: out */
+         r = vcdec_peek(s->d, &pic);
++        if (r == VCDEC_OK && s->drop_before != INT64_MIN && pic.pts != AV_NOPTS_VALUE && pic.pts < s->drop_before) {
++            /* too late to be shown: given back to the VideoCore without the
++               copy (most of the time a picture costs the ARM) */
++            if ((r = vcdec_receive(s->d, NULL, NULL, NULL)) != VCDEC_OK)
++                return r < 0 ? map_result(avctx, s, r, "Dropping") : AVERROR_BUG;
++            s->dropped++;
++            continue;
++        }
+         if (r == VCDEC_OK)
+             return output_frame(avctx, s, frame, &pic);
+         if (r == VCDEC_EOF)
+@@ -308,6 +320,8 @@ static const AVOption options[] = {
+       { .i64 = 0 }, 0, 1, VD },
+     { "gpu_mem_check", "refuse 1080p when gpu_mem is under 128 MB", OFFSET(gpu_mem_check), AV_OPT_TYPE_BOOL,
+       { .i64 = 1 }, 0, 1, VD },
++    { "drop_before", "release the pictures with an earlier pts (pkt_timebase) without copying them; a player that "
++      "is behind sets it as it goes", OFFSET(drop_before), AV_OPT_TYPE_INT64, { .i64 = INT64_MIN }, INT64_MIN, INT64_MAX, VD },
+     { NULL }
+ };
+ 
+-- 
+2.43.0
+
