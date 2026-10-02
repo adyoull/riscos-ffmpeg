@@ -66,7 +66,7 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
     nerds" every second (pictures shown and decoded, decode time and
     speed, drawing time, queues, sound, reading rate).
   - Sleeps between pictures (Wimp_PollIdle), and writes a log
-    (`<Wimp$ScrapDir>.ReelLog`).
+    (`<Wimp$ScrapDir>.ReelLog`; off in release builds, by a line in `!Run`).
 - **Codec libraries:** x264 (H.264 encoding), dav1d (AV1 decoding, NEON),
   LAME, Opus, Vorbis, and zlib.
 - **Network:** http, tcp, udp, rtp, rtmp and hls, and **https** (and HLS

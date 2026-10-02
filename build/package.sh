@@ -106,6 +106,18 @@ for app in Reel ReelEGL; do
   R=$RT/"!$app"
   lc=$(echo "$app" | tr A-Z a-z)
   cp -r "$TOP/app/!$app" "$R"
+  # a test build (a version with a suffix, as 0.1.22-vc3): the log on (the
+  # !Run line that turns it off commented out); a release: as in the repository
+  case "$RV" in *-*)
+    python3 - "$R/!Run,feb" "$app" <<'PY'
+import sys
+p, app = sys.argv[1], sys.argv[2]
+s = open(p).read()
+off = 'If "<%s$Log>"="" Then Set %s$Log off\n' % (app, app)
+assert s.count(off) == 1, "!Run's log line"
+open(p, "w").write(s.replace(off, "| " + off))
+PY
+  ;; esac
   python3 "$TOP/tools/mksprites.py" --$lc "$R/!Sprites,ff9"
   ${CROSS}strip -o "$TMP/$lc.elf" "$STAGE/bin/$lc"
   "$ELF2AIF" -e "$TMP/$lc.elf" "$R/!RunImage,ff8" >/dev/null

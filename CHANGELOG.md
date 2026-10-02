@@ -21,6 +21,11 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   VideoCore decodes (it decodes every frame). Media info: "Decoder
   VideoCore (h264_vchiq)", or "h264, 1 thread (the VideoCore failed part
   way)".
+- **No log in release builds**: `!Run` sets `Reel$Log` (`ReelEGL$Log`)
+  to `off` unless it's already set, as the log costs a little time while
+  playing. Test builds (a version with a suffix) come with that line
+  commented out by `build/package.sh`, so they log as before. To log with
+  a release build, put a `|` in front of the line.
 - **1080p60 on the VideoCore: late pictures no longer copied** (seen on a
   Pi 4: 10 of 60 pictures a second shown, the ARM never idle). The
   VideoCore decodes every picture; what each costs the ARM is the copy

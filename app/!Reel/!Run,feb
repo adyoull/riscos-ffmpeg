@@ -32,4 +32,9 @@ RMEnsure SharedSoundBuffer 0.07 IfThere System:Modules.SSBuffer Then RMLoad Syst
 | The program is about 29MB; its memory for pictures and sound is in a
 | dynamic area ("Reel Heap").
 WimpSlot -min 40960K -max 40960K
+| Log (<Wimp$ScrapDir>.ReelLog; Log on the icon bar menu opens it): off in
+| release builds, as it costs a little time while playing. For one, put a |
+| in front of the next line. (Test builds come with it commented out. A
+| *Set Reel$Log <file> of your own is left alone.)
+If "<Reel$Log>"="" Then Set Reel$Log off
 Run <Reel$Dir>.!RunImage %*0

@@ -419,7 +419,13 @@ Times are measured with the centisecond clock, so they're averages.
 
 Log
 ---
-Reel writes a log as it goes, started afresh each time Reel starts:
+Release builds keep no log, as it costs a little time while playing:
+!Reel's !Run sets Reel$Log to off (test builds come with the log on).
+For one, Shift-double-click !Reel, load its !Run into a text editor and
+put a | in front of the line
+  If "<Reel$Log>"="" Then Set Reel$Log off
+(the same in !ReelEGL's !Run, with ReelEGL$Log). Then Reel writes a log
+as it goes, started afresh each time Reel starts:
 <Wimp$ScrapDir>.ReelLog (ReelEGLLog for !ReelEGL). Log on the icon's
 menu opens it. It has the sound modules found (and their versions), the
 screen mode, each file opened and what's in it, what you did (pause,
@@ -431,7 +437,9 @@ converting (to what size), drawing and deinterlacing - in full screen
 too, where Media info can't be seen. If something goes wrong, the log
 says what Reel saw.
 To put it somewhere else: *Set Reel$Log <file> before starting Reel;
-*Set Reel$Log off for none.
+*Set Reel$Log off for none. (Reel$Log stays set until you restart: after
+a release build has run, *Unset Reel$Log before starting a test build to
+have its log.)
 
 Speed
 -----
