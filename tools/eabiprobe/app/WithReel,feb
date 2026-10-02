@@ -1,0 +1,9 @@
+| WithReel: eabiprobe, with Reel running. The report is added to Result
+| (and ARMEABISupport's own list of programs is saved in Info). Reads only.
+| (a GCCSDK program: needs SharedUnixLibrary and ARMEABISupport loaded)
+RMEnsure SharedUnixLibrary 1.16 IfThere System:Modules.SharedULib Then RMLoad System:Modules.SharedULib
+RMEnsure SharedUnixLibrary 1.16 Error This needs SharedUnixLibrary 1.16 or later. Install it with PackMan.
+RMEnsure ARMEABISupport 0 IfThere System:Modules.ARMEABISupport Then RMLoad System:Modules.ARMEABISupport
+RMEnsure ARMEABISupport 0 Error This needs the ARMEABISupport module. Install it with PackMan.
+WimpSlot -min 2048K -max 2048K
+Run <Obey$Dir>.eabiprobe -o <Obey$Dir>.Result -i <Obey$Dir>.Info -l "with Reel running"

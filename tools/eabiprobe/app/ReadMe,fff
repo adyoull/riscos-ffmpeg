@@ -1,0 +1,40 @@
+EABIProbe - which ARMEABISupport your machine is using
+======================================================
+
+Every program built with GCCSDK (Reel, FFmpeg, Iris, ...) uses the
+ARMEABISupport module while it runs. ARMEABISupport can't be replaced
+while any such program is running: loading another copy then fails with
+"There are still clients using ARMEABISupport". So if one program's !Run
+asks for a newer ARMEABISupport than the one already loaded, it can't
+start while another GCCSDK program is running.
+
+EABIProbe shows what decides that. It only reads; nothing is loaded,
+changed or saved except its report.
+
+Before you start, open the directory that holds !Iris in a Filer window,
+so RISC OS has seen it (EABIProbe then looks inside it too).
+
+Double-click, in this order:
+
+  AfterBoot   just after a restart, with nothing else started
+  WithReel    with Reel running (start Reel first)
+  IrisFailed  straight after Iris refused to start, with Reel still running
+
+Each adds to the file Result. Please send Result back, and Iris's exact
+error message if you can.
+
+What it reports:
+  - the ARMEABISupport, SharedUnixLibrary, PThreadTicker, VFPSupport and
+    DDEUtils modules loaded: version, ROM or RMA, and if loaded twice;
+  - the copies in System:Modules, which programs' !Run files load;
+  - ARMEABISupport's own list of the programs using it (each "App" line
+    is one; EABIProbe itself is one of them while it runs);
+  - the running tasks;
+  - Iris's !Run lines that load modules, and every module inside !Iris;
+  - whether any copy is newer than the ARMEABISupport loaded. If one is,
+    merge the newest ARMEABISupport into !System (PackMan, or Configure >
+    Boot > Merge) and restart: then every program finds the newest one
+    already loaded, and nothing needs replacing.
+
+Needs: SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan).
+Part of riscos-ffmpeg; GPL version 2 or later.

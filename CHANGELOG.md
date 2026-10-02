@@ -13,6 +13,16 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 - reel_test pastes a 3000-character address (a googlevideo-like query
   ending "END") and plays it, and run.sh checks the whole of it reached
   the test server. With the old limit: "pasted 1023 of 3042 characters".
+- **tools/eabiprobe** (not in the downloads; `EABIProbe-0.1.zip` for
+  testers): Raik found Iris won't start while Reel runs. ARMEABISupport
+  can't be replaced while any GCCSDK program uses it ("There are still
+  clients using ARMEABISupport"), so a !Run asking for a newer one fails
+  then. EABIProbe reports the loaded ARMEABISupport, SharedUnixLibrary,
+  PThreadTicker, VFPSupport and DDEUtils, the copies in System:Modules,
+  `*ARMEABISupport_Info`'s list of programs, the tasks, and Iris's !Run
+  lines and modules, then says whether any copy is newer than the one
+  loaded. Host test: Raik's suspected machine (1.02 loaded, 1.05 in
+  !Iris), all 1.05, an old one loaded at boot, none loaded, no Iris.
 
 ## Unreleased: ReelHWAccel has its own project
 

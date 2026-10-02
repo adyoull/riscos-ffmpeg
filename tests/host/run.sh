@@ -118,6 +118,11 @@ echo "== sub_test (subtitles, chapters, turned pictures, frame steps)"
 # (the hardware decoding test tools and the HEVCHW module moved to
 #  riscos-reelhwaccel, with their host tests)
 
+# tools/eabiprobe: ARMEABISupport's versions loaded and on disc, its programs, Iris's copies
+arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/eabiprobe_test" "$TOP/tools/eabiprobe/eabiprobe.c" "$HERE/eabiprobe_test.c"
+echo "== eabiprobe_test (ARMEABISupport loaded vs the copies a !Run would load; the verdict)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/eabiprobe_test" | grep "FAIL\|eabiprobe_test:" || bad=1
+
 echo "== riscos_name_test (holiday/mp4 as a RISC OS name, Unix names untouched)"
 gcc -O1 -g -fsanitize=address,undefined -I"$F/libavformat" "$HERE/riscos_name_test.c" -o "$O/riscos_name_test" &&
   "$O/riscos_name_test" || bad=1
