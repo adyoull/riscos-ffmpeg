@@ -1502,6 +1502,7 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     st->speed = v->speed;
     st->fast = v->fast;
     st->auto_fast = v->auto_fast && v->fast != REELCORE_FAST_ON;
+    st->decoder = v->vc ? REELCORE_DECODER_VIDEOCORE : v->vc_failed ? REELCORE_DECODER_ARM_AFTER : REELCORE_DECODER_ARM;
     st->auto_fast_spells = v->auto_fast_spells;
     st->decode_avg = v->dec_avg;
     st->deinterlace = v->deint;

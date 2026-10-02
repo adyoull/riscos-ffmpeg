@@ -31,7 +31,8 @@ caea90c3cc14abb4387f2c8d2e009355), with its UnixLib replaced by
 v2 or later): `vcdec.h` and `libvcdec.a` in `third_party/reelhwaccel`,
 which `build/build-ffmpeg.sh` copies into the stage and builds FFmpeg
 with `--enable-vchiq` (patch 0021, `h264_vchiq`, also from that devkit);
-`third_party/reelhwaccel/SOURCE.md` names the devkit and its sha256.
+devkit 0.1 (sha256 7cfcea8c…); `third_party/reelhwaccel/SOURCE.md` has
+the full sha256.
 Without it, FFmpeg is built without h264_vchiq.
 
 **UnixLib 5.0.3.1** from github.com/adyoull/riscos-unixlib (an unofficial

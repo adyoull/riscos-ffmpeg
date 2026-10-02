@@ -418,6 +418,7 @@ static int next_event(int *b)
                   "S, a file: no network rows: %s", reel_test_panel());
             CHECK(strstr(reel_test_panel(), "Codecs=h264 (High) / aac (LC)|") && strstr(reel_test_panel(), "/ QuickTime / MOV|"),
                   "S: short codec and container names: %s", reel_test_panel());
+            CHECK(strstr(reel_test_panel(), "|Decoder=ARM (software)|"), "S: which decoder: %s", reel_test_panel());
             printf("  stats panel: %dx%d, %d white pixels of text in the picture\n    %s\n", pw, ph, white, reel_test_panel());
             break;
         }

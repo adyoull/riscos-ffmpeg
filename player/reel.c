@@ -2512,6 +2512,16 @@ static info_row_t *info_add(int heading, const char *label, const char *value)
     return r;
 }
 
+/* Who decodes the video (ReelCoreStats.decoder); long: for the stats on the picture */
+static const char *decoder_name(int decoder, int longer)
+{
+    if (decoder == REELCORE_DECODER_VIDEOCORE)
+        return longer ? "VideoCore (hardware)" : "VideoCore";
+    if (decoder == REELCORE_DECODER_ARM_AFTER)
+        return longer ? "ARM (software: the VideoCore failed part way)" : "ARM: the VideoCore failed";
+    return longer ? "ARM (software)" : "ARM";
+}
+
 static const char *const stat_labels[] = {
     "Position", "Clock", "Pictures shown", "Decoded", "Decoding load", "Frame skipping",
     "Converting", "Deinterlacing", "Drawing", "Waiting", "Sound", "Reading", "Desktop", "Playback"
@@ -2589,10 +2599,10 @@ static void info_stats(void)
                  shown / dt, st.fps, late, st.late - S.late_base, pace);
     }
     if (dec && dtime > 0)
-        snprintf(r[3].value, sizeof(r[3].value), "%.1f a second, %.1f ms each: %.2fx real time",
-                 dec / dt, dtime * 1000 / dec, st.fps > 0 ? (dec / st.fps) / dtime : 0);
+        snprintf(r[3].value, sizeof(r[3].value), "%.1f a second, %.1f ms each: %.2fx real time (%s)",
+                 dec / dt, dtime * 1000 / dec, st.fps > 0 ? (dec / st.fps) / dtime : 0, decoder_name(st.decoder, 0));
     else
-        snprintf(r[3].value, sizeof(r[3].value), "%.1f a second", dec / dt);
+        snprintf(r[3].value, sizeof(r[3].value), "%.1f a second (%s)", dec / dt, decoder_name(st.decoder, 0));
     snprintf(r[4].value, sizeof(r[4].value), "%.0f%% of the time for pictures, %.0f%% for sound",
              dtime * 100 / dt, (st.audio_time - info_prev.audio_time) * 100 / dt);
     snprintf(r[5].value, sizeof(r[5].value), "%s; %u time%s so far%s",
@@ -3084,6 +3094,9 @@ static void panel_update(int sample)
     snprintf(val[i], sizeof(val[i]), "%.30s%s%.20s%s / %.30s%s%.20s%s", a[0] ? panel_short(a, 1) : "none",
              b[0] ? " (" : "", b, b[0] ? ")" : "", c[0] ? panel_short(c, 1) : "none", d[0] ? " (" : "", d, d[0] ? ")" : "");
     pp.label[i] = "Codecs"; pp.value[i] = val[i]; i++;
+
+    snprintf(val[i], sizeof(val[i]), "%s", decoder_name(st.decoder, 1));
+    pp.label[i] = "Decoder"; pp.value[i] = val[i]; i++;
 
     panel_media("Video", "Colours", a, sizeof(a));
     snprintf(val[i], sizeof(val[i]), "%.100s", a[0] ? a : "?");
@@ -4276,10 +4289,10 @@ static void tick(void)
         shown = st.shown - p.shown;
         draws = S.draw_n - p_draw_n;
         reelcore_debug(S.v, d, sizeof(d));
-        lg("%s; %d nulls, %d pictures in %.2f s, asleep %u%%; ms a picture: decode %.1f, convert %.1f (to %dx%d), "
+        lg("%s; %d nulls, %d pictures in %.2f s, asleep %u%%; ms a picture: decode %.1f (%s), convert %.1f (to %dx%d), "
            "draw %.1f, deinterlace %.1f; overlay: %u waited for a refresh, %u replaced", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0,
            (unsigned)((S.slept_cs - S.log_slept) * 100 / (t - S.log_cs)),
-           dec ? (st.decode_time - p.decode_time) * 1000 / dec : 0.0,
+           dec ? (st.decode_time - p.decode_time) * 1000 / dec : 0.0, decoder_name(st.decoder, 0),
            shown ? (st.convert_time - p.convert_time) * 1000 / shown : 0.0, st.convert_w, st.convert_h,
            draws ? (S.draw_cs - p_draw_cs) * 10.0 / draws : 0.0,
            st.deinterlaced > p.deinterlaced ? (st.deinterlace_time - p.deinterlace_time) * 1000 / (st.deinterlaced - p.deinterlaced) : 0.0,

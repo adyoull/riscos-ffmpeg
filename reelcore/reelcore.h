@@ -139,6 +139,11 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size);
    divide the differences by the time. Times are the processor time spent,
    in seconds (measured with the centisecond clock on RISC OS, so only
    right on average over many frames). */
+/* ReelCoreStats.decoder */
+#define REELCORE_DECODER_ARM        0   /* FFmpeg's decoder, on the CPU */
+#define REELCORE_DECODER_VIDEOCORE  1   /* the Pi's VideoCore (h264_vchiq) */
+#define REELCORE_DECODER_ARM_AFTER  2   /* the CPU, after the VideoCore failed part way */
+
 typedef struct ReelCoreStats {
     double position, clock;
     int clock_source;                 /* 0 timer, 1 sound, 2 paused */
@@ -163,6 +168,7 @@ typedef struct ReelCoreStats {
     int fast;                         /* reelcore_set_fast */
     int auto_fast;                    /* deblocking turned off by itself (too slow): 1 now */
     unsigned auto_fast_spells;        /* how many times it has been */
+    int decoder;                      /* who decodes the video: REELCORE_DECODER_... */
     double decode_avg;                /* recent seconds a picture takes to decode (0 unknown) */
     int audio_track, audio_tracks;    /* the sound track played (0 = the first; -1 none), and how many */
     int deinterlace;                  /* REELCORE_DEINT_* */

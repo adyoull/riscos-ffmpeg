@@ -21,6 +21,12 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   VideoCore decodes (it decodes every frame). Media info: "Decoder
   VideoCore (h264_vchiq)", or "h264, 1 thread (the VideoCore failed part
   way)".
+- **Reel shows which decoder is at work while it plays**: the picture's
+  stats (**S**) have a Decoder row, "VideoCore (hardware)", "ARM
+  (software)" or "ARM (software: the VideoCore failed part way)"; Media
+  info's Decoded row ends "(VideoCore)" or "(ARM)"; and so does each
+  second's line in Reel's log. reelcore: `ReelCoreStats.decoder`
+  (REELCORE_DECODER_ARM, _VIDEOCORE, _ARM_AFTER).
 - **reelcore no longer loses a packet a decoder refuses for now**
   (`avcodec_send_packet` EAGAIN, as h264_vchiq gives while the
   VideoCore's input is full): it takes the decoder's frames and sends the
@@ -30,6 +36,10 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   wrapped): every packet refused once and not a picture lost; refused at
   open; REELCORE_NO_VIDEOCORE; failing at the 40th picture and playing
   on to the end on the ARM. Mutations (no resend, no fallback) caught.
+  The stats' decoder is checked too (VideoCore while it decodes, then
+  ARM after the failure), and reel_test checks the panel's Decoder row.
+- Built with riscos-reelhwaccel devkit 0.1 (sha256 7cfcea8c…) in
+  `third_party/reelhwaccel`.
 
 
 - **File types: Never / While Reel is running / Always** (Chris on the

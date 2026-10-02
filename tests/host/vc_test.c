@@ -12,7 +12,8 @@
  *   - it fails part way (AVERROR_EXTERNAL from receive_frame, as when the
  *     VideoCore stops answering): reelcore goes on with h264 on the ARM,
  *     from where it was, to the end.
- * Media info says which decoder it is.
+ * Media info says which decoder it is, and so do the stats (Reel's
+ * picture panel and Media info's Decoded row).
  *
  *   vc_test CLIP   (an H.264 clip)
  */
@@ -97,7 +98,7 @@ static void log_line(int level, const char *line)
     }
 }
 
-typedef struct { int end; unsigned decoded, shown; double pos; char info[4096]; } run_t;
+typedef struct { int end, decoder, decoder_early; unsigned decoded, shown; double pos; char info[4096]; } run_t;
 
 static void play(const char *clip, int flags, run_t *out)
 {
@@ -113,12 +114,16 @@ static void play(const char *clip, int flags, run_t *out)
     reelcore_media_info(v, out->info, sizeof out->info);
     for (int i = 0; i < 40000 && r != REELCORE_END && fake_time - t0 < 30; i++) {
         r = reelcore_update(v);
-        if (r == REELCORE_NEW_FRAME) out->shown++;
+        if (r == REELCORE_NEW_FRAME && ++out->shown == 10) {
+            reelcore_stats(v, &st);
+            out->decoder_early = st.decoder;  /* (what the stats say while it plays) */
+        }
         fake_time += 0.002;
     }
     reelcore_stats(v, &st);
     out->end = r == REELCORE_END;
     out->decoded = st.decoded;
+    out->decoder = st.decoder;
     out->pos = reelcore_position(v);
     if (fell_back)                            /* (media info after the switch) */
         reelcore_media_info(v, out->info, sizeof out->info);
@@ -144,6 +149,8 @@ int main(int argc, char **argv)
     play(argv[1], REELCORE_NO_VIDEOCORE, &ref);
     printf("  ARM only: %u decoded, %u shown, decoder %s\n", ref.decoded, ref.shown, decoder_line(ref.info));
     CHECK(asked == 0, "REELCORE_NO_VIDEOCORE: h264_vchiq asked for %d times", asked);
+    CHECK(ref.decoder == REELCORE_DECODER_ARM && ref.decoder_early == REELCORE_DECODER_ARM, "ARM only: stats decoder %d, %d",
+          ref.decoder_early, ref.decoder);
     CHECK(ref.end && ref.decoded > 50 && strstr(decoder_line(ref.info), "h264, 1 thread"), "ARM only: end %d, %u decoded, '%s'",
           ref.end, ref.decoded, decoder_line(ref.info));
 
@@ -155,6 +162,8 @@ int main(int argc, char **argv)
     CHECK(a.decoded == ref.decoded, "VideoCore: %u pictures decoded, %u on the ARM (packets lost while its input was full?)",
           a.decoded, ref.decoded);
     CHECK(!strcmp(decoder_line(a.info), "VideoCore (h264_vchiq)"), "VideoCore: decoder line '%s'", decoder_line(a.info));
+    CHECK(a.decoder_early == REELCORE_DECODER_VIDEOCORE && a.decoder == REELCORE_DECODER_VIDEOCORE,
+          "VideoCore: stats decoder %d, %d", a.decoder_early, a.decoder);
     refuse_send = 0;
 
     /* refused at open */
@@ -164,6 +173,7 @@ int main(int argc, char **argv)
     CHECK(asked == 2 && a.end && a.decoded == ref.decoded && strstr(decoder_line(a.info), "h264, 1 thread") &&
           strstr(last_log, "can't take this H.264"), "refused: asked %d, end %d, %u decoded, '%s'", asked, a.end, a.decoded,
           decoder_line(a.info));
+    CHECK(a.decoder == REELCORE_DECODER_ARM, "refused: stats decoder %d", a.decoder);
     refuse_open = 0;
 
     /* failing part way, at the 40th picture */
@@ -172,6 +182,8 @@ int main(int argc, char **argv)
     printf("  failed at picture 40: %u decoded, %u shown, at %.2f s, decoder %s\n", a.decoded, a.shown, a.pos, decoder_line(a.info));
     CHECK(fell_back == 1 && a.end && a.shown > ref.shown * 9 / 10 && strstr(decoder_line(a.info), "the VideoCore failed part way"),
           "failed part way: fell back %d, end %d, %u shown of %u, '%s'", fell_back, a.end, a.shown, ref.shown, decoder_line(a.info));
+    CHECK(a.decoder_early == REELCORE_DECODER_VIDEOCORE && a.decoder == REELCORE_DECODER_ARM_AFTER,
+          "failed part way: stats decoder %d, then %d", a.decoder_early, a.decoder);
     fail_after = -1;
 
     printf(fails ? "vc_test: %d failures\n" : "vc_test: all passed\n", fails);
