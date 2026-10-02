@@ -28,9 +28,10 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   behind and on the way to a seek's picture.
 - **ReelHWAccel** (https://github.com/adyoull/riscos-reelhwaccel) is a new
   implementation: the VideoCore through RISC OS's VCHIQ module, with its
-  own MMAL client written using Linux's vchiq-mmal driver as a reference
-  (no code copied), so it's under the GPL version 2 (or later), as that
-  driver is. The packages' `docs.Licences.ReelHWAccel` says so.
+  own MMAL client, based on the MMAL message formats as Linux's vchiq-mmal
+  driver defines them in its headers. It has none of the driver's code,
+  but having used it as its reference it's treated as derived from it,
+  so it has the same licence: the GPL version 2. The packages' `docs.Licences.ReelHWAccel` says so.
 - **ReelHWAccel has its own project.** The hardware video decoding work
   (`reelhwaccel/`, the HEVCHW module, and the test tools
   `tools/hevcprobe`, `vchiqprobe`, `mmalprobe` and `mmaldecode` with

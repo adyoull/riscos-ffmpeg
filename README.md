@@ -197,9 +197,12 @@ a separate project, **ReelHWAccel**:
 https://github.com/adyoull/riscos-reelhwaccel, whose devkit is in
 `third_party/reelhwaccel`. It is a new implementation: it drives the
 VideoCore through the VCHIQ module in RISC OS's ROM, with its own MMAL
-client written using Linux's VCHIQ MMAL driver (vchiq-mmal) as a
-reference, and no code copied from it. So it is under the GNU GPL
-version 2 (or later), the same version as that Linux driver. It started
+client, based on the MMAL message formats as Linux's VCHIQ MMAL driver
+(vchiq-mmal) defines them in its headers (there's no published
+specification of the protocol). It contains none of the driver's code,
+but because it used the driver as its reference it is treated as derived
+from it, so ReelHWAccel has the same licence as the driver: the GNU GPL
+version 2. It started
 here; its test tools and the HEVCHW module moved there with their
 history.
 

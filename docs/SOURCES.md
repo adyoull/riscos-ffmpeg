@@ -28,9 +28,12 @@ Toolchain: GCCSDK GCC 10.2.0 Release 2 (riscos-warzone2100), built from
 GCCSDK 64c6f81 (`Warzone2100/dist/gccsdk-gcc10.2-x86_64-linux-env.tgz`, md5
 caea90c3cc14abb4387f2c8d2e009355), with its UnixLib replaced by
 **riscos-reelhwaccel devkit** (https://github.com/adyoull/riscos-reelhwaccel,
-GPL version 2 or later, the same version as Linux's vchiq-mmal driver: a
+GPL version 2, the same licence as Linux's vchiq-mmal driver: it contains
+none of the driver's code, but having used it as its reference it is
+treated as derived from it. A
 new implementation over RISC OS's VCHIQ module with its own MMAL client,
-written using that driver as a reference, no code copied): `vcdec.h` and `libvcdec.a` in `third_party/reelhwaccel`,
+based on the MMAL message formats as that driver's headers define them):
+`vcdec.h` and `libvcdec.a` in `third_party/reelhwaccel`,
 which `build/build-ffmpeg.sh` copies into the stage and builds FFmpeg
 with `--enable-vchiq` (patch 0021, `h264_vchiq`, also from that devkit;
 patch 0022, its `drop_before` option, is ours);

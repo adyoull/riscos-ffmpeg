@@ -6,9 +6,11 @@ without it otherwise. `build/build-apps.sh` then links Reel, ReelEGL and
 the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
 
 - From https://github.com/adyoull/riscos-reelhwaccel's devkit (GPL version
-  2 or later, the same version as Linux's vchiq-mmal driver, which it
-  used as a reference: a new implementation over RISC OS's VCHIQ module
-  with its own MMAL client, no code copied): `include/vcdec.h`,
+  2, the same licence as Linux's vchiq-mmal driver: none of the driver's
+  code, but treated as derived from it, having used it as its reference;
+  a new implementation over RISC OS's VCHIQ module
+  with its own MMAL client, based on the MMAL message formats as that
+  driver's headers define them): `include/vcdec.h`,
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.

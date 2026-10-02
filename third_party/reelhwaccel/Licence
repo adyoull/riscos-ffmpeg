@@ -3,10 +3,11 @@ ReelEGL, is from ReelHWAccel: https://github.com/adyoull/riscos-reelhwaccel
 
 ReelHWAccel is a new implementation. It drives the Raspberry Pi's
 VideoCore through the VCHIQ module in RISC OS's ROM, with its own MMAL
-client, written using Linux's VCHIQ MMAL driver (vchiq-mmal, GPL-2.0) as
-a reference. No code was copied from it.
+client, based on the MMAL message formats as Linux's VCHIQ MMAL driver
+(vchiq-mmal, GPL-2.0) defines them in its headers (there's no published
+specification of the protocol).
 
-It is licensed under the GNU General Public License version 2 (or
-later), the same version as the Linux driver it used as a reference. The
-licence's text is GPLv2 in this directory; the source is at the address
-above.
+ReelHWAccel contains none of the driver's code, but because it used the
+driver as its reference it is treated as derived from it, so it has the
+same licence as the driver: the GNU General Public License version 2. The licence's text is GPLv2 in this directory;
+the source is at the address above.
