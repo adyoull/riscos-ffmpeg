@@ -3,6 +3,20 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next FFmpeg and Reel): no more EMT traps after H.264 on the VideoCore
+
+- **riscos-reelhwaccel devkit 0.2.4** (vcdec 0.4.2, sha256 8876f366…):
+  the contiguous memory vcdec claims for the VideoCore's pictures never
+  includes the program's own page at &8000. Taking that page made RISC OS
+  move the program to another page; ARMEABISupport 1.08 knows a program
+  by that page and isn't told, so the program's record and stacks were
+  left behind at quit, and a later program could stop with an EMT trap
+  ("code 6"). Found by riscos-unixlib; fixed in vcdec (riscos-reelhwaccel
+  r26). On RISC OS before 5.29 a pool that would include the page is
+  refused and vcdec uses PCI memory instead. Patch 0021 is the devkit's
+  (only its licence header changed: GPL version 2 only); patch 0022 is
+  redone on it. Reel claims no contiguous memory itself.
+
 ## 5.1.10-riscos16 (2026-10-02): H.264 on the Raspberry Pi's VideoCore
 
 - **h264_vchiq: H.264 decoded by the Raspberry Pi's VideoCore** (patch

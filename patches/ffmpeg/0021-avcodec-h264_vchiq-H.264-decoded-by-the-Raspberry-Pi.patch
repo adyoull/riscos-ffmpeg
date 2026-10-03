@@ -1,4 +1,4 @@
-From 228f0281996c1dc33cc59998d083c3d172044e44 Mon Sep 17 00:00:00 2001
+From ca76c282f013be9f4a004d71a72757f30a48b694 Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Fri, 2 Oct 2026 12:40:07 +0100
 Subject: [PATCH] avcodec: h264_vchiq, H.264 decoded by the Raspberry Pi's
@@ -93,7 +93,7 @@ index bdfc2f6..5014510 100644
  extern const FFCodec ff_hap_encoder;
 diff --git a/libavcodec/vchiqdec.c b/libavcodec/vchiqdec.c
 new file mode 100644
-index 0000000..43820bd
+index 0000000..be3ac6c
 --- /dev/null
 +++ b/libavcodec/vchiqdec.c
 @@ -0,0 +1,405 @@
@@ -129,9 +129,9 @@ index 0000000..43820bd
 + * This file is part of FFmpeg's RISC OS port.
 + *
 + * It is free software; you can redistribute it and/or modify it under the
-+ * terms of the GNU General Public License as published by the Free
-+ * Software Foundation; either version 2 of the License, or (at your
-+ * option) any later version.
++ * terms of version 2 of the GNU General Public License as published by
++ * the Free Software Foundation. (GPL version 2 only, as riscos-reelhwaccel:
++ * see its README.)
 + *
 + * It is distributed in the hope that it will be useful, but WITHOUT ANY
 + * WARRANTY; without even the implied warranty of MERCHANTABILITY or

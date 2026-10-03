@@ -24,7 +24,7 @@
  * 1920x1088; 1080p needs gpu_mem=128 or more in CONFIG/TXT (at 64 the
  * decoder stalls without a word), which vcdec_open checks.
  *
- * Part of riscos-reelhwaccel. GPL version 2 or later (see COPYING).
+ * Part of riscos-reelhwaccel. GPL version 2 (see COPYING).
  */
 #ifndef VCDEC_H
 #define VCDEC_H
@@ -32,7 +32,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define VCDEC_VERSION "0.4.1"
+#define VCDEC_VERSION "0.4.2"
 
 /* results */
 #define VCDEC_OK           0
@@ -102,6 +102,10 @@ typedef struct {
     unsigned cs_messages, cs_queue, cs_give, cs_cache, cs_copy;
     /* (0.4.1) pictures taken by vcdec_receive_hold, and held now */
     unsigned holds, held_now;
+    /* (0.4.2) times claiming a pool's pages moved the program's page at
+       &8000 to another physical page: should be 0 (ARMEABISupport finds
+       the program by that page) */
+    unsigned app_page_moves;
 } vcdec_stats;
 
 void vcdec_config_init(vcdec_config *c);

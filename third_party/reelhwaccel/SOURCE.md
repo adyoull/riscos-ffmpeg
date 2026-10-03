@@ -14,9 +14,14 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
-- Devkit 0.2.1, `riscos-reelhwaccel-devkit-0.2.1.tgz` (sha256
-  749197ad2828a939444678f14d7fbefcc0a51b723ff3b14cbf2d2d5e2cdbfbde),
-  vcdec 0.4.1: h264_vchiq's frames are vcdec's own picture buffers
-  (zero-copy). Its `libvcdec.a` holds `vcdec.o` and `vcdec_copy.o`. Patch
-  0021 is its `ffmpeg/0001-avcodec-h264_vchiq.patch` unchanged; patch 0022
-  (`drop_before`) is ours, on top. Before: devkit 0.1 (7cfcea8c…).
+- Devkit 0.2.4, `riscos-reelhwaccel-devkit-0.2.4.tgz` (sha256
+  8876f3660897e8e8f93e2e73f0ebe97e6f870b121775f0b44bb22176a910d7ea),
+  vcdec 0.4.2: its contiguous memory never includes the program's own page
+  at &8000 (taking it made RISC OS move the program, which ARMEABISupport
+  1.08 doesn't notice: leaked records and later "code 6" EMT traps).
+  h264_vchiq's frames are vcdec's own picture buffers (zero-copy, since
+  0.2.1). Its `libvcdec.a` holds `vcdec.o` and `vcdec_copy.o`. Patch 0021
+  is its `ffmpeg/0001-avcodec-h264_vchiq.patch` unchanged; patch 0022
+  (`drop_before`) is ours, on top. The devkit's hevc_hwdec (libhevcdec,
+  patch 0002) isn't taken yet. Before: devkit 0.2.1 (749197ad…), 0.1
+  (7cfcea8c…).

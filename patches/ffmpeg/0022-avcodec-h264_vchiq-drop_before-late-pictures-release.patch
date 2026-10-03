@@ -1,6 +1,6 @@
-From 093119d4e0aed377080b96aa6054fe13a717016b Mon Sep 17 00:00:00 2001
+From 0e3a080e6bdc8ec85cf6b23bc23b3e670d1290a5 Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
-Date: Fri, 2 Oct 2026 17:43:50 +0100
+Date: Sat, 3 Oct 2026 13:46:11 +0100
 Subject: [PATCH] avcodec/h264_vchiq: drop_before, late pictures released
  unseen
 
@@ -12,7 +12,7 @@ copied nor held by a frame nobody will see. Off (INT64_MIN) by default.
  1 file changed, 14 insertions(+)
 
 diff --git a/libavcodec/vchiqdec.c b/libavcodec/vchiqdec.c
-index 43820bd..a0059c1 100644
+index be3ac6c..34c315c 100644
 --- a/libavcodec/vchiqdec.c
 +++ b/libavcodec/vchiqdec.c
 @@ -74,6 +74,8 @@ typedef struct VCHIQContext {

@@ -190,7 +190,7 @@ FFmpeg has an `h264_vchiq` decoder (patch 0021, `-c:v h264_vchiq`), and
 Reel and ReelEGL use it for H.264 by themselves, falling back to the ARM
 for streams it can't take (High 10, 4:2:2, larger than 1080p) or if it
 fails part way. 1080p needs `gpu_mem=128` in `config.txt`. Its pictures
-reach Reel without being copied (devkit 0.2.1's zero-copy frames).
+reach Reel without being copied (zero-copy frames, since devkit 0.2.1).
 
 The hardware side (vcdec, and HEVC on the Pi 4's HEVC block to come) is
 a separate project, **ReelHWAccel**:
