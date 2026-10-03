@@ -196,7 +196,7 @@ static void log_line(int level, const char *line)
     }
 }
 
-typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late; double pos, last; char info[4096]; } run_t;
+typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells; double pos, last; char info[4096]; } run_t;
 
 static double seek_at = -1, seek_to, slow;   /* slow: the time each picture shown takes */
 
@@ -240,6 +240,7 @@ static void play(const char *clip, int flags, run_t *out)
     out->end = r == REELCORE_END;
     out->decoded = st.decoded;
     out->late = st.late;
+    out->skip_spells = st.skip_spells;
     out->decoder = st.decoder;
     out->pos = reelcore_position(v);
     if (fell_back)                            /* (media info after the switch) */
@@ -360,10 +361,22 @@ int main(int argc, char **argv)
               a.decoder == REELCORE_DECODER_HEVC_BLOCK,
               "HEVC block: asked %d (h264_vchiq %d), end %d, %u of %u decoded, output_8bit %d, '%s', stats %d %d", asked_hb,
               asked - asked0, a.end, a.decoded, href.decoded, output_8bit, decoder_line(a.info), a.decoder_early, a.decoder);
+        CHECK(!vc_dropped, "HEVC block, keeping up: %d dropped", vc_dropped);
+        /* a slow machine (60 ms a picture shown, at 25 fps): late pictures
+           dropped unconverted (drop_before, devkit 0.2.7), never skip_frame
+           (which left 4K on the Pi keyframes only) */
+        slow = 0.06;
+        play(argv[2], 0, &a);
+        slow = 0;
+        printf("  HEVC block, slow: %u shown, %u late, %d dropped unconverted, %u skip spells, end %d\n", a.shown, a.late,
+               vc_dropped, a.skip_spells, a.end);
+        CHECK(a.end && !a.back && vc_dropped > 0 && !a.skip_spells && a.shown + a.late + vc_dropped == href.decoded,
+              "HEVC block, slow: end %d, back %d, %u shown + %u late + %d dropped of %u, %u skip spells", a.end, a.back,
+              a.shown, a.late, vc_dropped, href.decoded, a.skip_spells);
         refuse_open = 1;
         play(argv[2], 0, &a);
         printf("  HEVC block refused at open: %u decoded, decoder %s\n", a.decoded, decoder_line(a.info));
-        CHECK(asked_hb == 2 && a.end && a.decoded == href.decoded && strstr(decoder_line(a.info), "hevc, 1 thread") &&
+        CHECK(asked_hb == 3 && a.end && a.decoded == href.decoded && strstr(decoder_line(a.info), "hevc, 1 thread") &&
               strstr(last_log, "HEVC block can't take") && a.decoder == REELCORE_DECODER_ARM,
               "HEVC refused: asked %d, end %d, %u decoded, '%s', '%s'", asked_hb, a.end, a.decoded, decoder_line(a.info), last_log);
         refuse_open = 0;

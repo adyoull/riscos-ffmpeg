@@ -25,6 +25,18 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   (hardware)", "HEVC block (hevc_hwdec)". vc_test: a stand-in hevc_hwdec
   (FFmpeg's hevc, wrapped): used and asked for `output_8bit`, refused at
   open, refused at its first picture, failing part way; mutations caught.
+- **4K HEVC no longer drops to keyframes only** (seen on a Pi 4, 8-bit and
+  10-bit at 40 Mbit/s). Falling behind, reelcore set `skip_frame`, and
+  hevc_hwdec's inner hevc then gave the block keyframes only; at 4K the
+  ARM (converting each picture out of the block, then into the overlay)
+  never caught up. Devkit 0.2.7's hevc_hwdec has `drop_before`, as
+  h264_vchiq has (patch 0022): the block decodes every picture and the
+  late ones aren't converted. reelcore sets it for the HEVC block as for
+  the VideoCore, and no longer sets `skip_frame` for it. vc_test: a slow
+  machine with the HEVC stand-in drops late pictures unconverted and
+  never skips (before: 0 dropped, a skip spell).
+- **Devkit 0.2.7** (sha256 c65b8ac5…): patch 0023 is its new hevc_hwdec
+  patch (drop_before); the libraries are 0.2.6's.
 - **Devkit 0.2.6** (sha256 80dbabab…): hevcdec 0.1.8 converts one picture
   while the block decodes the next (about 3 ms a picture less at 1080p,
   9–12 ms at 4K). vcdec is 0.4.2, as below.

@@ -762,6 +762,7 @@ static AVCodecContext *open_video_decoder(ReelCore *v, AVStream *st)
         av_dict_free(&opts);
         if (c) {
             v->hb = 1;
+            v->vc_drop = INT64_MIN;
             av_log(NULL, AV_LOG_INFO, "reelcore: HEVC decoded by the Pi 4's HEVC block (hevc_hwdec)\n");
             return c;
         }
@@ -2366,7 +2367,9 @@ static void check_slow(ReelCore *v, double lag)
 /* The VideoCore decodes every frame whatever skip_frame says; the cost to
    the ARM is each picture's copy out of its memory, so the pictures that
    would only be skipped as late (or that come before a seek's) are given
-   back to it uncopied: h264_vchiq's drop_before. */
+   back to it uncopied: h264_vchiq's drop_before. hevc_hwdec has the same
+   (devkit 0.2.7): its block decodes 4K far faster than the ARM converts,
+   so skip_frame (which would leave it keyframes only) isn't used for it. */
 static void vc_drop(ReelCore *v)
 {
     double before = -1;
@@ -2388,16 +2391,15 @@ static void check_late(ReelCore *v)
                                    "decoding only keyframes" };
     double lag, last;
     int want;
-    if (v->vc) {
-        vc_drop(v);
+    if (v->vc || v->hb) {
+        vc_drop(v);                        /* (the hardware decodes every picture: late ones go unconverted) */
         return;
     }
     if (v->paused || !v->cur || v->need_first)
         return;
     last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
     lag = clock_now(v) - last;
-    if (!v->hb)
-        check_slow(v, lag);                /* (the block deblocks however long it takes: nothing to turn off) */
+    check_slow(v, lag);
     want = lag > LATE_KEYS ? 2 : lag > LATE_SKIP ? (v->skipping > 1 ? 2 : 1) : lag < LATE_OK ? 0 : v->skipping;
     if (want != v->skipping) {
         if (want > v->skipping)
@@ -2748,7 +2750,7 @@ int reelcore_seek(ReelCore *v, double seconds)
     }
     avcodec_flush_buffers(v->vdec);
     v->vmore = 0;
-    if (v->vc)
+    if (v->vc || v->hb)
         vc_drop(v);                        /* (the pictures before the seek's) */
     if (v->adec)
         avcodec_flush_buffers(v->adec);

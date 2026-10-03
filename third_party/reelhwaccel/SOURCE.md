@@ -14,15 +14,16 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
-- Devkit 0.2.6, `riscos-reelhwaccel-devkit-0.2.6.tgz` (sha256
-  80dbabab8d69c744d48b4c803bf7ab744f2882b3980cd6c1668cec52d6d4670c):
+- Devkit 0.2.7, `riscos-reelhwaccel-devkit-0.2.7.tgz` (sha256
+  c65b8ac53894aeb1bffe4df28a40acc5557fd53b326e5cf4ecdecb432bfa84b8):
   vcdec 0.4.2 (H.264; its contiguous memory never includes the program's
   page at &8000, which ARMEABISupport 1.08 would lose track of) and
   hevcdec 0.1.8 (HEVC on the Pi 4's HEVC block, 8-bit and 10-bit, up to
-  4K; it converts one picture while the block decodes the next).
+  4K; it converts one picture while the block decodes the next). Its
+  hevc_hwdec patch has `drop_before`, as our h264_vchiq one does.
   `lib/libvcdec.a`, `lib/libhevcdec.a`, `include/vcdec.h`,
   `include/hwhevcdec.h`, `include/hevc_ctrls.h`. Patch 0021 is its
   `ffmpeg/0001-avcodec-h264_vchiq.patch` and patch 0023 its
   `ffmpeg/0002-avcodec-hevc_hwdec.patch`, both unchanged; patch 0022
-  (`drop_before`) is ours, after 0021. Before: devkit 0.2.4 (8876f366…),
-  0.2.1 (749197ad…), 0.1 (7cfcea8c…).
+  (`drop_before` for h264_vchiq) is ours, after 0021. Before: devkit 0.2.6
+  (80dbabab…), 0.2.4 (8876f366…), 0.2.1 (749197ad…), 0.1 (7cfcea8c…).
