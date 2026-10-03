@@ -1,5 +1,6 @@
-vcdec (libvcdec), linked into FFmpeg's h264_vchiq decoder, Reel and
-ReelEGL, is from ReelHWAccel: https://github.com/adyoull/riscos-reelhwaccel
+vcdec and hevcdec (libvcdec, libhevcdec), linked into FFmpeg's
+h264_vchiq and hevc_hwdec decoders, Reel and ReelEGL, are from
+ReelHWAccel: https://github.com/adyoull/riscos-reelhwaccel
 
 ReelHWAccel is a new implementation. It drives the Raspberry Pi's
 VideoCore through the VCHIQ module in RISC OS's ROM, with its own MMAL
@@ -9,5 +10,12 @@ specification of the protocol).
 
 ReelHWAccel contains none of the driver's code, but because it used the
 driver as its reference it is treated as derived from it, so it has the
-same licence as the driver: the GNU General Public License version 2. The licence's text is GPLv2 in this directory;
-the source is at the address above.
+same licence as the driver: the GNU General Public License version 2.
+
+hevcdec drives the Pi 4's HEVC block directly. It uses Linux's rpivid
+HEVC code (rpivid_h265.c, GPL-2.0-or-later) unchanged, and fills its
+controls as Raspberry Pi's FFmpeg does (LGPL-2.1-or-later). It too is
+under the GNU General Public License version 2.
+
+The licence's text is GPLv2 in this directory; the source is at the
+address above.

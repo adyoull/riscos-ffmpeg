@@ -1,0 +1,1040 @@
+From 6e9660c1c31a53648c4aa729a9b3fc39ad59217d Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Sat, 3 Oct 2026 08:43:26 +0100
+Subject: [PATCH] avcodec: hevc_hwdec, HEVC on the Raspberry Pi 4's HEVC block
+ (RISC OS)
+
+The hwaccel hevc_hwdec, on the HEVC decoder (8-bit and 10-bit 4:2:0):
+each picture given to riscos-reelhwaccel's hevcdec as the V4L2 stateless
+HEVC controls, its frames hevcdec's (AV_PIX_FMT_HEVCDEC). And the decoder
+hevc_hwdec: the HEVC decoder with that hwaccel inside it, its pictures
+given out as YUV420P frames (YUV420P10 for 10-bit streams).
+--enable-libhevcdec (GPL), needs hwhevcdec.h and libhevcdec.
+---
+ configure               |   8 +
+ libavcodec/Makefile     |   1 +
+ libavcodec/allcodecs.c  |   1 +
+ libavcodec/hevc_hwdec.c | 850 ++++++++++++++++++++++++++++++++++++++++
+ libavcodec/hevcdec.c    |  10 +
+ libavcodec/hwaccels.h   |   1 +
+ libavutil/pixdesc.c     |   4 +
+ libavutil/pixfmt.h      |   6 +
+ 8 files changed, 881 insertions(+)
+ create mode 100644 libavcodec/hevc_hwdec.c
+
+diff --git a/configure b/configure
+index 60d92c4..f560367 100755
+--- a/configure
++++ b/configure
+@@ -345,6 +345,8 @@ External library support:
+   --enable-mmal            enable Broadcom Multi-Media Abstraction Layer (Raspberry Pi) via MMAL [no]
+   --enable-vchiq           enable H.264 decoding on the Raspberry Pi's VideoCore
+                            from RISC OS, through VCHIQ (vcdec, riscos-reelhwaccel) [no]
++  --enable-libhevcdec      enable HEVC decoding on the Raspberry Pi 4's HEVC block
++                           from RISC OS (hevcdec, riscos-reelhwaccel) [no]
+   --disable-nvdec          disable Nvidia video decoding acceleration (via hwaccel) [autodetect]
+   --disable-nvenc          disable Nvidia video encoding code [autodetect]
+   --enable-omx             enable OpenMAX IL code [no]
+@@ -1786,6 +1788,7 @@ EXTERNAL_LIBRARY_GPL_LIST="
+     libxavs
+     libxavs2
+     libxvid
++    libhevcdec
+     vchiq
+ "
+ 
+@@ -3062,6 +3065,8 @@ hevc_dxva2_hwaccel_deps="dxva2 DXVA_PicParams_HEVC"
+ hevc_dxva2_hwaccel_select="hevc_decoder"
+ hevc_nvdec_hwaccel_deps="nvdec"
+ hevc_nvdec_hwaccel_select="hevc_decoder"
++hevc_hwdec_hwaccel_deps="libhevcdec"
++hevc_hwdec_hwaccel_select="hevc_decoder"
+ hevc_vaapi_hwaccel_deps="vaapi VAPictureParameterBufferHEVC"
+ hevc_vaapi_hwaccel_select="hevc_decoder"
+ hevc_vdpau_hwaccel_deps="vdpau VdpPictureInfoHEVC"
+@@ -3190,6 +3195,8 @@ h264_rkmpp_decoder_deps="rkmpp"
+ h264_rkmpp_decoder_select="h264_mp4toannexb_bsf"
+ h264_vaapi_encoder_select="cbs_h264 vaapi_encode"
+ h264_v4l2m2m_decoder_deps="v4l2_m2m h264_v4l2_m2m"
++hevc_hwdec_decoder_deps="libhevcdec"
++hevc_hwdec_decoder_select="hevc_decoder hevc_hwdec_hwaccel"
+ h264_vchiq_decoder_deps="vchiq"
+ h264_vchiq_decoder_select="h264_mp4toannexb_bsf"
+ h264_v4l2m2m_decoder_select="h264_mp4toannexb_bsf"
+@@ -6683,6 +6690,7 @@ enabled libvpx            && {
+ }
+ 
+ enabled vchiq             && require vchiq vcdec.h vcdec_open -lvcdec
++enabled libhevcdec        && require libhevcdec hwhevcdec.h hevcdec_open -lhevcdec
+ enabled libwebp           && {
+     enabled libwebp_encoder      && require_pkg_config libwebp "libwebp >= 0.2.0" webp/encode.h WebPGetEncoderVersion
+     enabled libwebp_anim_encoder && check_pkg_config libwebp_anim_encoder "libwebpmux >= 0.4.0" webp/mux.h WebPAnimEncoderOptionsInit; }
+diff --git a/libavcodec/Makefile b/libavcodec/Makefile
+index 275747b..d80a8a7 100644
+--- a/libavcodec/Makefile
++++ b/libavcodec/Makefile
+@@ -973,6 +973,7 @@ OBJS-$(CONFIG_HEVC_D3D11VA_HWACCEL)       += dxva2_hevc.o
+ OBJS-$(CONFIG_HEVC_DXVA2_HWACCEL)         += dxva2_hevc.o
+ OBJS-$(CONFIG_HEVC_NVDEC_HWACCEL)         += nvdec_hevc.o
+ OBJS-$(CONFIG_HEVC_QSV_HWACCEL)           += qsvdec.o
++OBJS-$(CONFIG_HEVC_HWDEC_HWACCEL)         += hevc_hwdec.o
+ OBJS-$(CONFIG_HEVC_VAAPI_HWACCEL)         += vaapi_hevc.o h265_profile_level.o
+ OBJS-$(CONFIG_HEVC_VDPAU_HWACCEL)         += vdpau_hevc.o h265_profile_level.o
+ OBJS-$(CONFIG_MJPEG_NVDEC_HWACCEL)        += nvdec_mjpeg.o
+diff --git a/libavcodec/allcodecs.c b/libavcodec/allcodecs.c
+index 5014510..8c7dd31 100644
+--- a/libavcodec/allcodecs.c
++++ b/libavcodec/allcodecs.c
+@@ -159,6 +159,7 @@ extern const FFCodec ff_h264_rkmpp_decoder;
+ extern const FFCodec ff_hap_encoder;
+ extern const FFCodec ff_hap_decoder;
+ extern const FFCodec ff_hevc_decoder;
++extern const FFCodec ff_hevc_hwdec_decoder;
+ extern const FFCodec ff_hevc_qsv_decoder;
+ extern const FFCodec ff_hevc_rkmpp_decoder;
+ extern const FFCodec ff_hevc_v4l2m2m_decoder;
+diff --git a/libavcodec/hevc_hwdec.c b/libavcodec/hevc_hwdec.c
+new file mode 100644
+index 0000000..5cb1983
+--- /dev/null
++++ b/libavcodec/hevc_hwdec.c
+@@ -0,0 +1,850 @@
++/*
++ * hevc_hwdec: HEVC decoded by the Raspberry Pi 4's HEVC block on RISC OS
++ * (hevcdec, from riscos-reelhwaccel), as two parts:
++ *
++ *  - the hwaccel hevc_hwdec, on FFmpeg's own HEVC decoder: FFmpeg parses
++ *    the stream and keeps the DPB; for each picture this gives hevcdec
++ *    the V4L2 stateless HEVC controls (SPS, PPS, decode parameters with
++ *    the DPB, each slice's parameters and bytes, the scaling matrix) and
++ *    a frame of its own (AV_PIX_FMT_HEVCDEC: data[3] is the
++ *    hevcdec_frame), and hevcdec has the block decode it, pipelined (the
++ *    block works while FFmpeg parses on);
++ *
++ *  - the decoder hevc_hwdec, for programs (Reel): FFmpeg's HEVC decoder
++ *    with that hwaccel run inside it, its pictures given out as ordinary
++ *    YUV420P frames, or YUV420P10 for 10-bit streams (YUV420P with the
++ *    option output_8bit), converted, waiting for the block only if it
++ *    hasn't finished the picture yet.
++ *
++ * It refuses (AVERROR(ENOSYS), so the caller can use the hevc decoder
++ * instead) streams the block can't decode here: other than 8-bit or
++ * 10-bit 4:2:0, over 4096x4096, a picture size that grows or a depth that
++ * changes part way, and machines without the block (not a Pi 4). Streams with
++ * their parameter sets in the extradata (MP4) are refused at open, others
++ * at their first picture.
++ *
++ * The fill_* functions are Raspberry Pi's FFmpeg (rpi-ffmpeg,
++ * libavcodec/v4l2_req_hevc_vx.c, release/5.1/main), cut down to the
++ * HEVC_CTRLS_VERSION 4 (stable uAPI) case, with DPB timestamps that are
++ * each picture's number in decoding order (kept with the frame). That
++ * code is LGPL 2.1 or later, as FFmpeg:
++ *
++ *   This file is part of FFmpeg.
++ *
++ *   FFmpeg is free software; you can redistribute it and/or modify it
++ *   under the terms of the GNU Lesser General Public License as published
++ *   by the Free Software Foundation; either version 2.1 of the License,
++ *   or (at your option) any later version.
++ *
++ * The rest: Copyright (C) 2026 Andrew Youll. This file is part of
++ * FFmpeg's RISC OS port. It is free software; you can redistribute it
++ * and/or modify it under the terms of version 2 of the GNU General Public
++ * License as published by the Free Software Foundation (GPL version 2
++ * only, as riscos-reelhwaccel: see its README); the whole is GPL version
++ * 2. It is distributed in the hope that it will be useful, but WITHOUT ANY
++ * WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
++ * more details. You should have received a copy of the GNU General Public
++ * License along with it; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#include <string.h>
++
++#include "libavutil/opt.h"
++#include "libavutil/pixdesc.h"
++#include "avcodec.h"
++#include "codec_internal.h"
++#include "decode.h"
++#include "hwconfig.h"
++#include "internal.h"
++#include "hevcdec.h"            /* FFmpeg's HEVC decoder */
++#include <hwhevcdec.h>          /* riscos-reelhwaccel's hevcdec (from -I) */
++
++extern const FFCodec ff_hevc_decoder;
++
++#define MAX_POOL   32           /* hevcdec's frames (its most) */
++#define MAGIC      0x48574443u  /* "HWDC": an inner decoder's opaque is ours */
++
++typedef struct PoolEntry {
++    hevcdec_frame *f;
++    int in_use;                 /* a frame of FFmpeg's holds it */
++    int failed;                 /* hevcdec refused its picture */
++    struct HWDecContext *w;
++} PoolEntry;
++
++typedef struct HWDecContext {
++    const AVClass *class;
++    uint32_t magic;
++    AVCodecContext *avctx;      /* (the outer decoder: for logging) */
++    AVCodecContext *inner;      /* FFmpeg's HEVC decoder, with the hwaccel */
++    AVPacket *pkt;
++    AVFrame *hwf;
++    AVFrame *held;              /* (pipelined) a picture kept back while the next is given to the block */
++    int eof_sent;
++    int refused;                /* not for the block: AVERROR(ENOSYS) */
++    hevcdec *d;
++    int d_w, d_h, d_depth;
++    PoolEntry pool[MAX_POOL];
++    int npool;
++    uint64_t number;            /* pictures given so far */
++    /* the picture in hand */
++    struct v4l2_ctrl_hevc_decode_params dec;
++    struct v4l2_ctrl_hevc_slice_params *sp;
++    hevcdec_slice *sl;
++    unsigned nsl, cap;
++    int in_picture;
++    int failures;
++    /* options */
++    int pipelined;
++    int cached_frames;
++    int output_8bit;            /* 10-bit streams given out as YUV420P (each sample's top 8 bits) */
++} HWDecContext;
++
++typedef struct HWDecPicture {
++    uint64_t number;            /* how the DPB of later pictures names this one */
++} HWDecPicture;
++
++static HWDecContext *ours(AVCodecContext *inner)
++{
++    HWDecContext *w = inner->opaque;
++    return w && w->magic == MAGIC ? w : NULL;
++}
++
++static void hevcdec_log(void *handle, const char *text)
++{
++    av_log(handle, AV_LOG_DEBUG, "%s\n", text);
++}
++
++/* hevcdec open, with frames this big at least, for this depth: 0, or
++   AVERROR(ENOSYS) */
++static int ensure_open(HWDecContext *w, int width, int height, int depth)
++{
++    hevcdec_config c;
++    int r;
++    if (width > 4096 || height > 4096) {
++        av_log(w->avctx, AV_LOG_ERROR, "%dx%d is too big for the HEVC block (4096x4096)\n", width, height);
++        return AVERROR(ENOSYS);
++    }
++    if (depth != 8 && depth != 10) {
++        av_log(w->avctx, AV_LOG_ERROR, "Not for the HEVC block: %d-bit (8-bit or 10-bit only)\n", depth);
++        return AVERROR(ENOSYS);
++    }
++    if (w->d && width <= w->d_w && height <= w->d_h && depth == w->d_depth) return 0;
++    if (w->d) {
++        for (int i = 0; i < w->npool; i++)
++            if (w->pool[i].in_use) {
++                av_log(w->avctx, AV_LOG_ERROR, "The picture size grew or the depth changed (%dx%d %d-bit to "
++                       "%dx%d %d-bit) part way\n", w->d_w, w->d_h, w->d_depth, width, height, depth);
++                w->refused = 1;          /* (said: not again as the format's refusal) */
++                return AVERROR(ENOSYS);
++            }
++        hevcdec_close(w->d);            /* (its frames go with it) */
++        w->d = NULL;
++        w->npool = 0;
++    }
++    hevcdec_config_init(&c);
++    c.width = width;
++    c.height = height;
++    c.bit_depth = depth;
++    c.pipelined = w->pipelined;
++    c.cached_frames = w->cached_frames;
++    c.log = hevcdec_log;
++    c.log_handle = w->avctx;
++    if ((r = hevcdec_open(&w->d, &c)) != HEVCDEC_OK) {
++        av_log(w->avctx, AV_LOG_ERROR, "The HEVC block can't be used: %s\n", hevcdec_open_error());
++        w->d = NULL;
++        return AVERROR(ENOSYS);
++    }
++    w->d_w = width;
++    w->d_h = height;
++    w->d_depth = depth;
++    av_log(w->avctx, AV_LOG_VERBOSE, "hevcdec %s open, frames %dx%d %d-bit%s\n", HEVCDEC_VERSION, width, height, depth,
++           w->pipelined ? ", pipelined" : "");
++    return 0;
++}
++
++/* ---- the controls (rpi-ffmpeg's fill_*: see the top) ---- */
++
++static uint64_t pic_number(const HEVCFrame *f)
++{
++    return f && f->hwaccel_picture_private ? ((const HWDecPicture *)f->hwaccel_picture_private)->number : 0;
++}
++
++static void fill_pred_table(const HEVCContext *h, struct v4l2_hevc_pred_weight_table *table)
++{
++    int32_t luma_weight_denom, chroma_weight_denom;
++    const SliceHeader *sh = &h->sh;
++
++    if (sh->slice_type == HEVC_SLICE_I ||
++        (sh->slice_type == HEVC_SLICE_P && !h->ps.pps->weighted_pred_flag) ||
++        (sh->slice_type == HEVC_SLICE_B && !h->ps.pps->weighted_bipred_flag))
++        return;
++
++    table->luma_log2_weight_denom = sh->luma_log2_weight_denom;
++
++    if (h->ps.sps->chroma_format_idc)
++        table->delta_chroma_log2_weight_denom = sh->chroma_log2_weight_denom - sh->luma_log2_weight_denom;
++
++    luma_weight_denom = (1 << sh->luma_log2_weight_denom);
++    chroma_weight_denom = (1 << sh->chroma_log2_weight_denom);
++
++    for (int i = 0; i < 15 && i < sh->nb_refs[L0]; i++) {
++        table->delta_luma_weight_l0[i] = sh->luma_weight_l0[i] - luma_weight_denom;
++        table->luma_offset_l0[i] = sh->luma_offset_l0[i];
++        table->delta_chroma_weight_l0[i][0] = sh->chroma_weight_l0[i][0] - chroma_weight_denom;
++        table->delta_chroma_weight_l0[i][1] = sh->chroma_weight_l0[i][1] - chroma_weight_denom;
++        table->chroma_offset_l0[i][0] = sh->chroma_offset_l0[i][0];
++        table->chroma_offset_l0[i][1] = sh->chroma_offset_l0[i][1];
++    }
++
++    if (sh->slice_type != HEVC_SLICE_B)
++        return;
++
++    for (int i = 0; i < 15 && i < sh->nb_refs[L1]; i++) {
++        table->delta_luma_weight_l1[i] = sh->luma_weight_l1[i] - luma_weight_denom;
++        table->luma_offset_l1[i] = sh->luma_offset_l1[i];
++        table->delta_chroma_weight_l1[i][0] = sh->chroma_weight_l1[i][0] - chroma_weight_denom;
++        table->delta_chroma_weight_l1[i][1] = sh->chroma_weight_l1[i][1] - chroma_weight_denom;
++        table->chroma_offset_l1[i][0] = sh->chroma_offset_l1[i][0];
++        table->chroma_offset_l1[i][1] = sh->chroma_offset_l1[i][1];
++    }
++}
++
++static unsigned int get_ref_pic_index(const HEVCFrame *frame, const struct v4l2_hevc_dpb_entry *const entries,
++                                      const unsigned int num_entries)
++{
++    uint64_t timestamp;
++    if (!frame)
++        return 0;
++    timestamp = pic_number(frame);
++    for (unsigned int i = 0; i < num_entries; i++)
++        if (entries[i].timestamp == timestamp)
++            return i;
++    return 0;
++}
++
++/* the slice data's position in the raw NAL unit, from the bit count in
++   the unescaped one (emulation prevention bytes skipped) */
++static const uint8_t *ptr_from_index(const uint8_t *b, unsigned int idx)
++{
++    unsigned int z = 0;
++    while (idx--) {
++        if (*b++ == 0) {
++            ++z;
++            if (z >= 2 && *b == 3) {
++                ++b;
++                z = 0;
++            }
++        } else {
++            z = 0;
++        }
++    }
++    return b;
++}
++
++static unsigned int fill_dpb_entries(const HEVCContext *const h, struct v4l2_hevc_dpb_entry *const entries)
++{
++    unsigned int n = 0;
++    const HEVCFrame *const pic = h->ref;
++
++    for (unsigned i = 0; i < FF_ARRAY_ELEMS(h->DPB); i++) {
++        const HEVCFrame *const frame = &h->DPB[i];
++        if (frame != pic && (frame->flags & (HEVC_FRAME_FLAG_LONG_REF | HEVC_FRAME_FLAG_SHORT_REF))) {
++            struct v4l2_hevc_dpb_entry *const entry = entries + n++;
++            entry->timestamp = pic_number(frame);
++            entry->flags = (frame->flags & HEVC_FRAME_FLAG_LONG_REF) == 0 ? 0 : V4L2_HEVC_DPB_ENTRY_LONG_TERM_REFERENCE;
++            entry->field_pic = frame->frame->interlaced_frame;
++            entry->pic_order_cnt_val = frame->poc;
++        }
++    }
++    return n;
++}
++
++static void fill_slice_params(const HEVCContext *const h, const struct v4l2_ctrl_hevc_decode_params *const dec,
++                              struct v4l2_ctrl_hevc_slice_params *slice_params, uint32_t bit_size,
++                              uint32_t bit_offset)
++{
++    const SliceHeader *const sh = &h->sh;
++    const struct v4l2_hevc_dpb_entry *const dpb = dec->dpb;
++    const unsigned int dpb_n = dec->num_active_dpb_entries;
++    const RefPicList *rpl;
++
++    *slice_params = (struct v4l2_ctrl_hevc_slice_params) {
++        .bit_size = bit_size,
++        .data_byte_offset = bit_offset / 8 + 1,
++        .slice_segment_addr = sh->slice_segment_addr,
++        .nal_unit_type = h->nal_unit_type,
++        .nuh_temporal_id_plus1 = h->temporal_id + 1,
++        .slice_type = sh->slice_type,
++        .colour_plane_id = sh->colour_plane_id,
++        .slice_pic_order_cnt = h->ref->poc,
++        .num_ref_idx_l0_active_minus1 = sh->nb_refs[L0] ? sh->nb_refs[L0] - 1 : 0,
++        .num_ref_idx_l1_active_minus1 = sh->nb_refs[L1] ? sh->nb_refs[L1] - 1 : 0,
++        .collocated_ref_idx = sh->slice_temporal_mvp_enabled_flag ? sh->collocated_ref_idx : 0,
++        .five_minus_max_num_merge_cand = sh->slice_type == HEVC_SLICE_I ? 0 : 5 - sh->max_num_merge_cand,
++        .slice_qp_delta = sh->slice_qp_delta,
++        .slice_cb_qp_offset = sh->slice_cb_qp_offset,
++        .slice_cr_qp_offset = sh->slice_cr_qp_offset,
++        .slice_act_y_qp_offset = 0,
++        .slice_act_cb_qp_offset = 0,
++        .slice_act_cr_qp_offset = 0,
++        .slice_beta_offset_div2 = sh->beta_offset / 2,
++        .slice_tc_offset_div2 = sh->tc_offset / 2,
++        .pic_struct = h->sei.picture_timing.picture_struct,
++    };
++
++    if (sh->slice_sample_adaptive_offset_flag[0])
++        slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_SAO_LUMA;
++    if (sh->slice_sample_adaptive_offset_flag[1])
++        slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_SAO_CHROMA;
++    if (sh->slice_temporal_mvp_enabled_flag)
++        slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_TEMPORAL_MVP_ENABLED;
++    if (sh->mvd_l1_zero_flag)
++        slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_MVD_L1_ZERO;
++    if (sh->cabac_init_flag)
++        slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_CABAC_INIT;
++    if (sh->collocated_list == L0)
++        slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_COLLOCATED_FROM_L0;
++    if (sh->disable_deblocking_filter_flag)
++        slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_DEBLOCKING_FILTER_DISABLED;
++    if (sh->slice_loop_filter_across_slices_enabled_flag)
++        slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_SLICE_LOOP_FILTER_ACROSS_SLICES_ENABLED;
++    if (sh->dependent_slice_segment_flag)
++        slice_params->flags |= V4L2_HEVC_SLICE_PARAMS_FLAG_DEPENDENT_SLICE_SEGMENT;
++
++    if (sh->slice_type != HEVC_SLICE_I) {
++        rpl = &h->ref->refPicList[0];
++        for (int i = 0; i < rpl->nb_refs; i++)
++            slice_params->ref_idx_l0[i] = get_ref_pic_index(rpl->ref[i], dpb, dpb_n);
++    }
++    if (sh->slice_type == HEVC_SLICE_B) {
++        rpl = &h->ref->refPicList[1];
++        for (int i = 0; i < rpl->nb_refs; i++)
++            slice_params->ref_idx_l1[i] = get_ref_pic_index(rpl->ref[i], dpb, dpb_n);
++    }
++
++    fill_pred_table(h, &slice_params->pred_weight_table);
++    slice_params->num_entry_point_offsets = sh->num_entry_point_offsets;
++}
++
++static void fill_decode_params(const HEVCContext *const h, struct v4l2_ctrl_hevc_decode_params *const dec)
++{
++    *dec = (struct v4l2_ctrl_hevc_decode_params) {
++        .pic_order_cnt_val = h->poc,
++        .num_poc_st_curr_before = h->rps[ST_CURR_BEF].nb_refs,
++        .num_poc_st_curr_after = h->rps[ST_CURR_AFT].nb_refs,
++        .num_poc_lt_curr = h->rps[LT_CURR].nb_refs,
++    };
++
++    dec->num_active_dpb_entries = fill_dpb_entries(h, dec->dpb);
++
++    for (int i = 0; i != h->rps[ST_CURR_BEF].nb_refs; ++i)
++        dec->poc_st_curr_before[i] = h->rps[ST_CURR_BEF].ref[i]->poc;
++    for (int i = 0; i != h->rps[ST_CURR_AFT].nb_refs; ++i)
++        dec->poc_st_curr_after[i] = h->rps[ST_CURR_AFT].ref[i]->poc;
++    for (int i = 0; i != h->rps[LT_CURR].nb_refs; ++i)
++        dec->poc_lt_curr[i] = h->rps[LT_CURR].ref[i]->poc;
++
++    if (IS_IRAP(h))
++        dec->flags |= V4L2_HEVC_DECODE_PARAM_FLAG_IRAP_PIC;
++    if (IS_IDR(h))
++        dec->flags |= V4L2_HEVC_DECODE_PARAM_FLAG_IDR_PIC;
++    if (h->sh.no_output_of_prior_pics_flag)
++        dec->flags |= V4L2_HEVC_DECODE_PARAM_FLAG_NO_OUTPUT_OF_PRIOR;
++}
++
++static void fill_sps(struct v4l2_ctrl_hevc_sps *ctrl, const HEVCSPS *sps)
++{
++    *ctrl = (struct v4l2_ctrl_hevc_sps) {
++        .chroma_format_idc = sps->chroma_format_idc,
++        .pic_width_in_luma_samples = sps->width,
++        .pic_height_in_luma_samples = sps->height,
++        .bit_depth_luma_minus8 = sps->bit_depth - 8,
++        .bit_depth_chroma_minus8 = sps->bit_depth - 8,
++        .log2_max_pic_order_cnt_lsb_minus4 = sps->log2_max_poc_lsb - 4,
++        .sps_max_dec_pic_buffering_minus1 = sps->temporal_layer[sps->max_sub_layers - 1].max_dec_pic_buffering - 1,
++        .sps_max_num_reorder_pics = sps->temporal_layer[sps->max_sub_layers - 1].num_reorder_pics,
++        .sps_max_latency_increase_plus1 = sps->temporal_layer[sps->max_sub_layers - 1].max_latency_increase + 1,
++        .log2_min_luma_coding_block_size_minus3 = sps->log2_min_cb_size - 3,
++        .log2_diff_max_min_luma_coding_block_size = sps->log2_diff_max_min_coding_block_size,
++        .log2_min_luma_transform_block_size_minus2 = sps->log2_min_tb_size - 2,
++        .log2_diff_max_min_luma_transform_block_size = sps->log2_max_trafo_size - sps->log2_min_tb_size,
++        .max_transform_hierarchy_depth_inter = sps->max_transform_hierarchy_depth_inter,
++        .max_transform_hierarchy_depth_intra = sps->max_transform_hierarchy_depth_intra,
++        .pcm_sample_bit_depth_luma_minus1 = sps->pcm.bit_depth - 1,
++        .pcm_sample_bit_depth_chroma_minus1 = sps->pcm.bit_depth_chroma - 1,
++        .log2_min_pcm_luma_coding_block_size_minus3 = sps->pcm.log2_min_pcm_cb_size - 3,
++        .log2_diff_max_min_pcm_luma_coding_block_size = sps->pcm.log2_max_pcm_cb_size - sps->pcm.log2_min_pcm_cb_size,
++        .num_short_term_ref_pic_sets = sps->nb_st_rps,
++        .num_long_term_ref_pics_sps = sps->num_long_term_ref_pics_sps,
++        .sps_max_sub_layers_minus1 = sps->max_sub_layers - 1,
++    };
++
++    if (sps->separate_colour_plane_flag)
++        ctrl->flags |= V4L2_HEVC_SPS_FLAG_SEPARATE_COLOUR_PLANE;
++    if (sps->scaling_list_enable_flag)
++        ctrl->flags |= V4L2_HEVC_SPS_FLAG_SCALING_LIST_ENABLED;
++    if (sps->amp_enabled_flag)
++        ctrl->flags |= V4L2_HEVC_SPS_FLAG_AMP_ENABLED;
++    if (sps->sao_enabled)
++        ctrl->flags |= V4L2_HEVC_SPS_FLAG_SAMPLE_ADAPTIVE_OFFSET;
++    if (sps->pcm_enabled_flag)
++        ctrl->flags |= V4L2_HEVC_SPS_FLAG_PCM_ENABLED;
++    if (sps->pcm.loop_filter_disable_flag)
++        ctrl->flags |= V4L2_HEVC_SPS_FLAG_PCM_LOOP_FILTER_DISABLED;
++    if (sps->long_term_ref_pics_present_flag)
++        ctrl->flags |= V4L2_HEVC_SPS_FLAG_LONG_TERM_REF_PICS_PRESENT;
++    if (sps->sps_temporal_mvp_enabled_flag)
++        ctrl->flags |= V4L2_HEVC_SPS_FLAG_SPS_TEMPORAL_MVP_ENABLED;
++    if (sps->sps_strong_intra_smoothing_enable_flag)
++        ctrl->flags |= V4L2_HEVC_SPS_FLAG_STRONG_INTRA_SMOOTHING_ENABLED;
++}
++
++static void fill_scaling_matrix(const ScalingList *const sl, struct v4l2_ctrl_hevc_scaling_matrix *const sm)
++{
++    for (unsigned i = 0; i < 6; i++) {
++        for (unsigned j = 0; j < 16; j++)
++            sm->scaling_list_4x4[i][j] = sl->sl[0][i][j];
++        for (unsigned j = 0; j < 64; j++) {
++            sm->scaling_list_8x8[i][j] = sl->sl[1][i][j];
++            sm->scaling_list_16x16[i][j] = sl->sl[2][i][j];
++            if (i < 2)
++                sm->scaling_list_32x32[i][j] = sl->sl[3][i * 3][j];
++        }
++        sm->scaling_list_dc_coef_16x16[i] = sl->sl_dc[0][i];
++        if (i < 2)
++            sm->scaling_list_dc_coef_32x32[i] = sl->sl_dc[1][i * 3];
++    }
++}
++
++static void fill_pps(struct v4l2_ctrl_hevc_pps *const ctrl, const HEVCPPS *const pps)
++{
++    uint64_t flags = 0;
++
++    if (pps->dependent_slice_segments_enabled_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_DEPENDENT_SLICE_SEGMENT_ENABLED;
++    if (pps->output_flag_present_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_OUTPUT_FLAG_PRESENT;
++    if (pps->sign_data_hiding_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_SIGN_DATA_HIDING_ENABLED;
++    if (pps->cabac_init_present_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_CABAC_INIT_PRESENT;
++    if (pps->constrained_intra_pred_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_CONSTRAINED_INTRA_PRED;
++    if (pps->transform_skip_enabled_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_TRANSFORM_SKIP_ENABLED;
++    if (pps->cu_qp_delta_enabled_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_CU_QP_DELTA_ENABLED;
++    if (pps->pic_slice_level_chroma_qp_offsets_present_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_PPS_SLICE_CHROMA_QP_OFFSETS_PRESENT;
++    if (pps->weighted_pred_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_WEIGHTED_PRED;
++    if (pps->weighted_bipred_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_WEIGHTED_BIPRED;
++    if (pps->transquant_bypass_enable_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_TRANSQUANT_BYPASS_ENABLED;
++    if (pps->tiles_enabled_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_TILES_ENABLED;
++    if (pps->entropy_coding_sync_enabled_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_ENTROPY_CODING_SYNC_ENABLED;
++    if (pps->loop_filter_across_tiles_enabled_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_LOOP_FILTER_ACROSS_TILES_ENABLED;
++    if (pps->seq_loop_filter_across_slices_enabled_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_PPS_LOOP_FILTER_ACROSS_SLICES_ENABLED;
++    if (pps->deblocking_filter_override_enabled_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_DEBLOCKING_FILTER_OVERRIDE_ENABLED;
++    if (pps->disable_dbf)
++        flags |= V4L2_HEVC_PPS_FLAG_PPS_DISABLE_DEBLOCKING_FILTER;
++    if (pps->lists_modification_present_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_LISTS_MODIFICATION_PRESENT;
++    if (pps->slice_header_extension_present_flag)
++        flags |= V4L2_HEVC_PPS_FLAG_SLICE_SEGMENT_HEADER_EXTENSION_PRESENT;
++
++    *ctrl = (struct v4l2_ctrl_hevc_pps) {
++        .num_extra_slice_header_bits = pps->num_extra_slice_header_bits,
++        .init_qp_minus26 = pps->pic_init_qp_minus26,
++        .diff_cu_qp_delta_depth = pps->diff_cu_qp_delta_depth,
++        .pps_cb_qp_offset = pps->cb_qp_offset,
++        .pps_cr_qp_offset = pps->cr_qp_offset,
++        .pps_beta_offset_div2 = pps->beta_offset / 2,
++        .pps_tc_offset_div2 = pps->tc_offset / 2,
++        .log2_parallel_merge_level_minus2 = pps->log2_parallel_merge_level - 2,
++        .flags = flags
++    };
++
++    if (pps->tiles_enabled_flag) {
++        ctrl->num_tile_columns_minus1 = pps->num_tile_columns - 1;
++        ctrl->num_tile_rows_minus1 = pps->num_tile_rows - 1;
++        for (int i = 0; i < pps->num_tile_columns; i++)
++            ctrl->column_width_minus1[i] = pps->column_width[i] - 1;
++        for (int i = 0; i < pps->num_tile_rows; i++)
++            ctrl->row_height_minus1[i] = pps->row_height[i] - 1;
++    }
++}
++
++/* ---- the hwaccel ---- */
++
++static int hwaccel_init(AVCodecContext *inner)
++{
++    HWDecContext *w = ours(inner);
++    const HEVCContext *h = inner->priv_data;
++    const HEVCSPS *sps = h->ps.sps;
++    if (!w) return AVERROR(ENOSYS);         /* (only inside the hevc_hwdec decoder) */
++    if (!sps || sps->chroma_format_idc != 1 || (sps->bit_depth != 8 && sps->bit_depth != 10)) return AVERROR(ENOSYS);
++    return ensure_open(w, sps->width, sps->height, sps->bit_depth);
++}
++
++static void pool_release(void *opaque, uint8_t *data)
++{
++    PoolEntry *e = (PoolEntry *)data;
++    (void)opaque;
++    e->in_use = 0;
++}
++
++/* a frame for a picture: one of hevcdec's, as data[3] */
++static int hwaccel_alloc_frame(AVCodecContext *inner, AVFrame *frame)
++{
++    HWDecContext *w = ours(inner);
++    PoolEntry *e = NULL;
++    int i;
++    if (!w || !w->d) return AVERROR(ENOSYS);
++    for (i = 0; i < w->npool && !e; i++)
++        if (!w->pool[i].in_use) e = &w->pool[i];
++    if (!e) {
++        if (w->npool == MAX_POOL) {
++            av_log(w->avctx, AV_LOG_ERROR, "All %d of hevcdec's frames are in use\n", MAX_POOL);
++            return AVERROR(ENOMEM);
++        }
++        e = &w->pool[w->npool];
++        if (!(e->f = hevcdec_frame_new(w->d))) {
++            av_log(w->avctx, AV_LOG_ERROR, "No frame: %s\n", hevcdec_error(w->d));
++            return AVERROR(ENOMEM);
++        }
++        e->w = w;
++        w->npool++;
++    }
++    frame->buf[0] = av_buffer_create((uint8_t *)e, sizeof(*e), pool_release, NULL, 0);
++    if (!frame->buf[0]) return AVERROR(ENOMEM);
++    e->in_use = 1;
++    e->failed = 0;
++    frame->data[3] = (uint8_t *)e->f;
++    /* (ff_get_buffer leaves this to an alloc_frame: the decoder's own
++       data for the frame, which it expects every frame to have) */
++    return ff_attach_decode_data(frame);
++}
++
++static PoolEntry *entry_of(HWDecContext *w, const hevcdec_frame *f)
++{
++    for (int i = 0; i < w->npool; i++)
++        if (w->pool[i].f == f) return &w->pool[i];
++    return NULL;
++}
++
++static int hwaccel_start_frame(AVCodecContext *inner, const uint8_t *buf, uint32_t size)
++{
++    HWDecContext *w = ours(inner);
++    const HEVCContext *h = inner->priv_data;
++    HWDecPicture *p = h->ref->hwaccel_picture_private;
++    (void)buf; (void)size;
++    p->number = ++w->number;
++    fill_decode_params(h, &w->dec);
++    w->nsl = 0;
++    w->in_picture = 1;
++    return 0;
++}
++
++/* a slice, parsed up to its data: buf/size the raw NAL unit (kept by
++   FFmpeg until the picture ends) */
++static int hwaccel_decode_slice(AVCodecContext *inner, const uint8_t *buf, uint32_t size)
++{
++    HWDecContext *w = ours(inner);
++    const HEVCContext *h = inner->priv_data;
++    int bcount = get_bits_count(&h->HEVClc->gb);
++    uint32_t boff;
++    if (!w->in_picture) return AVERROR_INVALIDDATA;
++    if (w->nsl == w->cap) {
++        unsigned cap = w->cap ? w->cap * 2 : 16;
++        void *a = av_realloc_array(w->sp, cap, sizeof(*w->sp)), *b;
++        if (!a) return AVERROR(ENOMEM);
++        w->sp = a;
++        if (!(b = av_realloc_array(w->sl, cap, sizeof(*w->sl)))) return AVERROR(ENOMEM);
++        w->sl = b;
++        w->cap = cap;
++    }
++    boff = (uint32_t)(ptr_from_index(buf, bcount / 8 + 1) - (buf + bcount / 8 + 1)) * 8 + bcount;
++    fill_slice_params(h, &w->dec, &w->sp[w->nsl], size * 8, boff);
++    w->sl[w->nsl].data = buf;
++    w->sl[w->nsl].size = size;
++    w->nsl++;
++    return 0;
++}
++
++/* the picture's slices all there: to the block */
++static int hwaccel_end_frame(AVCodecContext *inner)
++{
++    HWDecContext *w = ours(inner);
++    const HEVCContext *h = inner->priv_data;
++    const HEVCSPS *s = h->ps.sps;
++    const ScalingList *scl;
++    struct v4l2_ctrl_hevc_sps sps;
++    struct v4l2_ctrl_hevc_pps pps;
++    struct v4l2_ctrl_hevc_scaling_matrix sm;
++    hevcdec_picture pic;
++    int r;
++    if (!w->in_picture || !w->nsl) return 0;
++    w->in_picture = 0;
++    scl = h->ps.pps->scaling_list_data_present_flag ? &h->ps.pps->scaling_list :
++          s->scaling_list_enable_flag ? &s->scaling_list : NULL;
++    memset(&sps, 0, sizeof(sps)); memset(&pps, 0, sizeof(pps)); memset(&sm, 0, sizeof(sm));
++    fill_sps(&sps, s);
++    fill_pps(&pps, h->ps.pps);
++    if (scl) fill_scaling_matrix(scl, &sm);
++    for (unsigned i = 0; i < w->nsl; i++) w->sl[i].params = &w->sp[i];
++    pic.sps = &sps;
++    pic.pps = &pps;
++    pic.dec = &w->dec;
++    pic.scaling = scl ? &sm : NULL;
++    pic.nslices = w->nsl;
++    pic.slices = w->sl;
++    r = hevcdec_decode(w->d, &pic, (hevcdec_frame *)h->ref->frame->data[3],
++                       ((const HWDecPicture *)h->ref->hwaccel_picture_private)->number);
++    if (r == HEVCDEC_UNSUPPORTED) {
++        av_log(w->avctx, AV_LOG_ERROR, "Not for the HEVC block: %s\n", hevcdec_error(w->d));
++        w->refused = 1;
++        return AVERROR(ENOSYS);
++    }
++    if (r != HEVCDEC_OK) {
++        PoolEntry *e = entry_of(w, (const hevcdec_frame *)h->ref->frame->data[3]);
++        if (e) e->failed = 1;
++        if (w->failures++ < 10) av_log(w->avctx, AV_LOG_ERROR, "Picture %"PRIu64": %s\n", w->number, hevcdec_error(w->d));
++        return AVERROR_EXTERNAL;
++    }
++    return 0;
++}
++
++const AVHWAccel ff_hevc_hwdec_hwaccel = {
++    .name                 = "hevc_hwdec",
++    .type                 = AVMEDIA_TYPE_VIDEO,
++    .id                   = AV_CODEC_ID_HEVC,
++    .pix_fmt              = AV_PIX_FMT_HEVCDEC,
++    .alloc_frame          = hwaccel_alloc_frame,
++    .start_frame          = hwaccel_start_frame,
++    .decode_slice         = hwaccel_decode_slice,
++    .end_frame            = hwaccel_end_frame,
++    .frame_priv_data_size = sizeof(HWDecPicture),
++    .init                 = hwaccel_init,
++};
++
++/* ---- the decoder ---- */
++
++/* the inner decoder's choice: the block, or nothing (a stream it can't
++   take: refused, not decoded in software behind the caller's back) */
++static enum AVPixelFormat inner_get_format(AVCodecContext *inner, const enum AVPixelFormat *fmts)
++{
++    HWDecContext *w = ours(inner);
++    const enum AVPixelFormat *f;
++    for (f = fmts; *f != AV_PIX_FMT_NONE; f++)
++        if (*f == AV_PIX_FMT_HEVCDEC) return *f;
++    if (w && !w->refused) {
++        const char *name = f > fmts ? av_get_pix_fmt_name(f[-1]) : "?";
++        av_log(w->avctx, AV_LOG_ERROR, "Not for the HEVC block: %s (8-bit or 10-bit 4:2:0 only, up to 4096x4096)\n",
++               name ? name : "?");
++        w->refused = 1;
++    }
++    return AV_PIX_FMT_NONE;
++}
++
++static av_cold int hwdec_close(AVCodecContext *avctx)
++{
++    HWDecContext *w = avctx->priv_data;
++    av_frame_free(&w->hwf);
++    av_frame_free(&w->held);
++    av_packet_free(&w->pkt);
++    avcodec_free_context(&w->inner);         /* (its frames, and so hevcdec's, let go of) */
++    if (w->d) hevcdec_close(w->d);
++    w->d = NULL;
++    av_freep(&w->sp);
++    av_freep(&w->sl);
++    return 0;
++}
++
++static av_cold int hwdec_init(AVCodecContext *avctx)
++{
++    HWDecContext *w = avctx->priv_data;
++    int ret, maxw = 0, maxh = 0, depth = 0;
++    w->magic = MAGIC;
++    w->avctx = avctx;
++    if (!(w->pkt = av_packet_alloc()) || !(w->hwf = av_frame_alloc()) || !(w->held = av_frame_alloc()))
++        return AVERROR(ENOMEM);
++    if (!(w->inner = avcodec_alloc_context3(&ff_hevc_decoder.p))) return AVERROR(ENOMEM);
++    if (avctx->extradata_size > 0) {
++        w->inner->extradata = av_mallocz(avctx->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
++        if (!w->inner->extradata) return AVERROR(ENOMEM);
++        memcpy(w->inner->extradata, avctx->extradata, avctx->extradata_size);
++        w->inner->extradata_size = avctx->extradata_size;
++    }
++    w->inner->opaque = w;
++    w->inner->get_format = inner_get_format;
++    w->inner->thread_count = 1;
++    w->inner->pkt_timebase = avctx->pkt_timebase;
++    w->inner->err_recognition = avctx->err_recognition;
++    w->inner->flags = avctx->flags;
++    w->inner->flags2 = avctx->flags2;
++    w->inner->width = avctx->width;
++    w->inner->height = avctx->height;
++    if ((ret = avcodec_open2(w->inner, &ff_hevc_decoder.p, NULL)) < 0) return ret;
++    {                                        /* the SPSs in the extradata: refused now if not the block's */
++        const HEVCContext *h = w->inner->priv_data;
++        for (int i = 0; i < FF_ARRAY_ELEMS(h->ps.sps_list); i++) {
++            const HEVCSPS *sps;
++            if (!h->ps.sps_list[i]) continue;
++            sps = (const HEVCSPS *)h->ps.sps_list[i]->data;
++            if (sps->chroma_format_idc != 1 || (sps->bit_depth != 8 && sps->bit_depth != 10)) {
++                av_log(avctx, AV_LOG_ERROR, "Not for the HEVC block: %d-bit, chroma format %d (8-bit or 10-bit 4:2:0 "
++                       "only)\n", sps->bit_depth, sps->chroma_format_idc);
++                return AVERROR(ENOSYS);
++            }
++            maxw = FFMAX(maxw, sps->width);
++            maxh = FFMAX(maxh, sps->height);
++            if (!depth) depth = sps->bit_depth;      /* (the first: another one opens again at its first picture) */
++        }
++    }
++    if (maxw && (ret = ensure_open(w, maxw, maxh, depth)) < 0) return ret;
++    avctx->pix_fmt = depth == 10 && !w->output_8bit ? AV_PIX_FMT_YUV420P10 : AV_PIX_FMT_YUV420P;
++    return 0;
++}
++
++/* an inner frame (the block's picture) out as an ordinary YUV420P one
++   (YUV420P10 for a 10-bit stream, unless output_8bit) */
++static int give_out(AVCodecContext *avctx, AVFrame *frame, AVFrame *hwf)
++{
++    HWDecContext *w = avctx->priv_data;
++    hevcdec_frame *f = (hevcdec_frame *)hwf->data[3];
++    int x = (int)hwf->crop_left, y = (int)hwf->crop_top;
++    int width = hwf->width - x, height = hwf->height - y, ret, failed;
++    int sixteen = w->d_depth == 10 && !w->output_8bit;
++    PoolEntry *e = entry_of(w, f);
++    failed = hevcdec_frame_wait(w->d, f) != HEVCDEC_OK || (e && e->failed);
++    if (failed && w->failures++ < 10) av_log(avctx, AV_LOG_ERROR, "A picture: %s\n", hevcdec_error(w->d));
++    if ((ret = ff_set_dimensions(avctx, width, height)) < 0) return ret;
++    avctx->pix_fmt = sixteen ? AV_PIX_FMT_YUV420P10 : AV_PIX_FMT_YUV420P;
++    avctx->sample_aspect_ratio = w->inner->sample_aspect_ratio;
++    avctx->color_range = w->inner->color_range;
++    avctx->color_primaries = w->inner->color_primaries;
++    avctx->color_trc = w->inner->color_trc;
++    avctx->colorspace = w->inner->colorspace;
++    avctx->chroma_sample_location = w->inner->chroma_sample_location;
++    if ((ret = ff_get_buffer(avctx, frame, 0)) < 0) return ret;
++    if ((ret = av_frame_copy_props(frame, hwf)) < 0) return ret;
++    frame->crop_left = frame->crop_top = frame->crop_right = frame->crop_bottom = 0;   /* (already the window) */
++    if (sixteen) {
++        uint16_t *p16[3] = { (uint16_t *)frame->data[0], (uint16_t *)frame->data[1], (uint16_t *)frame->data[2] };
++        hevcdec_frame_to_i420_16(w->d, f, p16, frame->linesize, x, y, width, height);
++    } else {
++        hevcdec_frame_to_i420(w->d, f, frame->data, frame->linesize, x, y, width, height);
++    }
++    if (failed) frame->decode_error_flags |= FF_DECODE_ERROR_INVALID_BITSTREAM;
++    av_frame_unref(hwf);
++    return 0;
++}
++
++static int hwdec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
++{
++    HWDecContext *w = avctx->priv_data;
++    int ret;
++    for (;;) {
++        if (w->refused) {                    /* (the input still taken, so the caller isn't stuck) */
++            ret = ff_decode_get_packet(avctx, w->pkt);
++            av_packet_unref(w->pkt);
++            return ret == AVERROR_EOF ? AVERROR_EOF : AVERROR(ENOSYS);
++        }
++        ret = avcodec_receive_frame(w->inner, w->hwf);
++        if (ret >= 0) {
++            if (w->hwf->format != AV_PIX_FMT_HEVCDEC) {          /* (can't be: refused) */
++                av_frame_unref(w->hwf);
++                return AVERROR(ENOSYS);
++            }
++            if (!w->pipelined) return give_out(avctx, frame, w->hwf);
++            /* pipelined: each picture given out one later, so the next is
++               already with the block (without B pictures FFmpeg hands each
++               out as soon as it's decoded, and converting it at once would
++               leave the block idle while the program waits for it) */
++            if (!w->held->buf[0]) { av_frame_move_ref(w->held, w->hwf); continue; }
++            ret = give_out(avctx, frame, w->held);
++            av_frame_unref(w->held);                             /* (also if it failed) */
++            av_frame_move_ref(w->held, w->hwf);
++            return ret;
++        }
++        if (ret == AVERROR_EOF) {
++            if (!w->held->buf[0]) return AVERROR_EOF;
++            ret = give_out(avctx, frame, w->held);
++            av_frame_unref(w->held);
++            return ret;
++        }
++        if (w->refused) return AVERROR(ENOSYS);
++        if (ret == AVERROR_INVALIDDATA || ret == AVERROR_EXTERNAL) continue;   /* (a damaged picture: on) */
++        if (ret != AVERROR(EAGAIN)) return ret;
++        if (w->eof_sent) return AVERROR_EOF;
++        ret = ff_decode_get_packet(avctx, w->pkt);
++        if (ret == AVERROR_EOF) {
++            w->eof_sent = 1;
++            ret = avcodec_send_packet(w->inner, NULL);
++        } else if (ret < 0) {
++            return ret;
++        } else {
++            ret = avcodec_send_packet(w->inner, w->pkt);
++            av_packet_unref(w->pkt);
++        }
++        if (ret < 0 && ret != AVERROR(EAGAIN)) {
++            if (w->refused) return AVERROR(ENOSYS);
++            if (ret == AVERROR_INVALIDDATA || ret == AVERROR_EXTERNAL) continue;   /* (a damaged picture: on) */
++            return ret;
++        }
++    }
++}
++
++static void hwdec_flush(AVCodecContext *avctx)
++{
++    HWDecContext *w = avctx->priv_data;
++    av_frame_unref(w->held);
++    avcodec_flush_buffers(w->inner);
++    av_frame_unref(w->hwf);
++    w->eof_sent = 0;
++}
++
++#define OFFSET(x) offsetof(HWDecContext, x)
++#define VD AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_DECODING_PARAM
++static const AVOption options[] = {
++    { "pipelined", "give pictures to the block without waiting for each", OFFSET(pipelined), AV_OPT_TYPE_BOOL,
++      { .i64 = 1 }, 0, 1, VD },
++    { "cached_frames", "the block's frames cacheable (much quicker to convert)", OFFSET(cached_frames),
++      AV_OPT_TYPE_BOOL, { .i64 = 1 }, 0, 1, VD },
++    { "output_8bit", "10-bit streams given out as 8-bit YUV420P (each sample's top 8 bits)", OFFSET(output_8bit),
++      AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, VD },
++    { NULL }
++};
++
++static const AVClass hwdec_class = {
++    .class_name = "hevc_hwdec",
++    .item_name  = av_default_item_name,
++    .option     = options,
++    .version    = LIBAVUTIL_VERSION_INT,
++};
++
++const FFCodec ff_hevc_hwdec_decoder = {
++    .p.name         = "hevc_hwdec",
++    .p.long_name    = NULL_IF_CONFIG_SMALL("HEVC on the Pi 4's HEVC block (RISC OS, hevcdec)"),
++    .p.type         = AVMEDIA_TYPE_VIDEO,
++    .p.id           = AV_CODEC_ID_HEVC,
++    .priv_data_size = sizeof(HWDecContext),
++    .init           = hwdec_init,
++    .close          = hwdec_close,
++    FF_CODEC_RECEIVE_FRAME_CB(hwdec_receive_frame),
++    .flush          = hwdec_flush,
++    .p.priv_class   = &hwdec_class,
++    .p.capabilities = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_AVOID_PROBING | AV_CODEC_CAP_HARDWARE,
++    .caps_internal  = FF_CODEC_CAP_SETS_PKT_DTS | FF_CODEC_CAP_INIT_CLEANUP,
++    .p.pix_fmts     = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUV420P10, AV_PIX_FMT_NONE },
++    .p.wrapper_name = "hevcdec",
++};
+diff --git a/libavcodec/hevcdec.c b/libavcodec/hevcdec.c
+index 84db60a..b97f9db 100644
+--- a/libavcodec/hevcdec.c
++++ b/libavcodec/hevcdec.c
+@@ -400,6 +400,7 @@ static int export_stream_params_from_sei(HEVCContext *s)
+ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
+ {
+ #define HWACCEL_MAX (CONFIG_HEVC_DXVA2_HWACCEL + \
++                     CONFIG_HEVC_HWDEC_HWACCEL + \
+                      CONFIG_HEVC_D3D11VA_HWACCEL * 2 + \
+                      CONFIG_HEVC_NVDEC_HWACCEL + \
+                      CONFIG_HEVC_VAAPI_HWACCEL + \
+@@ -410,6 +411,9 @@ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
+     switch (sps->pix_fmt) {
+     case AV_PIX_FMT_YUV420P:
+     case AV_PIX_FMT_YUVJ420P:
++#if CONFIG_HEVC_HWDEC_HWACCEL
++        *fmt++ = AV_PIX_FMT_HEVCDEC;
++#endif
+ #if CONFIG_HEVC_DXVA2_HWACCEL
+         *fmt++ = AV_PIX_FMT_DXVA2_VLD;
+ #endif
+@@ -431,6 +435,9 @@ static enum AVPixelFormat get_format(HEVCContext *s, const HEVCSPS *sps)
+ #endif
+         break;
+     case AV_PIX_FMT_YUV420P10:
++#if CONFIG_HEVC_HWDEC_HWACCEL
++        *fmt++ = AV_PIX_FMT_HEVCDEC;
++#endif
+ #if CONFIG_HEVC_DXVA2_HWACCEL
+         *fmt++ = AV_PIX_FMT_DXVA2_VLD;
+ #endif
+@@ -3912,6 +3919,9 @@ const FFCodec ff_hevc_decoder = {
+ #endif
+ #if CONFIG_HEVC_VIDEOTOOLBOX_HWACCEL
+                                HWACCEL_VIDEOTOOLBOX(hevc),
++#endif
++#if CONFIG_HEVC_HWDEC_HWACCEL
++                               HW_CONFIG_HWACCEL(0, 0, 1, HEVCDEC, NONE, ff_hevc_hwdec_hwaccel),
+ #endif
+                                NULL
+                            },
+diff --git a/libavcodec/hwaccels.h b/libavcodec/hwaccels.h
+index aca5583..cf98baa 100644
+--- a/libavcodec/hwaccels.h
++++ b/libavcodec/hwaccels.h
+@@ -40,6 +40,7 @@ extern const AVHWAccel ff_hevc_d3d11va_hwaccel;
+ extern const AVHWAccel ff_hevc_d3d11va2_hwaccel;
+ extern const AVHWAccel ff_hevc_dxva2_hwaccel;
+ extern const AVHWAccel ff_hevc_nvdec_hwaccel;
++extern const AVHWAccel ff_hevc_hwdec_hwaccel;
+ extern const AVHWAccel ff_hevc_vaapi_hwaccel;
+ extern const AVHWAccel ff_hevc_vdpau_hwaccel;
+ extern const AVHWAccel ff_hevc_videotoolbox_hwaccel;
+diff --git a/libavutil/pixdesc.c b/libavutil/pixdesc.c
+index 6e57a82..ee98f06 100644
+--- a/libavutil/pixdesc.c
++++ b/libavutil/pixdesc.c
+@@ -2491,6 +2491,10 @@ static const AVPixFmtDescriptor av_pix_fmt_descriptors[AV_PIX_FMT_NB] = {
+         },
+         .flags = AV_PIX_FMT_FLAG_PLANAR,
+     },
++    [AV_PIX_FMT_HEVCDEC] = {
++        .name = "hevcdec",
++        .flags = AV_PIX_FMT_FLAG_HWACCEL,
++    },
+ };
+ 
+ static const char * const color_range_names[] = {
+diff --git a/libavutil/pixfmt.h b/libavutil/pixfmt.h
+index 2d3927c..0cb0a88 100644
+--- a/libavutil/pixfmt.h
++++ b/libavutil/pixfmt.h
+@@ -367,6 +367,12 @@ enum AVPixelFormat {
+     AV_PIX_FMT_P416BE,      ///< interleaved chroma YUV 4:4:4, 48bpp, big-endian
+     AV_PIX_FMT_P416LE,      ///< interleaved chroma YUV 4:4:4, 48bpp, little-endian
+ 
++    /**
++     * A picture decoded by the Raspberry Pi 4's HEVC block on RISC OS
++     * (riscos-reelhwaccel's hevcdec): data[3] is its hevcdec_frame.
++     */
++    AV_PIX_FMT_HEVCDEC,
++
+     AV_PIX_FMT_NB         ///< number of pixel formats, DO NOT USE THIS if you want to link with shared libav* because the number of formats might differ between versions
+ };
+ 
+-- 
+2.43.0
+

@@ -194,6 +194,8 @@ struct ReelCore {
     int fast;                          /* fast decoding: no deblocking filter */
     int vc;                            /* the video decoded by the Pi's VideoCore (h264_vchiq) */
     int vc_failed;                     /* ... which failed part way: the ARM's decoder from here on */
+    int hb;                            /* the video decoded by the Pi 4's HEVC block (hevc_hwdec) */
+    int hb_failed;                     /* ... which failed or refused part way: the ARM's from here on */
     int vmore;                         /* the video decoder has frames not taken yet (the queue was full) */
     int64_t vc_drop;                   /* h264_vchiq's drop_before last set (INT64_MIN: off) */
     unsigned q_overflow;               /* pictures pushed out of a full queue (should never happen) */
@@ -739,12 +741,33 @@ static AVCodecContext *open_decoder(AVStream *st)
    riscos-reelhwaccel's vcdec), unless REELCORE_NO_VIDEOCORE. It refuses
    streams it can't take (High 10, 4:2:2, over 1920x1088, 1080p with
    gpu_mem under 128 MB, no VCHIQ), and builds without it don't have it:
-   then FFmpeg's own decoder on the ARM. */
+   then FFmpeg's own decoder on the ARM. For HEVC, the same with the Pi 4's
+   HEVC block (hevc_hwdec, riscos-reelhwaccel's hevcdec), unless
+   REELCORE_NO_HEVC_BLOCK: it refuses 4:2:2, 4:4:4, 12-bit, over 4096x4096
+   and machines without the block. */
 static AVCodecContext *open_video_decoder(ReelCore *v, AVStream *st)
 {
     AVCodecContext *c = NULL;
     const AVCodec *vc;
     v->vc = 0;
+    v->hb = 0;
+    if (st->codecpar->codec_id == AV_CODEC_ID_HEVC && !(v->flags & REELCORE_NO_HEVC_BLOCK) && !v->hb_failed &&
+        (vc = avcodec_find_decoder_by_name("hevc_hwdec")) != NULL) {
+        /* 10-bit comes out as 8-bit (each sample's top 8 bits) in the
+           block's one conversion: everything reelcore draws is 8-bit, and
+           10-bit then swscale would be two passes */
+        AVDictionary *opts = NULL;
+        av_dict_set_int(&opts, "output_8bit", 1, 0);
+        c = open_with_opts(st, vc, &opts);
+        av_dict_free(&opts);
+        if (c) {
+            v->hb = 1;
+            av_log(NULL, AV_LOG_INFO, "reelcore: HEVC decoded by the Pi 4's HEVC block (hevc_hwdec)\n");
+            return c;
+        }
+        av_log(NULL, AV_LOG_INFO, "reelcore: the HEVC block can't take this HEVC: decoding on the ARM\n");
+        return open_decoder(st);
+    }
     if (st->codecpar->codec_id == AV_CODEC_ID_H264 && !(v->flags & REELCORE_NO_VIDEOCORE) && !v->vc_failed &&
         (vc = avcodec_find_decoder_by_name("h264_vchiq")) != NULL) {
         /* Its frames are the VideoCore's own picture buffers (devkit 0.2.1,
@@ -1526,7 +1549,8 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     st->speed = v->speed;
     st->fast = v->fast;
     st->auto_fast = v->auto_fast && v->fast != REELCORE_FAST_ON;
-    st->decoder = v->vc ? REELCORE_DECODER_VIDEOCORE : v->vc_failed ? REELCORE_DECODER_ARM_AFTER : REELCORE_DECODER_ARM;
+    st->decoder = v->vc ? REELCORE_DECODER_VIDEOCORE : v->hb ? REELCORE_DECODER_HEVC_BLOCK :
+                  v->vc_failed || v->hb_failed ? REELCORE_DECODER_ARM_AFTER : REELCORE_DECODER_ARM;
     st->auto_fast_spells = v->auto_fast_spells;
     st->decode_avg = v->dec_avg;
     st->deinterlace = v->deint;
@@ -1629,9 +1653,11 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
             ADD("Frames\t%lld\n", (long long)st->nb_frames);
         if (v->vc)
             ADD("Decoder\tVideoCore (h264_vchiq)\n");
+        else if (v->hb)
+            ADD("Decoder\tHEVC block (hevc_hwdec)\n");
         else
             ADD("Decoder\t%s, 1 thread%s\n", v->vdec && v->vdec->codec ? v->vdec->codec->name : "?",
-                v->vc_failed ? " (the VideoCore failed part way)" : "");
+                v->vc_failed ? " (the VideoCore failed part way)" : v->hb_failed ? " (the HEVC block failed part way)" : "");
         if (v->vdec && v->vdec->has_b_frames)
             ADD("Reordering\t%d frame%s (B-frames)\n", v->vdec->has_b_frames, v->vdec->has_b_frames == 1 ? "" : "s");
     }
@@ -2276,8 +2302,15 @@ static int decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int vi
     if (!r && (ret >= 0 || ret == AVERROR_EOF || ret == AVERROR(EAGAIN)))
         r = receive_all(v, dec, video);
     if (r < 0 && video && v->vc && r == AVERROR_EXTERNAL && !v->vc_failed) {
-        v->vc_failed = 1;                  /* switched at the next update: see vc_fallback */
+        v->vc_failed = 1;                  /* switched at the next update: see hw_fallback */
         av_log(NULL, AV_LOG_WARNING, "reelcore: the VideoCore's decoder failed: decoding on the ARM from here\n");
+    }
+    /* hevc_hwdec: a raw stream it can't take is refused at its first
+       picture (ENOSYS), and so is a change of depth part way */
+    if (r < 0 && video && v->hb && (r == AVERROR_EXTERNAL || r == AVERROR(ENOSYS)) && !v->hb_failed) {
+        v->hb_failed = 1;
+        av_log(NULL, AV_LOG_WARNING, "reelcore: the HEVC block %s: decoding on the ARM from here\n",
+               r == AVERROR(ENOSYS) ? "can't take this HEVC" : "failed");
     }
     return 1;
 }
@@ -2363,7 +2396,8 @@ static void check_late(ReelCore *v)
         return;
     last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
     lag = clock_now(v) - last;
-    check_slow(v, lag);
+    if (!v->hb)
+        check_slow(v, lag);                /* (the block deblocks however long it takes: nothing to turn off) */
     want = lag > LATE_KEYS ? 2 : lag > LATE_SKIP ? (v->skipping > 1 ? 2 : 1) : lag < LATE_OK ? 0 : v->skipping;
     if (want != v->skipping) {
         if (want > v->skipping)
@@ -2511,22 +2545,24 @@ static void take_frame(ReelCore *v)
     v->qn--;
 }
 
-/* The VideoCore failed part way: FFmpeg's decoder on the ARM instead, from
-   where the picture is (a seek there: it flushes and refills) */
-static void vc_fallback(ReelCore *v)
+/* The VideoCore or the HEVC block failed part way: FFmpeg's decoder on the
+   ARM instead, from where the picture is (a seek there: it flushes and
+   refills) */
+static void hw_fallback(ReelCore *v)
 {
     AVCodecContext *c = open_decoder(v->fmt->streams[v->vs]);
     double at = reelcore_position(v);
+    const char *who = v->vc ? "the VideoCore" : "the HEVC block";
     if (!c) {
-        av_log(NULL, AV_LOG_ERROR, "reelcore: no ARM decoder to take over from the VideoCore\n");
-        v->vc = 0;
+        av_log(NULL, AV_LOG_ERROR, "reelcore: no ARM decoder to take over from %s\n", who);
+        v->vc = v->hb = 0;
         return;
     }
     avcodec_free_context(&v->vdec);
     v->vdec = c;
     v->vmore = 0;
-    v->vc = 0;
-    av_log(NULL, AV_LOG_INFO, "reelcore: h264 on the ARM from %.2f s\n", at);
+    v->vc = v->hb = 0;
+    av_log(NULL, AV_LOG_INFO, "reelcore: %s on the ARM from %.2f s\n", c->codec ? c->codec->name : "?", at);
     reelcore_seek(v, at);
 }
 
@@ -2553,8 +2589,8 @@ int reelcore_update(ReelCore *v)
         }
         return REELCORE_READY;
     }
-    if (v->vc && v->vc_failed)
-        vc_fallback(v);
+    if ((v->vc && v->vc_failed) || (v->hb && v->hb_failed))
+        hw_fallback(v);
     if (v->net) {
         int low;
         pthread_mutex_lock(&v->net->lock);

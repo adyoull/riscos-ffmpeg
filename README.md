@@ -192,6 +192,13 @@ for streams it can't take (High 10, 4:2:2, larger than 1080p) or if it
 fails part way. 1080p needs `gpu_mem=128` in `config.txt`. Its pictures
 reach Reel without being copied (zero-copy frames, since devkit 0.2.1).
 
+**HEVC on the Raspberry Pi 4's HEVC block** (Pi 4, 400 and CM4, up to
+4096x4096, 8-bit and 10-bit): FFmpeg has an `hevc_hwdec` decoder (patch
+0023, `-c:v hevc_hwdec`), and Reel and ReelEGL use it for HEVC by
+themselves, showing 10-bit in 8-bit (`output_8bit`), and falling back to
+the ARM for what it can't take (4:2:2, 4:4:4, 12-bit) or if it fails part
+way. `Reel$NoHEVCBlock` keeps to the ARM.
+
 The hardware side (vcdec, and HEVC on the Pi 4's HEVC block to come) is
 a separate project, **ReelHWAccel**:
 https://github.com/adyoull/riscos-reelhwaccel, whose devkit is in

@@ -43,13 +43,17 @@ after `-lavcodec`.
 `hevc_hwdec` is FFmpeg's own HEVC decoder with the block doing the
 decoding: FFmpeg parses the stream and keeps the reference pictures, the
 block decodes each picture, and the decoder gives ordinary YUV420P frames
+(YUV420P10 for 10-bit streams, devkit 0.2.5)
 (converted from the block's 128-byte column format), with their pts and
 cropping applied. Ask for it by name (`-c:v hevc_hwdec`, or
 `avcodec_find_decoder_by_name("hevc_hwdec")`).
 
-- **Refused with AVERROR(ENOSYS),** so the caller can open `hevc` instead: anything but 8-bit 4:2:0 (10-bit is still to come); over 4096x4096; a picture size that grows part way; machines without the block (not a Pi 4). Streams with their parameter sets in the extradata (MP4, MKV) are refused at open; raw streams at their first picture.
+- **Refused with AVERROR(ENOSYS),** so the caller can open `hevc` instead: anything but 8-bit or 10-bit 4:2:0 (4:2:2, 4:4:4, 12-bit); over 4096x4096; a picture size that grows, or a depth that changes, part way; machines without the block (not a Pi 4).
+- **10-bit (devkit 0.2.5, hevcdec 0.1.7):** YUV420P10 frames, exactly `hevc`'s. With `-output_8bit 1` they come out as YUV420P instead, each sample the 10-bit one's top 8 bits (truncated, no dithering): for a player that only shows 8-bit, one conversion instead of two.
+- **Keeping the block busy (devkit 0.2.6, hevcdec 0.1.8):** while hevc_hwdec converts a picture, hevcdec starts the block's next phase as soon as the last one finishes, so the next picture is decoded during the copy: each picture now costs the longer of the two, not their sum.
+- **4K:** up to 4096x4096. A 3840x2160 frame is 12 MB of contiguous memory (16 MB at 10-bit), and the decoder makes as many as the stream's DPB needs plus those the caller holds. Streams with their parameter sets in the extradata (MP4, MKV) are refused at open; raw streams at their first picture.
 - **A picture the block fails on** comes out with `decode_error_flags` set (FFmpeg logs "corrupt decoded frame"); decoding carries on.
-- **Options:** `pipelined` (default on: the block decodes while FFmpeg parses the next picture; one picture is held back, so output is a picture later) and `cached_frames` (default on: the block's frames are cacheable, cleaned and invalidated before conversion, about twice as quick to convert).
+- **Options:** `output_8bit` (default off; see 10-bit), `pipelined` (default on: the block decodes while FFmpeg parses the next picture; one picture is held back, so output is a picture later) and `cached_frames` (default on: the block's frames are cacheable, cleaned and invalidated before conversion, about twice as quick to convert).
 - **Threads:** the decoder runs FFmpeg's HEVC decoder single-threaded; the parallelism is the block's.
 - **Seeking:** `avcodec_flush_buffers` as for `hevc`.
 - **Header:** hevcdec's header is `hwhevcdec.h` (devkit 0.2.3; 0.2.2 called it `hevcdec.h`, which clashed with FFmpeg's own `libavcodec/hevcdec.h`). It comes from `-I<devkit>/include`.

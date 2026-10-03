@@ -14,14 +14,15 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
-- Devkit 0.2.4, `riscos-reelhwaccel-devkit-0.2.4.tgz` (sha256
-  8876f3660897e8e8f93e2e73f0ebe97e6f870b121775f0b44bb22176a910d7ea),
-  vcdec 0.4.2: its contiguous memory never includes the program's own page
-  at &8000 (taking it made RISC OS move the program, which ARMEABISupport
-  1.08 doesn't notice: leaked records and later "code 6" EMT traps).
-  h264_vchiq's frames are vcdec's own picture buffers (zero-copy, since
-  0.2.1). Its `libvcdec.a` holds `vcdec.o` and `vcdec_copy.o`. Patch 0021
-  is its `ffmpeg/0001-avcodec-h264_vchiq.patch` unchanged; patch 0022
-  (`drop_before`) is ours, on top. The devkit's hevc_hwdec (libhevcdec,
-  patch 0002) isn't taken yet. Before: devkit 0.2.1 (749197ad…), 0.1
-  (7cfcea8c…).
+- Devkit 0.2.6, `riscos-reelhwaccel-devkit-0.2.6.tgz` (sha256
+  80dbabab8d69c744d48b4c803bf7ab744f2882b3980cd6c1668cec52d6d4670c):
+  vcdec 0.4.2 (H.264; its contiguous memory never includes the program's
+  page at &8000, which ARMEABISupport 1.08 would lose track of) and
+  hevcdec 0.1.8 (HEVC on the Pi 4's HEVC block, 8-bit and 10-bit, up to
+  4K; it converts one picture while the block decodes the next).
+  `lib/libvcdec.a`, `lib/libhevcdec.a`, `include/vcdec.h`,
+  `include/hwhevcdec.h`, `include/hevc_ctrls.h`. Patch 0021 is its
+  `ffmpeg/0001-avcodec-h264_vchiq.patch` and patch 0023 its
+  `ffmpeg/0002-avcodec-hevc_hwdec.patch`, both unchanged; patch 0022
+  (`drop_before`) is ours, after 0021. Before: devkit 0.2.4 (8876f366…),
+  0.2.1 (749197ad…), 0.1 (7cfcea8c…).

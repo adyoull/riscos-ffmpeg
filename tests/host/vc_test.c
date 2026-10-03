@@ -39,6 +39,7 @@ static int fails;
 
 static int out_buffers = -1;                 /* asked of h264_vchiq (zero-copy: devkit 0.2.1) */
 static int asked, pending, refuse_open, refuse_send, fail_after = -1, refused, vc_frames, failed;
+static int asked_hb, output_8bit = -1, fail_err = AVERROR_EXTERNAL;   /* hevc_hwdec's stand-in */
 static AVCodecContext *vc_ctx;
 #define BURST 16
 static int burst, releasing, stash_n, stash_max;
@@ -82,6 +83,11 @@ const AVCodec *__wrap_avcodec_find_decoder_by_name(const char *name)
         pending = 1;                         /* the next avcodec_open2 is "h264_vchiq" */
         return avcodec_find_decoder(AV_CODEC_ID_H264);
     }
+    if (!strcmp(name, "hevc_hwdec")) {       /* the Pi 4's HEVC block: FFmpeg's hevc plays its part too */
+        asked_hb++;
+        pending = 2;
+        return avcodec_find_decoder(AV_CODEC_ID_HEVC);
+    }
     return __real_avcodec_find_decoder_by_name(name);
 }
 
@@ -90,7 +96,9 @@ int __wrap_avcodec_open2(AVCodecContext *c, const AVCodec *codec, AVDictionary *
 {
     if (pending) {
         AVDictionaryEntry *e = o && *o ? av_dict_get(*o, "out_buffers", NULL, 0) : NULL;
+        AVDictionaryEntry *e8 = o && *o ? av_dict_get(*o, "output_8bit", NULL, 0) : NULL;
         out_buffers = e ? atoi(e->value) : -1;
+        output_8bit = e8 ? atoi(e8->value) : -1;
         pending = 0;
         if (refuse_open)
             return AVERROR(ENOSYS);
@@ -116,7 +124,7 @@ int __wrap_avcodec_receive_frame(AVCodecContext *c, AVFrame *f)
 {
     int r;
     if (c == vc_ctx && failed)
-        return AVERROR_EXTERNAL;
+        return fail_err;
     if (c == vc_ctx && burst) {
         for (;;) {
             if (releasing && stash_n) {
@@ -149,7 +157,7 @@ int __wrap_avcodec_receive_frame(AVCodecContext *c, AVFrame *f)
     if (c == vc_ctx && r >= 0 && ++vc_frames == fail_after) {
         av_frame_unref(f);
         failed = 1;
-        return AVERROR_EXTERNAL;             /* the VideoCore stopped answering */
+        return fail_err;                     /* the VideoCore stopped answering (or hevc_hwdec refused) */
     }
     return r;
 }
@@ -183,7 +191,7 @@ static void log_line(int level, const char *line)
     }
     if (strstr(line, "on the ARM") || strstr(line, "VideoCore")) {
         printf("    %s%s", line, strchr(line, '\n') ? "" : "\n");
-        if (strstr(line, "h264 on the ARM from")) fell_back++;
+        if (strstr(line, "on the ARM from") && !strstr(line, "from here")) fell_back++;   /* "<codec> on the ARM from N s" */
         snprintf(last_log, sizeof last_log, "%s", line);
     }
 }
@@ -334,6 +342,48 @@ int main(int argc, char **argv)
     CHECK(a.decoder_early == REELCORE_DECODER_VIDEOCORE && a.decoder == REELCORE_DECODER_ARM_AFTER,
           "failed part way: stats decoder %d, then %d", a.decoder_early, a.decoder);
     fail_after = -1;
+
+    /* HEVC: the Pi 4's HEVC block (hevc_hwdec), the same way */
+    if (argc > 2) {
+        run_t href;
+        int asked0 = asked;
+        play(argv[2], REELCORE_NO_HEVC_BLOCK, &href);
+        printf("  HEVC on the ARM: %u decoded, %u shown, decoder %s\n", href.decoded, href.shown, decoder_line(href.info));
+        CHECK(asked_hb == 0 && href.end && href.decoded > 20 && href.decoder == REELCORE_DECODER_ARM &&
+              strstr(decoder_line(href.info), "hevc, 1 thread"), "HEVC, NO_HEVC_BLOCK: asked %d, end %d, %u decoded, '%s'",
+              asked_hb, href.end, href.decoded, decoder_line(href.info));
+        play(argv[2], 0, &a);
+        printf("  HEVC block: %u decoded, %u shown, output_8bit %d, decoder %s\n", a.decoded, a.shown, output_8bit,
+               decoder_line(a.info));
+        CHECK(asked_hb == 1 && asked == asked0 && a.end && a.decoded == href.decoded && output_8bit == 1 &&
+              !strcmp(decoder_line(a.info), "HEVC block (hevc_hwdec)") && a.decoder_early == REELCORE_DECODER_HEVC_BLOCK &&
+              a.decoder == REELCORE_DECODER_HEVC_BLOCK,
+              "HEVC block: asked %d (h264_vchiq %d), end %d, %u of %u decoded, output_8bit %d, '%s', stats %d %d", asked_hb,
+              asked - asked0, a.end, a.decoded, href.decoded, output_8bit, decoder_line(a.info), a.decoder_early, a.decoder);
+        refuse_open = 1;
+        play(argv[2], 0, &a);
+        printf("  HEVC block refused at open: %u decoded, decoder %s\n", a.decoded, decoder_line(a.info));
+        CHECK(asked_hb == 2 && a.end && a.decoded == href.decoded && strstr(decoder_line(a.info), "hevc, 1 thread") &&
+              strstr(last_log, "HEVC block can't take") && a.decoder == REELCORE_DECODER_ARM,
+              "HEVC refused: asked %d, end %d, %u decoded, '%s', '%s'", asked_hb, a.end, a.decoded, decoder_line(a.info), last_log);
+        refuse_open = 0;
+        /* refused at the first picture (a raw stream, ENOSYS), and failing part way */
+        fail_err = AVERROR(ENOSYS);
+        fail_after = 1;
+        play(argv[2], 0, &a);
+        printf("  HEVC block refused at its first picture: %u shown, end %d, decoder %s\n", a.shown, a.end, decoder_line(a.info));
+        CHECK(fell_back == 1 && a.end && a.shown + 2 >= href.shown && strstr(decoder_line(a.info), "the HEVC block failed part way") &&
+              a.decoder == REELCORE_DECODER_ARM_AFTER, "HEVC refused at the first picture: fell back %d, end %d, %u shown of %u, '%s'",
+              fell_back, a.end, a.shown, href.shown, decoder_line(a.info));
+        fail_err = AVERROR_EXTERNAL;
+        fail_after = href.decoded - 5;       /* (after the stats' early look, at the 10th shown) */
+        play(argv[2], 0, &a);
+        printf("  HEVC block failed at picture %d: %u shown, end %d, decoder %s\n", fail_after, a.shown, a.end, decoder_line(a.info));
+        CHECK(fell_back == 1 && a.end && a.shown > href.shown * 8 / 10 && a.decoder_early == REELCORE_DECODER_HEVC_BLOCK &&
+              a.decoder == REELCORE_DECODER_ARM_AFTER, "HEVC failed part way: fell back %d, end %d, %u shown of %u, stats %d %d",
+              fell_back, a.end, a.shown, href.shown, a.decoder_early, a.decoder);
+        fail_after = -1;
+    }
 
     printf(fails ? "vc_test: %d failures\n" : "vc_test: all passed\n", fails);
     return fails != 0;

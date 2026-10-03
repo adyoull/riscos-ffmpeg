@@ -15,6 +15,7 @@ O=$SRC/apps
 mkdir -p "$O" "$STAGE/bin"
 CC="${CROSS}gcc $CFLAGS_RO -D_FILE_OFFSET_BITS=64 -Wall -I$TOP/reelcore -I$TOP/ffegl -I$STAGE/include -I$STAGE/include/SDL2"
 VC=$([ -f "$STAGE/lib/libvcdec.a" ] && echo -lvcdec || true)   # h264_vchiq (build-ffmpeg.sh)
+VC="$VC $([ -f "$STAGE/lib/libhevcdec.a" ] && echo -lhevcdec || true)"   # hevc_hwdec
 FF="-lavfilter -lpostproc -lavformat -lavcodec $VC -lswresample -lswscale -lavutil \
   -ldav1d -lx264 -lmp3lame -lopus -lvorbisenc -lvorbis -logg -lz -lSDL2"
 

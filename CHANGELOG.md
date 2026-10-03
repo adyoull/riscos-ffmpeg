@@ -3,7 +3,32 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next FFmpeg and Reel): no more EMT traps after H.264 on the VideoCore
+## Unreleased (next FFmpeg and Reel): HEVC on the Pi 4's HEVC block, and no more EMT traps after the VideoCore
+
+- **hevc_hwdec: HEVC decoded by the Raspberry Pi 4's HEVC block** (patch
+  0023, from riscos-reelhwaccel's devkit 0.2.6, with its hevcdec 0.1.8).
+  Built in when `third_party/reelhwaccel` has `libhevcdec.a`
+  (`--enable-libhevcdec --enable-decoder=hevc_hwdec
+  --enable-hwaccel=hevc_hwdec`). FFmpeg's own hevc parses the stream and
+  the block decodes each picture; 8-bit and 10-bit 4:2:0 up to 4096x4096,
+  every picture exactly as `hevc` decodes it (riscos-reelhwaccel's Pi 4
+  tests); `-output_8bit 1` gives 8-bit from 10-bit. Refused (ENOSYS) for
+  4:2:2, 4:4:4, 12-bit and machines without the block.
+- **Reel and ReelEGL use the HEVC block for HEVC by themselves**
+  (reelcore: `open_video_decoder`), with `output_8bit` (everything Reel
+  draws is 8-bit). Refused at open: FFmpeg's hevc on the ARM. Refused at
+  the first picture (a raw stream: ENOSYS) or failing part way: the ARM's
+  decoder takes over from the same place (`hw_fallback`, as for the
+  VideoCore). `REELCORE_NO_HEVC_BLOCK` (`*Set Reel$NoHEVCBlock 1`) keeps
+  to the ARM. Frame skipping still applies; automatic deblocking-off
+  doesn't (the block deblocks). Stats and Media info: "HEVC block
+  (hardware)", "HEVC block (hevc_hwdec)". vc_test: a stand-in hevc_hwdec
+  (FFmpeg's hevc, wrapped): used and asked for `output_8bit`, refused at
+  open, refused at its first picture, failing part way; mutations caught.
+- **Devkit 0.2.6** (sha256 80dbabab…): hevcdec 0.1.8 converts one picture
+  while the block decodes the next (about 3 ms a picture less at 1080p,
+  9–12 ms at 4K). vcdec is 0.4.2, as below.
+
 
 - **riscos-reelhwaccel devkit 0.2.4** (vcdec 0.4.2, sha256 8876f366…):
   the contiguous memory vcdec claims for the VideoCore's pictures never

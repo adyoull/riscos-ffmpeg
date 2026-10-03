@@ -47,6 +47,7 @@ typedef struct ReelCore ReelCore;
 #define REELCORE_NO_ROTATE 16   /* show the picture as stored, not turned as the file says */
 #define REELCORE_NO_AUTOFAST 32 /* never turn the deblocking filter off by itself (see reelcore_set_fast) */
 #define REELCORE_NO_VIDEOCORE 64 /* don't try the Pi's VideoCore (h264_vchiq) for H.264: decode on the ARM */
+#define REELCORE_NO_HEVC_BLOCK 128 /* don't try the Pi 4's HEVC block (hevc_hwdec) for HEVC: decode on the ARM */
 
 /* reelcore_update results */
 #define REELCORE_SAME_FRAME 0   /* nothing new to show */
@@ -142,7 +143,8 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size);
 /* ReelCoreStats.decoder */
 #define REELCORE_DECODER_ARM        0   /* FFmpeg's decoder, on the CPU */
 #define REELCORE_DECODER_VIDEOCORE  1   /* the Pi's VideoCore (h264_vchiq) */
-#define REELCORE_DECODER_ARM_AFTER  2   /* the CPU, after the VideoCore failed part way */
+#define REELCORE_DECODER_ARM_AFTER  2   /* the CPU, after the VideoCore or the HEVC block failed part way */
+#define REELCORE_DECODER_HEVC_BLOCK 3   /* the Pi 4's HEVC block (hevc_hwdec) */
 
 typedef struct ReelCoreStats {
     double position, clock;

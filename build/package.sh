@@ -169,6 +169,7 @@ for l in avcodec avdevice avfilter avformat avutil postproc swresample swscale \
   ${CROSS}strip --strip-debug -o "$K/lib/lib$l.a" "$STAGE/lib/lib$l.a"
 done
 [ -f "$STAGE/lib/libvcdec.a" ] && cp "$STAGE/lib/libvcdec.a" "$K/lib/"   # riscos-reelhwaccel's, for h264_vchiq
+[ -f "$STAGE/lib/libhevcdec.a" ] && cp "$STAGE/lib/libhevcdec.a" "$K/lib/"   # and for hevc_hwdec
 for pc in "$STAGE"/lib/pkgconfig/*.pc; do
   case $(basename "$pc") in sdl2.pc|zlib.pc) continue ;; esac   # from riscos-mesa
   sed "s#$STAGE#\${pcfiledir}/../..#g" "$pc" > "$K/lib/pkgconfig/$(basename "$pc")"
@@ -189,8 +190,10 @@ devkit, 20.3.5-7pre12 or later (EGLImage textures for ffegl; libavdevice's
 egl output device needs libEGL and libOSMesa).
 Point PKG_CONFIG_LIBDIR at lib/pkgconfig and use pkg-config --static.
 libavcodec includes h264_vchiq (H.264 on the Raspberry Pi's VideoCore)
-when lib/libvcdec.a is here (riscos-reelhwaccel's vcdec, GPL v2 or
-later): link with -lvcdec after -lavcodec (pkg-config adds it).
+when lib/libvcdec.a is here, and hevc_hwdec (HEVC on the Pi 4's HEVC
+block) when lib/libhevcdec.a is here (riscos-reelhwaccel's vcdec and
+hevcdec, GPL version 2): link with -lvcdec -lhevcdec after -lavcodec
+(pkg-config adds them).
 Licence: GPL version 2 or later (x264); see Licences.
 EOF
 rm -f "$DIST/riscos-ffmpeg-devkit-$V.tgz"

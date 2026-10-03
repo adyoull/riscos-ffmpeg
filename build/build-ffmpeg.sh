@@ -57,6 +57,16 @@ if [ ! -f ffbuild/config.mak ] || [ -n "${RECONFIGURE:-}" ]; then
       echo "(no reelhwaccel devkit in $RHW: FFmpeg without h264_vchiq)"
       rm -f "$STAGE/include/vcdec.h" "$STAGE/lib/libvcdec.a"
     fi
+    # hevc_hwdec (patch 0023): HEVC on the Pi 4's HEVC block through the
+    # same devkit's hevcdec (devkit 0.2.3 and later)
+    if [ -f "$RHW/lib/libhevcdec.a" ] && [ -f "$RHW/include/hwhevcdec.h" ]; then
+      cp "$RHW/include/hwhevcdec.h" "$RHW/include/hevc_ctrls.h" "$STAGE/include/" &&
+        cp "$RHW/lib/libhevcdec.a" "$STAGE/lib/"
+      VARIANT="$VARIANT --enable-libhevcdec --enable-decoder=hevc_hwdec --enable-hwaccel=hevc_hwdec"
+    else
+      echo "(no hevcdec in $RHW: FFmpeg without hevc_hwdec)"
+      rm -f "$STAGE/include/hwhevcdec.h" "$STAGE/include/hevc_ctrls.h" "$STAGE/lib/libhevcdec.a"
+    fi
     OUTDEVS="--enable-outdev=egl"   # after --disable-outdevs
     LINK=-static
   fi
