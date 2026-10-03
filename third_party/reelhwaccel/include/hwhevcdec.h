@@ -15,6 +15,8 @@
  *     hevcdec_frame_to_i420(d, f, planes, strides)
  *   hevcdec_close(d);
  *
+ * 0.1.9: hevcdec_frame_to_i420_half (straight into a half-size overlay)
+ * and hevcdec_frame_decoder (frames handed out unconverted by hevc_hwdec).
  * 0.1.8: the block kept busy while frames are converted (phases seen
  * finishing between columns); 10-bit rows unpacked straight into the
  * planes; hevcdec_convert_benchmark.
@@ -35,7 +37,7 @@
 #include <stdint.h>
 #include "hevc_ctrls.h"
 
-#define HEVCDEC_VERSION "0.1.8"
+#define HEVCDEC_VERSION "0.1.9"
 
 #define HEVCDEC_OK           0
 #define HEVCDEC_ERROR       -1   /* hevcdec_error says why */
@@ -131,6 +133,16 @@ int hevcdec_frame_to_i420_16(hevcdec *d, const hevcdec_frame *f, uint16_t *const
    (16: a 10-bit decoder), each time as hevcdec_frame_to_i420(_16) does it
    (the cache cleaned and invalidated first); the centiseconds taken in
    *cs. HEVCDEC_OK, or HEVCDEC_UNSUPPORTED. */
+/* (0.1.9) The decoder a frame belongs to (for a caller handed frames by
+   FFmpeg's hevc_hwdec with output_hw: data[3] is the hevcdec_frame) */
+hevcdec *hevcdec_frame_decoder(const hevcdec_frame *f);
+/* (0.1.9) The window w*2 x h*2 from (x, y) halved into w x h (U and V
+   (w+1)/2 x (h+1)/2) of planar 8-bit 4:2:0: each sample the rounded mean
+   of a 2x2 block (a 4K picture into an HD-sized overlay, in one pass);
+   from a 10-bit decoder, the means rounded to 8 bits. x a multiple of 4, y
+   even. HEVCDEC_OK, or HEVCDEC_UNSUPPORTED (outside the frame). */
+int hevcdec_frame_to_i420_half(hevcdec *d, const hevcdec_frame *f, uint8_t *const planes[3], const int strides[3], int x,
+                               int y, int w, int h);
 #define HEVCDEC_CONVERT_WAYS 4
 int hevcdec_convert_benchmark(hevcdec *d, const hevcdec_frame *f, void *const planes[3], const int strides[3], int bits,
                               int x, int y, int w, int h, int way, int n, unsigned *cs);

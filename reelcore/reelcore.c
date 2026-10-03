@@ -20,6 +20,11 @@
 #include "libavfilter/buffersrc.h"
 #include "libavcodec/avcodec.h"
 #include "libavutil/opt.h"
+#ifdef REELCORE_HEVCDEC
+#include <hwhevcdec.h>                     /* the HEVC block's frames, converted when shown */
+#endif
+#include "reelcore.h"
+static void cur_changed(ReelCore *v);
 #include "libavutil/avstring.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/display.h"
@@ -196,6 +201,8 @@ struct ReelCore {
     int vc_failed;                     /* ... which failed part way: the ARM's decoder from here on */
     int hb;                            /* the video decoded by the Pi 4's HEVC block (hevc_hwdec) */
     int hb_failed;                     /* ... which failed or refused part way: the ARM's from here on */
+    AVFrame *cur_soft;                 /* the current frame as YUV420P, when it's the block's (cur_frame) */
+    unsigned hw_draws;                 /* pictures converted straight into the caller's planes */
     int vmore;                         /* the video decoder has frames not taken yet (the queue was full) */
     int64_t vc_drop;                   /* h264_vchiq's drop_before last set (INT64_MIN: off) */
     unsigned q_overflow;               /* pictures pushed out of a full queue (should never happen) */
@@ -758,6 +765,11 @@ static AVCodecContext *open_video_decoder(ReelCore *v, AVStream *st)
            10-bit then swscale would be two passes */
         AVDictionary *opts = NULL;
         av_dict_set_int(&opts, "output_8bit", 1, 0);
+#ifdef REELCORE_HEVCDEC
+        /* (devkit 0.2.8) its frames unconverted: each converted once, when
+           shown, straight into the overlay (halved for 4K) */
+        av_dict_set_int(&opts, "output_hw", 1, 0);
+#endif
         c = open_with_opts(st, vc, &opts);
         av_dict_free(&opts);
         if (c) {
@@ -1425,6 +1437,7 @@ void reelcore_close(ReelCore *v)
     apk_clear(v);
     av_freep(&v->apk);
     av_frame_free(&v->cur);
+    cur_changed(v);
     av_frame_free(&v->frame);
     deint_close(v);
     av_packet_free(&v->pkt);
@@ -1809,9 +1822,79 @@ static double frame_pts(AVFrame *f, AVStream *st, double fallback)
 }
 
 /* Queues a picture (a new reference to f) to be shown at pts. */
+/* ---- the HEVC block's frames (hevc_hwdec output_hw, devkit 0.2.8) ----
+   They stay unconverted (AV_PIX_FMT_HEVCDEC, data[3] the hevcdec_frame)
+   until shown: reelcore_draw_yuv420 converts the one shown straight into
+   the overlay, halved for 4K. Anything else that wants the pixels (RGB
+   drawing, deinterlacing or turning, stepping back) gets a YUV420P copy. */
+static int hw_frame(const AVFrame *f)
+{
+#ifdef REELCORE_HEVCDEC
+    return f && f->format == AV_PIX_FMT_HEVCDEC;
+#else
+    (void)f;
+    return 0;
+#endif
+}
+
+/* the picture's part of a frame: the block's frames keep their left and top
+   crop (FFmpeg takes only the right and bottom off a hardware frame) */
+static void frame_window(const AVFrame *f, int *x, int *y, int *w, int *h)
+{
+    int l = hw_frame(f) ? (int)f->crop_left : 0, t = hw_frame(f) ? (int)f->crop_top : 0;
+    *x = l;
+    *y = t;
+    *w = f->width - l;
+    *h = f->height - t;
+}
+
+/* a new YUV420P frame of the block's frame f (NULL if no memory) */
+static AVFrame *hw_soft(const AVFrame *f)
+{
+#ifdef REELCORE_HEVCDEC
+    const hevcdec_frame *hf = (const hevcdec_frame *)f->data[3];
+    AVFrame *s = av_frame_alloc();
+    int x, y, w, h;
+    frame_window(f, &x, &y, &w, &h);
+    if (!s)
+        return NULL;
+    s->format = AV_PIX_FMT_YUV420P;
+    s->width = w;
+    s->height = h;
+    if (av_frame_get_buffer(s, 32) < 0 || av_frame_copy_props(s, f) < 0) {
+        av_frame_free(&s);
+        return NULL;
+    }
+    hevcdec_frame_to_i420(hevcdec_frame_decoder(hf), hf, s->data, s->linesize, x, y, w, h);
+    return s;
+#else
+    (void)f;
+    return NULL;
+#endif
+}
+
+/* the current frame with its pixels (the block's converted once, and kept
+   until the frame changes); NULL if none */
+static AVFrame *cur_frame(ReelCore *v)
+{
+    if (!hw_frame(v->cur))
+        return v->cur;
+    if (!v->cur_soft)
+        v->cur_soft = hw_soft(v->cur);
+    return v->cur_soft;
+}
+
+/* the current frame changed: its copy goes */
+static void cur_changed(ReelCore *v)
+{
+    av_frame_free(&v->cur_soft);
+}
+
 static void hist_push(ReelCore *v, AVFrame *f, double pts)
 {
-    AVFrame *c = av_frame_clone(f);
+    /* (the block's frames as copies: hevcdec's frames are kept for the
+       pictures to come) */
+    AVFrame *c = hw_frame(f) ? hw_soft(f) : av_frame_clone(f);
     if (!c)
         return;
     if (v->hist_n == HIST_N) {            /* the oldest goes */
@@ -1979,8 +2062,14 @@ static void got_video(ReelCore *v, AVFrame *f)
        turned when the file says (both in one graph) */
     {
         int yadif = v->deint == REELCORE_DEINT_ON || (v->deint == REELCORE_DEINT_AUTO && v->seen_interlaced);
-        if (!v->deint_failed && (yadif || v->rot) && deint_feed(v, f, pts, yadif) == 0)
-            return;
+        if (!v->deint_failed && (yadif || v->rot)) {
+            /* (the block's frames to the filters as copies) */
+            AVFrame *soft = hw_frame(f) ? hw_soft(f) : NULL;
+            int r = deint_feed(v, soft ? soft : f, pts, yadif);
+            av_frame_free(&soft);
+            if (r == 0)
+                return;
+        }
     }
     queue_picture(v, f, pts);
 }
@@ -2256,7 +2345,7 @@ static int receive_all(ReelCore *v, AVCodecContext *dec, int video)
         v->vmore = 0;
     for (;;) {
         int ret;
-        if (video && v->qn >= (v->vc ? vc_room(v) : QROOM)) {
+        if (video && v->qn >= (v->vc || v->hb ? vc_room(v) : QROOM)) {
             v->vmore = 1;
             return 2;
         }
@@ -2540,6 +2629,7 @@ static void pace_note(ReelCore *v)
 static void take_frame(ReelCore *v)
 {
     av_frame_free(&v->cur);
+    cur_changed(v);
     v->cur = v->q[0];
     v->cur_pts = v->qpts[0];
     memmove(v->q, v->q + 1, (v->qn - 1) * sizeof(v->q[0]));
@@ -2889,7 +2979,7 @@ static int halve(ReelCore *v, const AVPixFmtDescriptor *d, const uint8_t *src[4]
 static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPixelFormat fmt,
                    int cx, int cy, int cw, int ch)
 {
-    AVFrame *f = v->cur;
+    AVFrame *f = cur_frame(v);
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(f->format);
     const uint8_t *src[4] = { f->data[0], f->data[1], f->data[2], f->data[3] };
     uint8_t *d[4] = { dst };
@@ -3916,6 +4006,7 @@ int reelcore_step_back(ReelCore *v)
         v->qpts[0] = v->cur_pts;
         v->qn++;
         v->cur = v->hist[--v->hist_n];
+        cur_changed(v);
         v->cur_pts = v->hist_pts[v->hist_n];
         v->pause_pos = v->cur_pts;
         v->stepped = 1;
@@ -3942,7 +4033,7 @@ static void fill_black(uint8_t *p, int pitch, int x, int y, int w, int h)
 int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int bgr, int flags)
 {
     uint8_t *p = pixels;
-    AVFrame *f = v->cur;
+    AVFrame *f = cur_frame(v);
     int x = 0, y = 0, rw = w, rh = h, cx = 0, cy = 0, cw, ch;
 
     if (!f)
@@ -4175,6 +4266,37 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
                 pl[k++] = pl[i];
         nl = k;
     }
+#ifdef REELCORE_HEVCDEC
+    if (hw_frame(f)) {
+        /* the block's frame, converted straight into the overlay: 1:1, or
+           (4K into an HD-sized overlay) halved in the same pass */
+        const hevcdec_frame *hf = (const hevcdec_frame *)f->data[3];
+        hevcdec *d = hevcdec_frame_decoder(hf);
+        int fx, fy, fw, fh, done = 0;
+        frame_window(f, &fx, &fy, &fw, &fh);
+        half = w * 2 <= fw && h * 2 <= fh;
+        if (!half && w <= fw && h <= fh) {
+            hevcdec_frame_to_i420(d, hf, planes, pitch, fx, fy, w, h);
+            done = 1;
+        } else if (half && w * 4 > fw && h * 4 > fh && !(fx & 3) && !(fy & 1))
+            done = hevcdec_frame_to_i420_half(d, hf, planes, pitch, fx, fy, w, h) == HEVCDEC_OK;
+        if (done) {
+            v->hw_draws++;
+            for (int i = 0; i < nl; i++)          /* the layers over the converted rows */
+                for (int p = 0; p < 3; p++)
+                    for (int y = 0; y < (p ? (h + 1) / 2 : h); y++)
+                        if (layer_touches(&pl[i], p, y))
+                            layer_blend_row(&pl[i], planes[p] + (size_t)y * pitch[p], p, y, p ? (w + 1) / 2 : w);
+            v->t_convert += av_gettime_relative() - t0;
+            v->conv_w = w;
+            v->conv_h = h;
+            v->halvings = half;
+            return 0;
+        }
+        if (!(f = cur_frame(v)))                  /* anything else: from a copy */
+            return AVERROR(ENOMEM);
+    }
+#endif
     /* smaller than the frame (4K into an HD-sized overlay): halved */
     half = w * 2 <= f->width && h * 2 <= f->height;
     if ((f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) &&
@@ -4255,10 +4377,10 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
 
 int reelcore_frame_size(const ReelCore *v, int *w, int *h)
 {
+    int x, y;
     if (!v->cur)
         return AVERROR(EAGAIN);
-    *w = v->cur->width;
-    *h = v->cur->height;
+    frame_window(v->cur, &x, &y, w, h);
     return 0;
 }
 

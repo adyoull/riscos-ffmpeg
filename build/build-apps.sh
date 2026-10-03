@@ -20,7 +20,9 @@ FF="-lavfilter -lpostproc -lavformat -lavcodec $VC -lswresample -lswscale -lavut
   -ldav1d -lx264 -lmp3lame -lopus -lvorbisenc -lvorbis -logg -lz -lSDL2"
 
 # the libraries
-$CC -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore.o"
+# the HEVC block's frames converted when shown (devkit 0.2.8 and later)
+HB=$([ -f "$STAGE/lib/libhevcdec.a" ] && grep -q hevcdec_frame_to_i420_half "$STAGE/include/hwhevcdec.h" && echo -DREELCORE_HEVCDEC || true)
+$CC $HB -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore.o"
 $CC -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl.o"
 $CC -DFFEGL_NO_TEXTURE -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_notex.o"
 rm -f "$STAGE/lib/libreelcore.a" "$STAGE/lib/libffegl.a"

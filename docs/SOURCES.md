@@ -37,7 +37,7 @@ based on the MMAL message formats as that driver's headers define them):
 which `build/build-ffmpeg.sh` copies into the stage and builds FFmpeg
 with `--enable-vchiq` (patch 0021, `h264_vchiq`, also from that devkit;
 patch 0022, its `drop_before` option, is ours);
-devkit 0.2.7 (sha256 c65b8ac5…; also `hwhevcdec.h`, `hevc_ctrls.h` and
+devkit 0.2.8 (sha256 111f82b5…; also `hwhevcdec.h`, `hevc_ctrls.h` and
 `libhevcdec.a`, with `--enable-libhevcdec` and patch 0023, `hevc_hwdec`);
 `third_party/reelhwaccel/SOURCE.md` has
 the full sha256.

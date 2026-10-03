@@ -25,6 +25,26 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   (hardware)", "HEVC block (hevc_hwdec)". vc_test: a stand-in hevc_hwdec
   (FFmpeg's hevc, wrapped): used and asked for `output_8bit`, refused at
   open, refused at its first picture, failing part way; mutations caught.
+- **HEVC on the block: each picture converted once, straight into the
+  overlay** (devkit 0.2.8, hevcdec 0.1.9). With `output_hw`, hevc_hwdec
+  hands out its frames unconverted (AV_PIX_FMT_HEVCDEC); reelcore keeps
+  them in its queue and converts the one shown straight into the
+  overlay's buffer with `hevcdec_frame_to_i420`, or, for 4K into an
+  HD-sized overlay, `hevcdec_frame_to_i420_half` (the 2x2 means in the
+  same pass). Before, each picture was converted into a frame and then
+  copied (and halved, at 4K) into the overlay: on a Pi 4 a 4K picture now
+  costs about 8 ms (8-bit) or 10 ms (10-bit) against 16–18 ms plus the
+  copy. Subtitles and the stats are drawn over the converted rows as
+  before. Drawing to a sprite or EGL, deinterlacing or turning, and
+  stepping back use a YUV420P copy, made once a picture (`cur_frame`).
+  reelcore takes at most one more picture than it wants ahead from the
+  block, as from the VideoCore, so it holds few of its frames. Built with
+  `-DREELCORE_HEVCDEC` when the devkit's libhevcdec.a has the calls.
+  vc_test (reelcore built that way, with a stand-in for the block's
+  frames): every picture drawn 1:1, halved and as 32bpp is the same as
+  FFmpeg's hevc on the ARM gives, the conversions are the block's, and
+  no frame is held at the end; mutations (halving off, the copy kept
+  from the picture before) caught.
 - **4K HEVC no longer drops to keyframes only** (seen on a Pi 4, 8-bit and
   10-bit at 40 Mbit/s). Falling behind, reelcore set `skip_frame`, and
   hevc_hwdec's inner hevc then gave the block keyframes only; at 4K the

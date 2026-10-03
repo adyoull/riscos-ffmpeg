@@ -33,6 +33,9 @@
 #include "fake_sdl_gl.h"
 #include "libavcodec/avcodec.h"
 #include "libavutil/opt.h"
+#ifdef REELCORE_HEVCDEC
+#include <hwhevcdec.h>
+#endif
 
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } } while (0)
@@ -40,6 +43,75 @@ static int fails;
 static int out_buffers = -1;                 /* asked of h264_vchiq (zero-copy: devkit 0.2.1) */
 static int asked, pending, refuse_open, refuse_send, fail_after = -1, refused, vc_frames, failed;
 static int asked_hb, output_8bit = -1, fail_err = AVERROR_EXTERNAL;   /* hevc_hwdec's stand-in */
+static int output_hw = -1, vc_is_hevc, hw_live, to_i420_calls, to_half_calls;
+
+#ifdef REELCORE_HEVCDEC
+/* hevc_hwdec's output_hw (devkit 0.2.8): its frames are AV_PIX_FMT_HEVCDEC
+   with data[3] a hevcdec_frame, converted by the caller when shown. Here
+   that frame holds FFmpeg's own decoded picture, and the conversions copy
+   from it (1:1) or take its 2x2 rounded means (halved). */
+struct hevcdec_frame { AVFrame *soft; };
+
+static void hf_free(void *opaque, uint8_t *data)
+{
+    struct hevcdec_frame *h = opaque;
+    (void)data;
+    av_frame_free(&h->soft);
+    av_free(h);
+    hw_live--;
+}
+
+static void to_hw(AVFrame *f)
+{
+    struct hevcdec_frame *h = av_mallocz(sizeof *h);
+    h->soft = av_frame_alloc();
+    av_frame_move_ref(h->soft, f);
+    av_frame_copy_props(f, h->soft);
+    f->format = AV_PIX_FMT_HEVCDEC;
+    f->width = h->soft->width;
+    f->height = h->soft->height;
+    f->buf[0] = av_buffer_create((uint8_t *)h, sizeof *h, hf_free, h, 0);
+    f->data[3] = (uint8_t *)h;
+    hw_live++;
+}
+
+hevcdec *hevcdec_frame_decoder(const hevcdec_frame *f)
+{
+    return f ? (hevcdec *)1 : NULL;
+}
+
+void hevcdec_frame_to_i420(hevcdec *d, const hevcdec_frame *f, uint8_t *const planes[3], const int strides[3], int x,
+                           int y, int w, int h)
+{
+    const AVFrame *s = f->soft;
+    (void)d;
+    to_i420_calls++;
+    for (int p = 0; p < 3; p++) {
+        int pw = p ? (w + 1) / 2 : w, ph = p ? (h + 1) / 2 : h, px = p ? x / 2 : x, py = p ? y / 2 : y;
+        for (int r = 0; r < ph; r++)
+            memcpy(planes[p] + (size_t)r * strides[p], s->data[p] + (size_t)(py + r) * s->linesize[p] + px, pw);
+    }
+}
+
+int hevcdec_frame_to_i420_half(hevcdec *d, const hevcdec_frame *f, uint8_t *const planes[3], const int strides[3], int x,
+                               int y, int w, int h)
+{
+    const AVFrame *s = f->soft;
+    (void)d;
+    to_half_calls++;
+    if ((x & 3) || (y & 1) || x + 2 * w > s->width || y + 2 * h > s->height)
+        return HEVCDEC_UNSUPPORTED;
+    for (int p = 0; p < 3; p++) {
+        int pw = p ? (w + 1) / 2 : w, ph = p ? (h + 1) / 2 : h, px = p ? x / 2 : x, py = p ? y / 2 : y;
+        for (int r = 0; r < ph; r++) {
+            const uint8_t *a = s->data[p] + (size_t)(py + 2 * r) * s->linesize[p] + px, *b = a + s->linesize[p];
+            for (int c = 0; c < pw; c++)
+                planes[p][(size_t)r * strides[p] + c] = (a[2 * c] + a[2 * c + 1] + b[2 * c] + b[2 * c + 1] + 2) >> 2;
+        }
+    }
+    return HEVCDEC_OK;
+}
+#endif
 static AVCodecContext *vc_ctx;
 #define BURST 16
 static int burst, releasing, stash_n, stash_max;
@@ -97,8 +169,11 @@ int __wrap_avcodec_open2(AVCodecContext *c, const AVCodec *codec, AVDictionary *
     if (pending) {
         AVDictionaryEntry *e = o && *o ? av_dict_get(*o, "out_buffers", NULL, 0) : NULL;
         AVDictionaryEntry *e8 = o && *o ? av_dict_get(*o, "output_8bit", NULL, 0) : NULL;
+        AVDictionaryEntry *eh = o && *o ? av_dict_get(*o, "output_hw", NULL, 0) : NULL;
         out_buffers = e ? atoi(e->value) : -1;
         output_8bit = e8 ? atoi(e8->value) : -1;
+        output_hw = eh ? atoi(eh->value) : -1;
+        vc_is_hevc = pending == 2;
         pending = 0;
         if (refuse_open)
             return AVERROR(ENOSYS);
@@ -159,6 +234,10 @@ int __wrap_avcodec_receive_frame(AVCodecContext *c, AVFrame *f)
         failed = 1;
         return fail_err;                     /* the VideoCore stopped answering (or hevc_hwdec refused) */
     }
+#ifdef REELCORE_HEVCDEC
+    if (c == vc_ctx && r >= 0 && vc_is_hevc && output_hw == 1)
+        to_hw(f);
+#endif
     return r;
 }
 
@@ -196,7 +275,35 @@ static void log_line(int level, const char *line)
     }
 }
 
-typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells; double pos, last; char info[4096]; } run_t;
+typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells, crc, drawn; double pos, last; char info[4096]; } run_t;
+
+/* each picture shown, drawn (1: 1:1 YUV, as into an overlay; 2: halved, as
+   4K into an HD overlay; 3: 32bpp, as into a sprite), its bytes summed */
+static int draw_mode;
+static void draw(ReelCore *v, run_t *out)
+{
+    int fw, fh;
+    if (!draw_mode || reelcore_frame_size(v, &fw, &fh) < 0)
+        return;
+    if (draw_mode == 3) {
+        uint32_t *px = calloc((size_t)fw * fh, 4);
+        if (reelcore_draw_pixels(v, px, fw * 4, fw, fh, 0, REELCORE_STRETCH) >= 0) {
+            for (int i = 0; i < fw * fh; i++) out->crc = out->crc * 31 + (px[i] & 0xFFFFFF);
+            out->drawn++;
+        }
+        free(px);
+    } else {
+        int w = draw_mode == 2 ? fw / 2 : fw, h = draw_mode == 2 ? fh / 2 : fh;
+        int pitch[3] = { w, (w + 1) / 2, (w + 1) / 2 };
+        uint8_t *buf = calloc((size_t)w * h * 2, 1), *planes[3] = { buf, buf + (size_t)w * h, buf + (size_t)w * h * 3 / 2 };
+        if (reelcore_draw_yuv420(v, planes, pitch, w, h, NULL) >= 0) {
+            for (size_t i = 0; i < (size_t)w * h * 3 / 2 + (size_t)((w + 1) / 2) * ((h + 1) / 2); i++)
+                out->crc = out->crc * 31 + buf[i];
+            out->drawn++;
+        }
+        free(buf);
+    }
+}
 
 static double seek_at = -1, seek_to, slow;   /* slow: the time each picture shown takes */
 
@@ -229,6 +336,7 @@ static void play(const char *clip, int flags, run_t *out)
                 out->back++;
             out->last = at;
             fake_time += slow;
+            draw(v, out);
         }
         if (r == REELCORE_NEW_FRAME && ++out->shown == 10) {
             reelcore_stats(v, &st);
@@ -373,6 +481,29 @@ int main(int argc, char **argv)
         CHECK(a.end && !a.back && vc_dropped > 0 && !a.skip_spells && a.shown + a.late + vc_dropped == href.decoded,
               "HEVC block, slow: end %d, back %d, %u shown + %u late + %d dropped of %u, %u skip spells", a.end, a.back,
               a.shown, a.late, vc_dropped, href.decoded, a.skip_spells);
+#ifdef REELCORE_HEVCDEC
+        /* output_hw: each picture shown converted straight into the caller's
+           planes, 1:1 or halved, or copied for 32bpp; the same pictures as
+           FFmpeg's hevc on the ARM gives; every frame given back */
+        {
+            static const char *how[4] = { "", "1:1 (overlay)", "halved (4K into an HD overlay)", "32bpp (sprite)" };
+            for (draw_mode = 1; draw_mode <= 3; draw_mode++) {
+                run_t r1, r2;
+                int c0 = to_i420_calls, h0 = to_half_calls;
+                play(argv[2], REELCORE_NO_HEVC_BLOCK, &r1);
+                play(argv[2], 0, &r2);
+                printf("  HEVC block, output_hw %d, drawn %s: %u and %u drawn, sums %08x %08x, %d 1:1 and %d halved "
+                       "conversions, %d frames held at the end\n", output_hw, how[draw_mode], r1.drawn, r2.drawn, r1.crc,
+                       r2.crc, to_i420_calls - c0, to_half_calls - h0, hw_live);
+                CHECK(output_hw == 1 && r2.drawn == r1.drawn && r2.drawn > 20 && r2.crc == r1.crc && !hw_live &&
+                      (draw_mode == 2 ? to_half_calls - h0 == (int)r2.drawn : to_i420_calls - c0 >= (int)r2.drawn),
+                      "output_hw, %s: %u/%u drawn, sums %08x/%08x, %d+%d conversions, %d held", how[draw_mode], r2.drawn,
+                      r1.drawn, r2.crc, r1.crc, to_i420_calls - c0, to_half_calls - h0, hw_live);
+            }
+            draw_mode = 0;
+            asked_hb -= 3;                       /* (three more uses of the block above) */
+        }
+#endif
         refuse_open = 1;
         play(argv[2], 0, &a);
         printf("  HEVC block refused at open: %u decoded, decoder %s\n", a.decoded, decoder_line(a.info));

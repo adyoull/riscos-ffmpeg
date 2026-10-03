@@ -193,7 +193,8 @@ libavcodec includes h264_vchiq (H.264 on the Raspberry Pi's VideoCore)
 when lib/libvcdec.a is here, and hevc_hwdec (HEVC on the Pi 4's HEVC
 block) when lib/libhevcdec.a is here (riscos-reelhwaccel's vcdec and
 hevcdec, GPL version 2): link with -lvcdec -lhevcdec after -lavcodec
-(pkg-config adds them).
+(pkg-config adds them). libreelcore.a is then built to convert the HEVC
+block's frames itself when they're shown: link it with -lhevcdec too.
 Licence: GPL version 2 or later (x264); see Licences.
 EOF
 rm -f "$DIST/riscos-ffmpeg-devkit-$V.tgz"

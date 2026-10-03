@@ -58,10 +58,14 @@ ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=12 -f lavf
 "$TOP/tests/qemu/aligntrap.sh" "$O/slow_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$O/gop1s.mp4" 2>&1 | grep -v "swscaler" || bad=1
 
 # reelcore with the VideoCore's decoder (h264_vchiq, patch 0021): a stand-in for it here
-$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/vc_test.c" -o "$O/vc_test.o"
+# (reelcore built for the HEVC block's frames, output_hw, as on RISC OS with devkit 0.2.8)
+$CC -DREELCORE_HEVCDEC -I$S/include -I$TOP/third_party/reelhwaccel/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore \
+  -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore_hb.o"
+$CC -DREELCORE_HEVCDEC -I$S/include -I$TOP/third_party/reelhwaccel/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE \
+  -c "$HERE/vc_test.c" -o "$O/vc_test.o"
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcodec_find_decoder_by_name \
   -Wl,--wrap=avcodec_open2 -Wl,--wrap=avcodec_send_packet -Wl,--wrap=avcodec_receive_frame -Wl,--wrap=avcodec_free_context -Wl,--wrap=avcodec_flush_buffers -Wl,--wrap=av_opt_set_int \
-  -o "$O/vc_test" "$O/reelcore.o" "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/vc_test.o" $LIBS 2>/dev/null
+  -o "$O/vc_test" "$O/reelcore_hb.o" "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/vc_test.o" $LIBS 2>/dev/null
 echo "== vc_test (the VideoCore for H.264, the HEVC block for HEVC: input full, bursts, refused, switched off, failing part way)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/vc_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/hevc_640_360.mkv" 2>&1 | grep -v "swscaler" || bad=1
 
