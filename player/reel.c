@@ -242,6 +242,7 @@ static struct {
     char info_title[80];
     unsigned st_nulls, draw_n;          /* for its stats: null events, pictures drawn ... */
     unsigned draw_cs;                   /* ... and the time drawing them took */
+    int ov_cover_cs;                    /* when the overlay was last looked at for windows over it (no new pictures) */
     int ov_pending;                     /* a picture waiting for the overlay's next switch */
     unsigned ov_waited, ov_replaced;    /* for the stats: pictures that waited; replaced before shown */
     unsigned late_base, shown_base;     /* reelcore's counts when played again from the start */
@@ -1540,6 +1541,10 @@ static void set_fullscreen(int on)
         read_screen();
         if (!S.full && create_full_window() < 0)
             return;
+        b[0] = 0; b[1] = -S.scr_h; b[2] = S.scr_w; b[3] = 0;   /* the screen's size now (made in an earlier mode) */
+        r.r[0] = S.full;
+        r.r[1] = (intptr_t)b;
+        swi(0x400D7, &r);                   /* Wimp_SetExtent */
         S.fullscreen = 1;
         ptr.seen = 0;                   /* the pointer: hidden once left alone */
         S.vis_w = S.scr_w;
@@ -1576,6 +1581,8 @@ static void choices_save(void);
 static void mini_show(void);
 static void opening_cancel(void);
 
+static void panel_forget_video(void);
+
 static void close_video(void)
 {
     _kernel_swi_regs r;
@@ -1601,6 +1608,7 @@ static void close_video(void)
     }
     info_close();
     ov_destroy();
+    panel_forget_video();
     reelcore_close(S.v);
     S.v = NULL;
     source_free(&S.cur);
@@ -2138,6 +2146,7 @@ static void opened(ReelCore *v, const source_t *src)
 
     resume_note();                      /* where the one playing now was */
     if (S.v) {                          /* replace what was playing, keep the window */
+        panel_forget_video();
         reelcore_close(S.v);
         S.v = NULL;
     }
@@ -2162,8 +2171,8 @@ static void opened(ReelCore *v, const source_t *src)
         S.log_cs = now_cs();
         S.log_nulls = S.log_frames = 0;
     }
+    set_title();                        /* (before Media info, which shows it) */
     info_new_file();
-    set_title();
     {
         int i = resume_find(S.file);
         if (i >= 0 && resume[i].pos < reelcore_duration(v) && resume_ask(resume[i].pos)) {
@@ -2249,7 +2258,8 @@ static int url_create(void)
     memset(&w, 0, sizeof(w));
     w.vis.x1 = URL_W; w.vis.y1 = URL_H;
     w.behind = -1;
-    w.flags = (int)0x87000002u;         /* new format, back, close, title, moveable */
+    w.flags = (int)0x87000012u;         /* new format, back, close, title, moveable, auto-redraw (the
+                                           Wimp draws it: not redraw(), which paints the video) */
     w.tfg = 7; w.tbg = 2; w.wfg = 7; w.wbg = 1; w.sofg = 3; w.sibg = 1; w.tfocus = 12;
     w.ext.x0 = 0; w.ext.y0 = -URL_H; w.ext.x1 = URL_W; w.ext.y1 = 0;
     w.tflags = IF_TEXT | IF_BORDER | IF_HCENT | IF_VCENT | IF_FILLED | IF_INDIR | IF_COL(7, 2);
@@ -2967,6 +2977,13 @@ static struct {
 static ReelCorePanel *panel_last;       /* what was last made */
 #endif
 
+/* The video closed: the next one's details and graphs are read afresh
+   (a new ReelCore can come at the same address, and was taken for this one) */
+static void panel_forget_video(void)
+{
+    P.media_of = NULL;
+}
+
 /* A value from reelcore_media_info: label in section ("Video", "Audio", "File") */
 static const char *panel_media(const char *section, const char *label, char *out, int size)
 {
@@ -3456,6 +3473,17 @@ static void ftype_var(char *buf, size_t n, int type)
 }
 
 /* Does a double-click of this type start Reel? (its RunType is ours) */
+/* Does the alias's value name our directory, and not one that starts the
+   same ("...!Reel" and "...!ReelEGL" side by side): the name must end there */
+static int ftype_names_dir(const char *val, const char *dir)
+{
+    size_t n = strlen(dir);
+    for (const char *p = strstr(val, dir); p; p = strstr(p + 1, dir))
+        if (!p[n] || p[n] == '.' || p[n] == ' ' || p[n] == '/')
+            return 1;
+    return 0;
+}
+
 static int ftype_ours(int type)
 {
     char name[40], val[300];
@@ -3470,7 +3498,7 @@ static int ftype_ours(int type)
     if (swi(0x23, &r) || !dir || !*dir)  /* OS_ReadVarVal */
         return 0;
     val[r.r[2] >= 0 && r.r[2] < (int)sizeof(val) ? r.r[2] : 0] = 0;
-    return strstr(val, dir) != NULL;
+    return ftype_names_dir(val, dir);
 }
 
 /* The ticked types, for the next start-up (an Obey file !Boot runs) */
@@ -3665,6 +3693,7 @@ static void menu_open(int bar, int x, int y)
             menu_add(&m_size, 6, &k, size_names[i], 0, NULL, 0);
         menu_end(&m_size, k);
         menu_start(&m_pic, "Picture");
+        k = 0;
         for (int i = 0; i < N_PIC; i++)
             menu_add(&m_pic, 1, &k, pic_names[i], S.pic_mode == i, NULL, 0);
         menu_end(&m_pic, k);
@@ -4255,6 +4284,14 @@ static void tick(void)
         S.log_frames++;
     } else if (S.ov_pending && r2 == REELCORE_SAME_FRAME)
         show_pending();                 /* waiting for the overlay's switch */
+    else if (ov.shown && now_cs() - S.ov_cover_cs >= 20) {
+        /* no new picture (a stream buffering): was only looked at when one
+           came, so a menu or window opened over the picture stayed under
+           the overlay, which covers everything */
+        S.ov_cover_cs = now_cs();
+        if (ov_covered(S.fullscreen ? S.full : S.win))
+            ov_hide_and_draw();
+    }
     if (S.ov_pending)
         S.idle_cs = 0;                  /* ... so no sleeping: it's due within a refresh */
     if (r2 == REELCORE_END) {

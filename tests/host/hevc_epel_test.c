@@ -74,15 +74,34 @@ int main(void)
                                k == 0 ? "epel" : k == 1 ? "epel_uni" : "epel_bi", w, h, mx, my, align);
                 }
             }
-    {   /* whole-sample copies (shared with luma) */
-        for (int wi = 0; wi < 10; wi++) {
-            memset(d16c, 0, sizeof(d16c)); memset(d16n, 0, sizeof(d16n));
-            c.put_hevc_epel[wi][0][0](d16c, srcbuf + 5, SRCSTRIDE, 16, 0, 0, widths[wi]);
-            n.put_hevc_epel[wi][0][0](d16n, srcbuf + 5, SRCSTRIDE, 16, 0, 0, widths[wi]);
-            runs++;
-            if (memcmp(d16c, d16n, sizeof(d16c)) && fails++ < 8)
-                printf("FAIL: pel_pixels w %d\n", widths[wi]);
-        }
+    {   /* whole-sample copies (luma's NEON for plain and bi, the C's row
+           copies for uni), at every 4:2:0 chroma block height: 2 and 6 come
+           from 8x4, 16x4 and 16x12 PUs (luma's uni copies take 4 rows a
+           pass and never stopped at 2 or 6) */
+        static const int hs[8] = { 2, 4, 6, 8, 12, 16, 24, 32 };
+        for (int wi = 0; wi < 10; wi++)
+            for (int hi = 0; hi < 8; hi++)
+                for (int k = 0; k < 3; k++) {
+                    int w = widths[wi], h = hs[hi], bad;
+                    memset(d16c, 0x55, sizeof(d16c)); memcpy(d16n, d16c, sizeof(d16c));
+                    memset(d8c, 0x55, sizeof(d8c));   memcpy(d8n, d8c, sizeof(d8c));
+                    if (k == 0) {
+                        c.put_hevc_epel[wi][0][0](d16c, srcbuf + 5, SRCSTRIDE, h, 0, 0, w);
+                        n.put_hevc_epel[wi][0][0](d16n, srcbuf + 5, SRCSTRIDE, h, 0, 0, w);
+                        bad = memcmp(d16c, d16n, sizeof(d16c));
+                    } else if (k == 1) {
+                        c.put_hevc_epel_uni[wi][0][0](d8c + 3, DSTSTRIDE, srcbuf + 5, SRCSTRIDE, h, 0, 0, w);
+                        n.put_hevc_epel_uni[wi][0][0](d8n + 3, DSTSTRIDE, srcbuf + 5, SRCSTRIDE, h, 0, 0, w);
+                        bad = memcmp(d8c, d8n, sizeof(d8c));
+                    } else {
+                        c.put_hevc_epel_bi[wi][0][0](d8c + 1, DSTSTRIDE, srcbuf + 5, SRCSTRIDE, src2, h, 0, 0, w);
+                        n.put_hevc_epel_bi[wi][0][0](d8n + 1, DSTSTRIDE, srcbuf + 5, SRCSTRIDE, src2, h, 0, 0, w);
+                        bad = memcmp(d8c, d8n, sizeof(d8c));
+                    }
+                    runs++;
+                    if (bad && fails++ < 8)
+                        printf("FAIL: whole-sample %s w %d h %d\n", k == 0 ? "epel" : k == 1 ? "epel_uni" : "epel_bi", w, h);
+                }
     }
     {   /* speed under qemu: 16x16 uni hv (a 32x32 PU's chroma) */
         clock_t t0 = clock();

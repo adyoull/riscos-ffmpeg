@@ -203,6 +203,11 @@ struct ReelCore {
     int fast;                          /* fast decoding: no deblocking filter */
     int vc;                            /* the video decoded by the Pi's VideoCore (h264_vchiq) */
     int vc_failed;                     /* ... which failed part way: the ARM's decoder from here on */
+    /* the chosen streams themselves: the reader thread's av_read_frame can
+       add streams (MPEG-TS, HLS), reallocating fmt->streams, while this
+       thread looks at them; the AVStreams don't move */
+    AVStream *vst, *ast;
+    int swr_bad[3];                    /* the sound's rate, format, channels the resampler couldn't take */
     int hb;                            /* the video decoded by the Pi 4's HEVC block (hevc_hwdec) */
     int hb_failed;                     /* ... which failed or refused part way: the ARM's from here on */
     AVFrame *cur_soft;                 /* the current frame as YUV420P, when it's the block's (cur_frame) */
@@ -281,11 +286,20 @@ struct ReelCore {
     int sub_hidden;                        /* chosen but not shown (V) */
     int sub_stream;                        /* its stream in the file (-1: a file of its own, or none) */
     AVCodecContext *sdec;
+    /* a picture subtitle file (Blu-ray .sup, VobSub): its packets kept, and
+       decoded a little ahead of the picture shown (only SUB_BITMAPS
+       pictures are kept, so decoding the whole file at once kept the last
+       few only) */
+    AVCodecContext *sfdec;
+    AVPacket **sfpkt;
+    double *sft, sfoff;                /* each packet's time (as the events'), the offset for sub_decoded */
+    int sfn, sfnext;                   /* sfnext: the next to decode; -1: found again from the picture shown */
     SubEvent *sev;                         /* what it says when, in order of start */
     int sev_n, sev_cap;
     unsigned sub_ids;
     Layer sub_layer;                       /* what's on screen now ... */
-    int sub_key, sub_shown, sub_bitmap;    /* ... made for this, shown?, a picture? */
+    uint64_t sub_key;                  /* ... made for this (sub_mix of the size and events; 0: none) */
+    int sub_shown, sub_bitmap;         /* ... shown?, a picture? */
     int sub_bx, sub_by, sub_cw, sub_ch;    /* a picture: where, on what canvas */
     void (*attach_release)(void *);
 };
@@ -297,6 +311,8 @@ static void pan_forget(ReelCore *v);
 static void sub_close_track(ReelCore *v);
 static void sub_packet(ReelCore *v, AVPacket *pkt);
 static void sub_clear(ReelCore *v, int bitmaps_only);
+static void sub_file_free(ReelCore *v);
+static void sub_file_feed(ReelCore *v, double pos);
 static void sub_setup(ReelCore *v);
 static void fill(ReelCore *v);
 static void take_frame(ReelCore *v);
@@ -866,7 +882,7 @@ struct Net {
     NetPkt *q;
     int head, n, cap;
     size_t bytes;
-    double last[2];                    /* seconds: the newest packet of each kind queued */
+    double last[3];                    /* seconds: the newest packet of each kind queued (video, sound, subtitles) */
     int eof[2], eof_all;
     int serial;                        /* bumped by each seek */
     int seek_req;
@@ -955,6 +971,8 @@ static int select_streams(ReelCore *v)
         for (unsigned i = 0; i < v->afmt->nb_streams; i++)
             if ((int)i != v->as)
                 v->afmt->streams[i]->discard = AVDISCARD_ALL;
+    v->vst = v->fmt->streams[v->vs];
+    v->ast = v->as >= 0 ? actx(v)->streams[v->as] : NULL;
     return 0;
 }
 
@@ -962,7 +980,7 @@ static int select_streams(ReelCore *v)
    picture's size and rate, the sound device. In the caller's thread. */
 static int setup_decoders(ReelCore *v)
 {
-    AVStream *st = v->fmt->streams[v->vs];
+    AVStream *st = v->vst;
     if (!(v->vdec = open_video_decoder(v, st))) {
         set_error("no decoder for the video (%s)", avcodec_get_name(st->codecpar->codec_id));
         return -1;
@@ -993,9 +1011,10 @@ static int setup_decoders(ReelCore *v)
     }
     v->duration = v->fmt->duration > 0 ? v->fmt->duration / (double)AV_TIME_BASE :
                   v->afmt && v->afmt->duration > 0 ? v->afmt->duration / (double)AV_TIME_BASE : 0;
-    if (v->as >= 0 && (!(v->adec = open_decoder(actx(v)->streams[v->as])) || open_audio(v) < 0)) {
+    if (v->as >= 0 && (!(v->adec = open_decoder(v->ast)) || open_audio(v) < 0)) {
         avcodec_free_context(&v->adec);
         v->as = -1;                        /* (its packets are dropped as they come) */
+        v->ast = NULL;
     }
     v->audio_clock = v->dev != 0;
     v->pkt = av_packet_alloc();
@@ -1056,7 +1075,7 @@ static void net_flush(struct Net *n)
     }
     n->head = 0;
     n->bytes = 0;
-    n->last[0] = n->last[1] = -1e9;
+    n->last[0] = n->last[1] = n->last[2] = -1e9;
 }
 
 /* Seconds read ahead of the picture shown (the kind behind); lock held */
@@ -1221,6 +1240,7 @@ static ReelCore *core_alloc(int flags)
         return NULL;
     v->flags = flags;
     v->vs = v->as = -1;
+    v->vst = v->ast = NULL;
     v->audio_end = -1;
     v->seek_target = v->aseek_target = -1;
     v->need_first = 1;
@@ -1252,7 +1272,7 @@ ReelCore *reelcore_open_source(const ReelCoreSource *src, int flags)
             goto fail;
         pthread_mutex_init(&n->lock, NULL);
         pthread_cond_init(&n->cond, NULL);
-        n->last[0] = n->last[1] = -1e9;
+        n->last[0] = n->last[1] = n->last[2] = -1e9;
         n->url = av_strdup(src->url);
         n->audio_url = src->audio_url ? av_strdup(src->audio_url) : NULL;
         n->headers = src->headers ? av_strdup(src->headers) : NULL;
@@ -1639,7 +1659,7 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
         ADD("Chapters\t%u\n", fc->nb_chapters);
 
     if (v->vs >= 0) {
-        const AVStream *st = fc->streams[v->vs];
+        const AVStream *st = v->vst;
         const AVCodecParameters *p = st->codecpar;
         const AVCodecDescriptor *d = avcodec_descriptor_get(p->codec_id);
         const char *prof = avcodec_profile_name(p->codec_id, p->profile);
@@ -1685,7 +1705,7 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
             ADD("Reordering\t%d frame%s (B-frames)\n", v->vdec->has_b_frames, v->vdec->has_b_frames == 1 ? "" : "s");
     }
     if (v->as >= 0) {
-        const AVStream *st = actx(v)->streams[v->as];
+        const AVStream *st = v->ast;
         const AVCodecParameters *p = st->codecpar;
         const AVCodecDescriptor *d = avcodec_descriptor_get(p->codec_id);
         const char *prof = avcodec_profile_name(p->codec_id, p->profile);
@@ -1740,23 +1760,33 @@ static void (*log_fn)(int, const char *);
 
 static void log_callback(void *avcl, int level, const char *fmt, va_list vl)
 {
+    /* one line at a time, put together from pieces; FFmpeg logs from the
+       network reader's thread too, so one at a time */
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     static char line[1024];
     static int len;
+    char done[1024];
     int n;
     if (level > av_log_get_level())
         return;
+    done[0] = 0;
+    pthread_mutex_lock(&lock);
     n = vsnprintf(line + len, sizeof(line) - len, fmt, vl);
-    if (n < 0)
-        return;
-    len += n;
-    if (len >= (int)sizeof(line) - 1)
-        len = sizeof(line) - 1;
-    if (len && line[len - 1] == '\n') {
-        line[len - 1] = 0;
-        if (log_fn)
-            log_fn(level, line);
-        len = 0;
+    if (n >= 0) {
+        len += n;
+        if (len >= (int)sizeof(line) - 1) {   /* longer than the line (a long address): given as it is, cut */
+            len = sizeof(line) - 1;
+            line[len - 1] = '\n';
+        }
+        if (len && line[len - 1] == '\n') {
+            line[len - 1] = 0;
+            memcpy(done, line, len);
+            len = 0;
+        }
     }
+    pthread_mutex_unlock(&lock);
+    if (done[0] && log_fn)
+        log_fn(level, done);                   /* (not holding the lock: it may log itself) */
     (void)avcl;
 }
 
@@ -1776,12 +1806,12 @@ int reelcore_info(const ReelCore *v, char *buf, int size)
 {
     if (!v->ready)
         return snprintf(buf, size, "opening");
-    const AVCodecParameters *vp = v->fmt->streams[v->vs]->codecpar;
+    const AVCodecParameters *vp = v->vst->codecpar;
     int n = snprintf(buf, size, "%s %dx%d", avcodec_get_name(vp->codec_id), vp->width, vp->height);
     if (v->fps > 0 && n < size)
         n += snprintf(buf + n, size - n, ", %.3g fps", v->fps);
     if (v->as >= 0 && n < size) {
-        const AVCodecParameters *ap = actx(v)->streams[v->as]->codecpar;
+        const AVCodecParameters *ap = v->ast->codecpar;
         n += snprintf(buf + n, size - n, "; %s %d Hz, %d channel%s%s", avcodec_get_name(ap->codec_id),
                       ap->sample_rate, ap->ch_layout.nb_channels, ap->ch_layout.nb_channels == 1 ? "" : "s",
                       !v->dev ? " (no sound device" : v->stalled ? " (the sound device isn't playing: no sound)" : "");
@@ -2059,7 +2089,7 @@ static int deint_feed(ReelCore *v, AVFrame *f, double pts, int yadif)
 
 static void got_video(ReelCore *v, AVFrame *f)
 {
-    double pts = frame_pts(f, v->fmt->streams[v->vs],
+    double pts = frame_pts(f, v->vst,
                            v->qn ? v->qpts[v->qn - 1] + (v->fps > 0 ? 1 / v->fps : 0.04)
                                  : v->cur ? v->cur_pts : 0);
     v->n_decoded++;
@@ -2165,18 +2195,58 @@ static void tempo_feed(ReelCore *v, const uint8_t *data, int n)
     av_frame_free(&f);
 }
 
+/* The resampler made again when the sound changes part way (a DVB
+   recording going from 5.1 to stereo at the adverts, or 48 to 44.1 kHz):
+   it was set up once, from the decoder at the start, and then read planes
+   the frames didn't have, or played them at the wrong speed. 0, or -1
+   (the frame can't be played). */
+static int swr_follow(ReelCore *v, const AVFrame *f)
+{
+    AVChannelLayout stereo = AV_CHANNEL_LAYOUT_STEREO, l = { 0 };
+    int64_t rate = 0, fmt = -1;
+    int same;
+    if (f->sample_rate <= 0 || f->ch_layout.nb_channels <= 0)
+        return v->swr ? 0 : -1;            /* (nothing to go on: as it is) */
+    if (!v->swr && f->sample_rate == v->swr_bad[0] && f->format == v->swr_bad[1] &&
+        f->ch_layout.nb_channels == v->swr_bad[2])
+        return -1;                         /* (what failed last time: not tried again each frame) */
+    if (v->swr) {
+        if (av_opt_get_int(v->swr, "in_sample_rate", 0, &rate) < 0 || av_opt_get_int(v->swr, "in_sample_fmt", 0, &fmt) < 0 ||
+            av_opt_get_chlayout(v->swr, "in_chlayout", 0, &l) < 0)
+            return 0;
+        same = rate == f->sample_rate && fmt == f->format && !av_channel_layout_compare(&l, &f->ch_layout);
+        av_channel_layout_uninit(&l);
+        if (same)
+            return 0;
+    }
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: the sound changed to %d Hz, %d channels\n", f->sample_rate,
+           f->ch_layout.nb_channels);
+    if (swr_alloc_set_opts2(&v->swr, &stereo, AV_SAMPLE_FMT_S16, v->rate, &f->ch_layout, f->format, f->sample_rate, 0,
+                            NULL) < 0 || swr_init(v->swr) < 0) {
+        swr_free(&v->swr);                 /* (none: this frame not played; a different one tries again) */
+        v->swr_bad[0] = f->sample_rate;
+        v->swr_bad[1] = f->format;
+        v->swr_bad[2] = f->ch_layout.nb_channels;
+        return -1;
+    }
+    return 0;
+}
+
 static void got_audio(ReelCore *v, AVFrame *f)
 {
-    int out_max = swr_get_out_samples(v->swr, f->nb_samples);
+    int out_max;
     int n, bytes;
-    double pts = frame_pts(f, actx(v)->streams[v->as], v->audio_end >= 0 ? v->audio_end : 0);
+    double pts = frame_pts(f, v->ast, v->audio_end >= 0 ? v->audio_end : 0);
 
     if (v->aseek_target >= 0) {
         if (pts + f->nb_samples / (double)f->sample_rate < v->aseek_target)
             return;                       /* before the seek point */
         v->aseek_target = -1;
     }
-    if (out_max <= 0 || v->stalled)
+    if (v->stalled || swr_follow(v, f) < 0)
+        return;
+    out_max = swr_get_out_samples(v->swr, f->nb_samples);
+    if (out_max <= 0)
         return;
     av_fast_malloc(&v->abuf, (unsigned *)&v->abuf_size, out_max * 4);
     if (!v->abuf)
@@ -2400,6 +2470,9 @@ static int decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int vi
         return 0;                          /* kept for later: the queue is full */
     if (!r && (ret >= 0 || ret == AVERROR_EOF || ret == AVERROR(EAGAIN)))
         r = receive_all(v, dec, video);
+    else if (!r && ret < 0)
+        r = ret;                           /* (FFmpeg 5.1 runs a hardware decoder's receive_frame inside
+                                              send_packet, and its error comes back from there) */
     if (r < 0 && video && v->vc && r == AVERROR_EXTERNAL && !v->vc_failed) {
         v->vc_failed = 1;                  /* switched at the next update: see hw_fallback */
         av_log(NULL, AV_LOG_WARNING, "reelcore: the VideoCore's decoder failed: decoding on the ARM from here\n");
@@ -2472,7 +2545,7 @@ static void vc_drop(ReelCore *v)
 {
     double before = -1;
     int64_t want = INT64_MIN;
-    AVRational tb = v->fmt->streams[v->vs]->time_base;
+    AVRational tb = v->vst->time_base;
     if (v->seek_target >= 0 && !v->bstep)
         before = v->seek_target - 0.001;     /* (queue_picture throws those away) */
     else if (!v->paused && v->cur && !v->need_first && v->seek_target < 0)
@@ -2594,7 +2667,7 @@ static void fill(ReelCore *v)
                 /* on the way to a seek's picture: pictures nothing else is
                    predicted from, and more than half a second before it,
                    needn't be decoded at all (B-frames: about half) */
-                double t = p->pts * av_q2d(v->fmt->streams[v->vs]->time_base);
+                double t = p->pts * av_q2d(v->vst->time_base);
                 enum AVDiscard want = t < v->seek_target - 0.5 ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
                 if (v->skipping == 0 && v->vdec->skip_frame != want) {
                     v->vdec->skip_frame = want;
@@ -2641,6 +2714,8 @@ static void take_frame(ReelCore *v)
     cur_changed(v);
     v->cur = v->q[0];
     v->cur_pts = v->qpts[0];
+    if (v->sfdec)
+        sub_file_feed(v, v->cur_pts);         /* (a picture subtitle file: the ones coming up) */
     memmove(v->q, v->q + 1, (v->qn - 1) * sizeof(v->q[0]));
     memmove(v->qpts, v->qpts + 1, (v->qn - 1) * sizeof(v->qpts[0]));
     v->qn--;
@@ -2651,7 +2726,7 @@ static void take_frame(ReelCore *v)
    refills) */
 static void hw_fallback(ReelCore *v)
 {
-    AVCodecContext *c = open_decoder(v->fmt->streams[v->vs]);
+    AVCodecContext *c = open_decoder(v->vst);
     double at = reelcore_position(v);
     const char *who = v->vc ? "the VideoCore" : "the HEVC block";
     if (!c) {
@@ -2663,6 +2738,7 @@ static void hw_fallback(ReelCore *v)
     v->vdec = c;
     v->vmore = 0;
     v->vc = v->hb = 0;
+    set_deblock(v);                        /* (the fast setting, for the new decoder) */
     av_log(NULL, AV_LOG_INFO, "reelcore: %s on the ARM from %.2f s\n", c->codec ? c->codec->name : "?", at);
     reelcore_seek(v, at);
 }
@@ -2856,6 +2932,10 @@ int reelcore_seek(ReelCore *v, double seconds)
     if (v->sdec) {
         avcodec_flush_buffers(v->sdec);
         sub_clear(v, 1);                  /* pictures come again; text is kept (and not doubled) */
+    }
+    if (v->sfdec) {
+        sub_clear(v, 1);                  /* (a picture subtitle file: decoded again from the new place) */
+        v->sfnext = -1;
     }
     if (v->dev && !v->stalled)
         aud_clear(v);
@@ -3576,7 +3656,7 @@ static void sub_clear(ReelCore *v, int bitmaps_only)
             v->sev[j++] = v->sev[i];
     }
     v->sev_n = j;
-    v->sub_key = -1;
+    v->sub_key = 0;
 }
 
 /* Keeps an event (taking its text or bitmap), in order of start */
@@ -3605,6 +3685,10 @@ static void sub_add(ReelCore *v, SubEvent *e)
                 drop = -2;
             }
         }
+        if (drop != -2 && !v->sev_n) {         /* (no memory for the first: it isn't kept) */
+            sub_event_free(e);
+            return;
+        }
         if (drop != -2) {                      /* full: the oldest goes */
             sub_event_free(&v->sev[0]);
             memmove(v->sev, v->sev + 1, (v->sev_n - 1) * sizeof(*v->sev));
@@ -3630,7 +3714,7 @@ static void sub_add(ReelCore *v, SubEvent *e)
     e->id = ++v->sub_ids;
     v->sev[i] = *e;
     v->sev_n++;
-    v->sub_key = -1;
+    v->sub_key = 0;
 }
 
 /* A decoded AVSubtitle into events; offset: added to its times (an
@@ -3644,13 +3728,6 @@ static void sub_decoded(ReelCore *v, AVSubtitle *sub, double offset, int cw, int
     int bx0 = INT_MAX, by0 = INT_MAX, bx1 = 0, by1 = 0;
     char text[1024] = "";
     size_t tn = 0;
-    if (!sub->num_rects) {                    /* nothing: ends the picture before */
-        for (int i = 0; i < v->sev_n; i++)
-            if (v->sev[i].rgba && v->sev[i].start <= start && v->sev[i].end > start)
-                v->sev[i].end = start;
-        v->sub_key = -1;
-        return;
-    }
     for (unsigned r = 0; r < sub->num_rects; r++) {
         AVSubtitleRect *rc = sub->rects[r];
         if (rc->type == SUBTITLE_BITMAP && rc->w > 0 && rc->h > 0) {
@@ -3671,6 +3748,14 @@ static void sub_decoded(ReelCore *v, AVSubtitle *sub, double offset, int cw, int
             sub_plain(text + tn, sizeof(text) - tn, rc->text);
             tn = strlen(text);
         }
+    }
+    if (!(bx1 > bx0 && by1 > by0) && !tn) {   /* nothing (no rectangles, or empty ones: FFmpeg's PGS
+                                                 clear): ends the picture before */
+        for (int i = 0; i < v->sev_n; i++)
+            if (v->sev[i].rgba && v->sev[i].start <= start && v->sev[i].end > start)
+                v->sev[i].end = start;
+        v->sub_key = 0;
+        return;
     }
     if (bx1 > bx0 && by1 > by0) {
         SubEvent e = { 0 };
@@ -3848,23 +3933,33 @@ static void sub_render_text(ReelCore *v, const char *text, int dw, int dh)
 
 /* The subtitle layer for the current picture's time, made again when what's
    on screen (or the picture's size, for text) changes */
+static uint64_t sub_mix(uint64_t h, int x)
+{
+    for (int b = 0; b < 4; b++, x >>= 8)
+        h = (h ^ (uint8_t)x) * 1099511628211ull;
+    return h;
+}
+
 static void sub_render(ReelCore *v, int dw, int dh)
 {
     char text[2048];
     size_t tn = 0;
-    int key, bitmap = -1;
+    uint64_t key = 14695981039346656037ull;   /* FNV-1a of the size and the events' ids */
+    int bitmap = -1;
     double t;
+    if (v->cur && v->sfdec)
+        sub_file_feed(v, v->cur_pts);
     if (v->sub_track < 0 || v->sub_hidden || !v->cur || !v->sev_n) {
         v->sub_shown = 0;
         return;
     }
     t = v->cur_pts;
-    key = dh * 7919 + dw;
+    key = sub_mix(sub_mix(key, dw), dh);
     text[0] = 0;
     for (int i = 0; i < v->sev_n && v->sev[i].start <= t + 0.001; i++) {
         if (t >= sub_end(v, i))
             continue;
-        key = key * 31 + v->sev[i].id;
+        key = sub_mix(key, v->sev[i].id);
         if (v->sev[i].rgba)
             bitmap = i;                        /* the latest picture */
         else if (v->sev[i].text && tn + strlen(v->sev[i].text) + 2 < sizeof(text)) {
@@ -3879,6 +3974,7 @@ static void sub_render(ReelCore *v, int dw, int dh)
         return;
     }
     v->sub_shown = 1;
+    key |= 1;                                  /* (never 0: none) */
     if (key == v->sub_key)
         return;
     v->sub_key = key;
@@ -3902,12 +3998,58 @@ static void sub_close_track(ReelCore *v)
         v->fmt->streams[v->sub_stream]->discard = AVDISCARD_ALL;
     v->sub_stream = -1;
     avcodec_free_context(&v->sdec);
+    sub_file_free(v);
     sub_clear(v, 0);
     layer_free(&v->sub_layer);
     v->sub_shown = 0;
 }
 
-/* Reads a whole subtitle file into events */
+static void sub_file_free(ReelCore *v)
+{
+    for (int i = 0; i < v->sfn; i++)
+        av_packet_free(&v->sfpkt[i]);
+    av_freep(&v->sfpkt);
+    av_freep(&v->sft);
+    v->sfn = 0;
+    v->sfnext = -1;
+    avcodec_free_context(&v->sfdec);
+}
+
+/* A picture subtitle file's packets up to 2 s ahead of pos decoded into
+   events. From the start of the one shown 10 s before pos after a seek, or
+   when the picture went back (stepped back) past what was decoded: Blu-ray
+   and DVD subtitles carry everything they need from such a point. */
+#define SUBF_AHEAD 2.0
+#define SUBF_BACK 10.0
+static void sub_file_feed(ReelCore *v, double pos)
+{
+    if (!v->sfdec || !v->sfn)
+        return;
+    if ((v->sfnext > 0 && v->sft[v->sfnext - 1] > pos + SUBF_AHEAD + SUBF_BACK) ||
+        (v->sfnext >= 0 && v->sfnext < v->sfn && v->sft[v->sfnext] < pos - SUBF_BACK))
+        v->sfnext = -1;                        /* back before what was decoded, or far past it (a seek) */
+    if (v->sfnext < 0) {
+        int lo = 0, hi = v->sfn;               /* the first at or after pos - SUBF_BACK */
+        while (lo < hi) {
+            int mid = (lo + hi) / 2;
+            if (v->sft[mid] < pos - SUBF_BACK) lo = mid + 1; else hi = mid;
+        }
+        avcodec_flush_buffers(v->sfdec);
+        sub_clear(v, 1);
+        v->sfnext = lo;
+    }
+    while (v->sfnext < v->sfn && v->sft[v->sfnext] <= pos + SUBF_AHEAD) {
+        AVSubtitle sub;
+        int got = 0;
+        if (avcodec_decode_subtitle2(v->sfdec, &sub, &got, v->sfpkt[v->sfnext]) >= 0 && got) {
+            sub_decoded(v, &sub, v->sfoff, v->sfdec->width, v->sfdec->height);
+            avsubtitle_free(&sub);
+        }
+        v->sfnext++;
+    }
+}
+
+/* Reads a whole subtitle file into events (a picture one: its packets) */
 static int sub_read_file(ReelCore *v, const char *path)
 {
     AVFormatContext *fc = NULL;
@@ -3925,6 +4067,41 @@ static int sub_read_file(ReelCore *v, const char *path)
         av_packet_free(&pkt);
         avformat_close_input(&fc);
         return ret < 0 ? ret : AVERROR_DECODER_NOT_FOUND;
+    }
+    if (dec->codec_descriptor && (dec->codec_descriptor->props & AV_CODEC_PROP_BITMAP_SUB)) {
+        AVRational tb = fc->streams[s]->time_base;
+        double last = 0;
+        int cap = 0;
+        while (av_read_frame(fc, pkt) >= 0) {
+            if (pkt->stream_index == s && pkt->size > 0) {
+                if (v->sfn == cap) {                   /* (twice as many each time) */
+                    int nc = cap ? cap * 2 : 256;
+                    AVPacket **np = av_realloc_array(v->sfpkt, nc, sizeof(*np));
+                    double *nt = np ? av_realloc_array(v->sft, nc, sizeof(*nt)) : NULL;
+                    if (np)
+                        v->sfpkt = np;
+                    if (nt) {
+                        v->sft = nt;
+                        cap = nc;
+                    }
+                }
+                if (v->sfn == cap || !(v->sfpkt[v->sfn] = av_packet_clone(pkt))) {
+                    av_packet_unref(pkt);
+                    break;                     /* (no memory: the subtitles read so far) */
+                }
+                if (pkt->pts != AV_NOPTS_VALUE)
+                    last = pkt->pts * av_q2d(tb) + offset;
+                v->sft[v->sfn++] = last;
+            }
+            av_packet_unref(pkt);
+        }
+        av_log(NULL, AV_LOG_VERBOSE, "reelcore: %d picture subtitle packets from %s\n", v->sfn, path);
+        av_packet_free(&pkt);
+        avformat_close_input(&fc);
+        v->sfdec = dec;                        /* decoded as the picture comes to them (sub_file_feed) */
+        v->sfoff = offset;
+        v->sfnext = -1;
+        return 0;
     }
     while (av_read_frame(fc, pkt) >= 0) {
         if (pkt->stream_index == s) {
@@ -4148,6 +4325,8 @@ int reelcore_step_back(ReelCore *v)
         cur_changed(v);
         v->cur_pts = v->hist_pts[v->hist_n];
         v->pause_pos = v->cur_pts;
+        if (v->sfdec)
+            sub_file_feed(v, v->cur_pts);
         v->stepped = 1;
         return REELCORE_NEW_FRAME;
     }
@@ -4242,7 +4421,7 @@ int reelcore_set_speed(ReelCore *v, double speed)
     v->sm_valid = 0;
     v->sm_step = 0;
     av_log(NULL, AV_LOG_VERBOSE, "reelcore: speed %.2fx\n", speed);
-    if (v->dev && !v->stalled && v->swr) {
+    if (v->dev && !v->stalled && v->adec) {   /* (v->swr can be none for a moment: swr_follow) */
         /* the sound already queued was made at the old speed: start again
            from the picture on screen, through a new atempo */
         tempo_open(v);
@@ -4367,13 +4546,14 @@ int reelcore_set_audio_track(ReelCore *v, int i)
         return AVERROR(EINVAL);
     }
     if (v->as >= 0)
-        actx(v)->streams[v->as]->discard = AVDISCARD_ALL;
+        v->ast->discard = AVDISCARD_ALL;
     actx(v)->streams[s]->discard = AVDISCARD_DEFAULT;
     avcodec_free_context(&v->adec);
     swr_free(&v->swr);
     v->adec = dec;
     v->swr = swr;
     v->as = s;
+    v->ast = actx(v)->streams[s];
     av_log(NULL, AV_LOG_VERBOSE, "reelcore: sound track %d (stream %d)\n", i + 1, s);
     return reelcore_seek(v, reelcore_position(v));   /* the new track from here */
 }
@@ -4417,13 +4597,22 @@ static int hw_layers(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *
         unsigned need = (unsigned)(lw * lh + 2 * cw * ch);
         uint8_t *t[3];
         av_fast_malloc(&v->rect_buf, &v->rect_size, need);
-        if (!v->rect_buf)
-            return AVERROR(ENOMEM);
-        t[0] = v->rect_buf; t[1] = t[0] + lw * lh; t[2] = t[1] + cw * ch;
-        if (half) {
-            if (hevcdec_frame_to_i420_half(d, hf, t, ts, fx + 2 * lx, fy + 2 * ly, lw, lh) != HEVCDEC_OK)
-                return AVERROR_EXTERNAL;
-        } else
+        if (v->rect_buf) {
+            t[0] = v->rect_buf; t[1] = t[0] + lw * lh; t[2] = t[1] + cw * ch;
+        }
+        if (!v->rect_buf || (half && hevcdec_frame_to_i420_half(d, hf, t, ts, fx + 2 * lx, fy + 2 * ly, lw, lh) != HEVCDEC_OK)) {
+            /* (no memory, or refused): this rectangle's layers and the
+               ones after it blended in the overlay, reading it back; the
+               rectangles before are done (blending them again doubled them) */
+            for (int i = 0; i < nl; i++)
+                if (owner[i] >= j)
+                    for (int p = 0; p < 3; p++)
+                        for (int y = 0; y < (p ? (h + 1) / 2 : h); y++)
+                            if (layer_touches(&pl[i], p, y))
+                                layer_blend_row(&pl[i], planes[p] + (size_t)y * pitch[p], p, y, p ? (w + 1) / 2 : w);
+            return -1;
+        }
+        if (!half)
             hevcdec_frame_to_i420(d, hf, t, ts, fx + lx, fy + ly, lw, lh);
         for (int p = 0; p < 3; p++) {
             int sub = p ? 2 : 1, ox = lx / sub, oy = ly / sub, pw = p ? cw : lw, ph = p ? ch : lh;
@@ -4450,14 +4639,19 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
         return AVERROR(EAGAIN);
     if (f->colorspace == AVCOL_SPC_BT709)            /* as convert() decides */
         c |= REELCORE_YUV_709;
-    if (f->color_range == AVCOL_RANGE_JPEG || f->format == AV_PIX_FMT_YUVJ420P)
-        c |= REELCORE_YUV_FULL;
+    if (f->color_range == AVCOL_RANGE_JPEG || f->format == AV_PIX_FMT_YUVJ420P || f->format == AV_PIX_FMT_YUVJ422P ||
+        f->format == AV_PIX_FMT_YUVJ444P || f->format == AV_PIX_FMT_YUVJ440P || f->format == AV_PIX_FMT_YUVJ411P)
+        c |= REELCORE_YUV_FULL;                   /* (every yuvj format is full range) */
     if (colour)
         *colour = c;
     if (!planes)
         return 0;                                   /* just the colours */
-    if (w < 2 || h < 2 || w > f->width || h > f->height)
-        return AVERROR(EINVAL);
+    {
+        int wx, wy, ww, wh;                       /* (the block's frames: their window, after the crop) */
+        frame_window(f, &wx, &wy, &ww, &wh);
+        if (w < 2 || h < 2 || w > ww || h > wh)
+            return AVERROR(EINVAL);
+    }
     t0 = av_gettime_relative();
     {
         int k = 0;
@@ -4483,12 +4677,8 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
             done = hevcdec_frame_to_i420_half(d, hf, planes, pitch, fx, fy, w, h) == HEVCDEC_OK;
         if (done) {
             v->hw_draws++;
-            if (nl && hw_layers(v, d, hf, planes, pitch, w, h, fx, fy, half, pl, nl) < 0)
-                for (int i = 0; i < nl; i++)      /* (no memory: blended in the overlay, reading it back) */
-                    for (int p = 0; p < 3; p++)
-                        for (int y = 0; y < (p ? (h + 1) / 2 : h); y++)
-                            if (layer_touches(&pl[i], p, y))
-                                layer_blend_row(&pl[i], planes[p] + (size_t)y * pitch[p], p, y, p ? (w + 1) / 2 : w);
+            if (nl)
+                hw_layers(v, d, hf, planes, pitch, w, h, fx, fy, half, pl, nl);   /* (blends in place itself if it must) */
             v->t_convert += av_gettime_relative() - t0;
             v->conv_w = w;
             v->conv_h = h;
@@ -4560,7 +4750,16 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
         uint8_t *d[4] = { planes[0], planes[1], planes[2], NULL };
         int dp[4] = { pitch[0], pitch[1], pitch[2], 0 };
         int how = !half ? SWS_POINT : w * 4 > f->width ? SWS_FAST_BILINEAR : SWS_BILINEAR;
-        v->sws_yuv = sws_getCachedContext(v->sws_yuv, f->width, f->height, f->format, w, h, AV_PIX_FMT_YUV420P,
+        /* a yuvj format as its yuv one: swscale took yuvj as full range
+           and made limited from it, though the range said (*colour) is
+           the frame's own; the same range in and out, it's left as it is
+           (and the cached context is kept: swscale renames yuvj inside) */
+        enum AVPixelFormat sf = f->format == AV_PIX_FMT_YUVJ420P ? AV_PIX_FMT_YUV420P :
+                                f->format == AV_PIX_FMT_YUVJ422P ? AV_PIX_FMT_YUV422P :
+                                f->format == AV_PIX_FMT_YUVJ444P ? AV_PIX_FMT_YUV444P :
+                                f->format == AV_PIX_FMT_YUVJ440P ? AV_PIX_FMT_YUV440P :
+                                f->format == AV_PIX_FMT_YUVJ411P ? AV_PIX_FMT_YUV411P : f->format;
+        v->sws_yuv = sws_getCachedContext(v->sws_yuv, f->width, f->height, sf, w, h, AV_PIX_FMT_YUV420P,
                                           how, NULL, NULL, NULL);
         if (!v->sws_yuv || sws_scale(v->sws_yuv, src, f->linesize, 0, f->height, d, dp) < 0)
             return AVERROR_EXTERNAL;

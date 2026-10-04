@@ -327,11 +327,15 @@ static jv *jvalue(jparser *j)
         while (j->p < j->end && isalpha((unsigned char)*j->p))
             j->p++;
         break;
-    default:
+    default: {
+        const char *p0 = j->p;
         v->type = J_NUM;
         while (j->p < j->end && strchr("+-0123456789.eE", *j->p))
             j->p++;
+        if (j->p == p0)
+            goto bad;                      /* not a value at all (and nothing read: no going round again) */
         break;
+    }
     }
     j->depth--;
     return v;
@@ -447,12 +451,16 @@ static int parse_json(const char *text, size_t len, source_t *out, int max)
     jparser j = { text, text + len, 0 };
     int n = 0;
     for (;;) {
+        const char *p0;
         jv *v;
         jspace(&j);
         if (j.p >= j.end || n >= max)
             break;
-        if (!(v = jvalue(&j)))
-            break;
+        p0 = j.p;
+        if (!(v = jvalue(&j)) || j.p == p0) {
+            jfree(v);
+            break;                         /* not JSON from here (yt-dlp's warnings after it, say): what came before */
+        }
         if (v->type == J_OBJ)
             n += from_ytdlp(v, out + n, max - n);
         else if (v->type == J_ARR)

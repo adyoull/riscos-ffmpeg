@@ -165,7 +165,7 @@ static int script(int *b)
                       "-ss 10.000 -to 100.000 -i SDFS::Pi.$.Films.trailer/mkv -map 0:v:0 -map 0:a:0 "
                       "-vf yadif=deint=interlaced,scale=-2:480 -c:v libx264 -preset veryfast -crf 23 -tune fastdecode "
                       "-pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart -metadata title=Trailer -progress pipe:1 -nostats "
-                      "SDFS::Pi.$.Out.trailer_480/mp4\n"), "ffmpeg Obey file:\n%s", obey);
+                      "SDFS::Pi.$.Out.trailer_480/mp4\nEcho ffmpeg-exit=<Sys$ReturnCode>\n"), "ffmpeg Obey file:\n%s", obey);
         CHECK(shaded(I_CONVERT) && shaded(I_SIZE) && !shaded(I_STOP) && !strcmp(conv_test_text(2), "SDFS::Pi.$.Out.trailer_480/mp4"),
               "while converting: shading, name '%s'", conv_test_text(2));
         msg(b, 0x808C2, 0x998, 24); b[5] = 0x434F4E56; return 17;
@@ -226,7 +226,28 @@ static int script(int *b)
         msg(b, 0x808C3, 0x995, 20); return 17;
     case 33:
         CHECK(conv_test_state() == CONV_STOPPED && deleted == 3, "after closing: state %d, deleted %d", conv_test_state(), deleted);
-        /* fallthrough */
+        click(b, I_CONVERT, 4); return 6;                                        /* again (Replace) */
+    case 34: msg(b, 0x808C2, 0x994, 24); b[5] = 0x434F4E56; return 17;
+    case 35:   /* a recording that starts part way: decoder messages, then to the end, exit status 0 */
+        tw_output(b, 0x994, "[h264 @ 0x1234] non-existing PPS 0 referenced\n[h264 @ 0x1234] no frame!\n"
+                  "out_time_us=90000000\ntotal_size=1048576\nprogress=end\nffmpeg-exit=0\n");
+        return 17;
+    case 36: msg(b, 0x808C3, 0x994, 20); return 17;
+    case 37:
+        CHECK(conv_test_state() == CONV_DONE && deleted == 3 && !strncmp(conv_test_text(1), "Done: ", 6),
+              "decoder messages, then the end and exit 0: state %d, deleted %d, '%s' (it worked: the file stays)",
+              conv_test_state(), deleted, conv_test_text(1));
+        click(b, I_CONVERT, 4); return 6;                                        /* again, then quit while converting */
+    case 38: msg(b, 0x808C2, 0x993, 24); b[5] = 0x434F4E56; return 17;
+    case 39: ask_answer = 3; msg(b, 8, 0x111, 20); return 18;                   /* PreQuit: Stop */
+    case 40:
+        CHECK(morites == 3 && morite_to == 0x993 && conv_test_state() == CONV_STOPPING,
+              "PreQuit, Stop: %d Morites to %x, state %d", morites, morite_to, conv_test_state());
+        msg(b, 0, 0x111, 20); return 17;                                         /* Message_Quit */
+    case 41:   /* (conv_quitting waiting for the task window to end) */
+        CHECK(deleted == 3 && conv_test_state() == CONV_STOPPING, "quitting: deleted %d before ffmpeg ended, state %d",
+              deleted, conv_test_state());
+        msg(b, 0x808C3, 0x993, 20); return 17;
     default: msg(b, 0, 0x111, 20); return 17;                                   /* Message_Quit */
     }
 }
@@ -313,7 +334,7 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
                                   !strcmp((const char *)(intptr_t)in->r[2], "file_xxx")) ? NULL : &err;
     case 0x35: out->r[2] = in->r[1] == 11 ? 1919 : in->r[1] == 12 ? 1079 : 1; return NULL;
     case 0x400DD: return NULL;                                                   /* CloseDown */
-    case 0x400C7: out->r[0] = script(b); return NULL;                            /* Wimp_Poll */
+    case 0x400C7: case 0x400E1: out->r[0] = script(b); return NULL;              /* Wimp_Poll, Wimp_PollIdle */
     }
     return &err;
 }
@@ -329,6 +350,32 @@ int main(void)
     setenv("Wimp$ScrapDir", scrap, 1);
     setenv("FFmpeg$Dir", "<Obey$Dir>", 1);
     CHECK(fffront_main() == 0, "front end didn't end cleanly");
+    CHECK(step == 42 && deleted == 4 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer/mp3") && conv_test_state() == CONV_STOPPED,
+          "quit while converting: step %d, deleted %d '%s', state %d (stopped, and the unfinished file deleted)", step,
+          deleted, deleted_name, conv_test_state());
+    {   /* the Options field takes spaces ("-vf hflip"); the name doesn't */
+        const char *vo = (const char *)(intptr_t)icons[I_OPTS * 8 + 6], *vn = (const char *)(intptr_t)icons[I_NAME * 8 + 6];
+        CHECK(vo && !strstr(vo, "A~ ") && vn && strstr(vn, "A~ "), "validation: Options '%s', name '%s'", vo ? vo : "", vn ? vn : "");
+    }
+    {   /* did it work? */
+        ConvProgress p;
+        memset(&p, 0, sizeof(p));
+        conv_parse_progress(&p, "[h264 @ 0x1] no frame!");
+        conv_parse_progress(&p, "progress=end");
+        conv_parse_progress(&p, "ffmpeg-exit=0");
+        CHECK(conv_succeeded(&p) && p.error[0], "messages, the end, exit 0: worked");
+        conv_parse_progress(&p, "ffmpeg-exit=1");
+        CHECK(!conv_succeeded(&p), "the end, exit 1: failed");
+        memset(&p, 0, sizeof(p));
+        conv_parse_progress(&p, "progress=end");
+        CHECK(conv_succeeded(&p), "the end, no messages, no exit status: worked");
+        conv_parse_progress(&p, "Conversion failed!");
+        CHECK(!conv_succeeded(&p), "the end, a message, no exit status: failed (as before)");
+        memset(&p, 0, sizeof(p));
+        conv_parse_progress(&p, "progress=continue");
+        conv_parse_progress(&p, "ffmpeg-exit=0");
+        CHECK(!conv_succeeded(&p), "exit 0 without the end: failed");
+    }
     printf("  scripted desktop: %d steps\n", step);
 
     /* the logic alone */

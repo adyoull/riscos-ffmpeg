@@ -224,6 +224,33 @@ int main(int argc, char **argv)
         CHECK(real_now() - t0 < 2, "closing while opening took %.1f s", real_now() - t0);
     }
 
+    /* 7. an address with a subtitle track shown (an MKV whose subtitles are
+       the default): the reader queues subtitle packets as a third kind, and
+       mustn't take them for the end of the video (they were written past
+       its two-kind table, over the video's end flag: read-ahead then said
+       1e9 s, and it stopped reading ahead) */
+    snprintf(url, sizeof(url), "%s/net_subs.mkv", base);
+    v = reelcore_open(url, REELCORE_NO_AUDIO);
+    CHECK(v != NULL, "subtitled address: %s", reelcore_last_error());
+    if (v) {
+        int subs = reelcore_subtitle_tracks(v), spics = 0;
+        if (subs > 0)
+            reelcore_set_subtitle_track(v, 0);
+        pump(v, -1, 10, &spics);
+        for (double end = fake_time + 3.0; fake_time < end; ) {
+            if (reelcore_update(v) == REELCORE_NEW_FRAME)
+                spics++;
+            fake_time += 0.01;
+            usleep(500);
+        }
+        reelcore_net(v, &ns);
+        printf("  with subtitles (%d track%s): %d pictures, %.1f s read ahead%s\n", subs, subs == 1 ? "" : "s", spics,
+               ns.ahead, ns.ended ? ", all" : "");
+        CHECK(subs >= 1 && spics >= 50 && ns.ahead >= 0 && ns.ahead < 100,
+              "with subtitles: %d tracks, %d pictures, %.1f s ahead", subs, spics, ns.ahead);
+        reelcore_close(v);
+    }
+
     /* 6. what counts as an address */
     CHECK(reelcore_is_network("https://a.b/c") && reelcore_is_network("rtmp://x/y") && reelcore_is_network("http://x"),
           "addresses not seen as such");

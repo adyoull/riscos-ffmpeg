@@ -257,6 +257,34 @@ int main(int argc, char **argv)
         speed = "1234 Kbps"; date = "Tue Sep 29 2026 12:00:00 \xa3"; g1 = graph;
     }
 
+    if (argc > 4) {   /* a full-range 4:2:2 video (MJPEG, yuvj422p) into an overlay: swscale's path,
+                         the range kept as reported (full), so the luma is the file's own */
+        ReelCore *q = reelcore_open(argv[3], 0);
+        FILE *rf = fopen(argv[4], "rb");
+        CHECK(q != NULL && rf != NULL, "can't open %s or %s", argv[3], argv[4]);
+        for (int i = 0; q && i < 200 && reelcore_update(q) != REELCORE_NEW_FRAME; i++)
+            fake_time += 0.01;
+        if (q && rf) {
+            int fw = 320, fh = 180, colour = 0, diff = 0, maxd = 0;
+            uint8_t *y = malloc(fw * fh * 3 / 2), *ref = malloc(fw * fh);
+            uint8_t *pl[3] = { y, y + fw * fh, y + fw * fh * 5 / 4 };
+            int pitch[3] = { fw, fw / 2, fw / 2 };
+            size_t got = fread(ref, 1, fw * fh, rf);
+            CHECK(reelcore_draw_yuv420(q, pl, pitch, fw, fh, &colour) == 0 && got == (size_t)(fw * fh), "MJPEG: drawn, ref %zu", got);
+            for (int i = 0; i < fw * fh; i++) {
+                int d = abs(y[i] - ref[i]);
+                diff += d > 3;                       /* (the reference is the host's own ffmpeg's decoding) */
+                maxd = d > maxd ? d : maxd;
+            }
+            printf("  full-range 4:2:2 (MJPEG) into YV12: reported %s range, %d luma samples differ from the file's (most %d)\n",
+                   colour & REELCORE_YUV_FULL ? "full" : "video", diff, maxd);
+            CHECK((colour & REELCORE_YUV_FULL) && diff == 0, "MJPEG: reported %x, %d samples differ (most by %d)", colour, diff, maxd);
+            free(y); free(ref);
+        }
+        if (rf) fclose(rf);
+        if (q) reelcore_close(q);
+    }
+
     {   /* off again: exactly as before */
         reelcore_set_panel(v, NULL);
         reelcore_draw_pixels(v, b, W * 4, W, H, 0, REELCORE_STRETCH);

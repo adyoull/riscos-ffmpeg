@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdint.h>
 #include "reelcore.h"
 #include "fake_sdl_gl.h"
 
@@ -255,6 +256,54 @@ int main(int argc, char **argv)
                b.decoded - a.decoded, reelcore_position(v));
         CHECK(b.decoded - a.decoded < 120 && fabs(reelcore_position(v) - 7.96) < 0.005,
               "step back at 8 s: %u decoded (want under 120 of 200), at %.3f", b.decoded - a.decoded, reelcore_position(v));
+        reelcore_close(v);
+    }
+    /* 6. a picture subtitle file (Blu-ray .sup, made by mkpgs.py): 20
+       subtitles, the k-th from k+0.2 to k+0.8 s, a box 40+4k pixels wide.
+       Each is there when its time comes, after seeks forward and back too:
+       before, the whole file was decoded at once and only the last 8
+       pictures were kept */
+    v = argc > 8 ? reelcore_open(argv[7], 0) : NULL;
+    CHECK(argc <= 8 || v != NULL, "can't open %s", argc > 7 ? argv[7] : "");
+    if (v) {
+        static const double at[5] = { 1.5, 12.5, 5.5, 18.5, 2.5 };   /* played, seeked forward, back, played on, back */
+        uint32_t *px = malloc(320 * 180 * 4);
+        CHECK(reelcore_add_subtitle_file(v, argv[8]) == 0, "adding %s", argv[8]);
+        for (int i = 0; i < 5; i++) {
+            char text[64];
+            int k = (int)at[i], white = 0;
+            if (i == 0 || i == 3)
+                play_to(v, at[i]);
+            else {
+                reelcore_seek(v, at[i]);
+                seeked(v);
+            }
+            reelcore_subtitle_text(v, text, sizeof(text));
+            reelcore_draw_pixels(v, px, 320 * 4, 320, 180, 0, REELCORE_STRETCH);
+            for (int x = 0; x < 320; x++) {
+                const uint8_t *p = (const uint8_t *)&px[150 * 320 + x];
+                white += p[0] > 200 && p[1] > 200 && p[2] > 200;
+            }
+            printf("  picture subtitles at %.1f s: '%s', a box %d wide (want %d)\n", reelcore_position(v), text, white,
+                   40 + 4 * k);
+            CHECK(!strcmp(text, "[picture]") && abs(white - (40 + 4 * k)) <= 2,
+                  "picture subtitle %d at %.1f s: '%s', box %d wide (want %d)", k, reelcore_position(v), text, white,
+                  40 + 4 * k);
+        }
+        {   /* and gone again: the 3rd ends at 3.8 s, the 4th starts at 4.2 */
+            char text[64];
+            int white = 0;
+            play_to(v, 3.95);
+            reelcore_subtitle_text(v, text, sizeof(text));
+            reelcore_draw_pixels(v, px, 320 * 4, 320, 180, 0, REELCORE_STRETCH);
+            for (int x = 0; x < 320; x++) {
+                const uint8_t *p = (const uint8_t *)&px[150 * 320 + x];
+                white += p[0] > 200 && p[1] > 200 && p[2] > 200;
+            }
+            printf("  picture subtitles at %.2f s (between two): '%s', %d white\n", reelcore_position(v), text, white);
+            CHECK(!text[0] && !white, "picture subtitle still shown at %.2f s: '%s', %d white", reelcore_position(v), text, white);
+        }
+        free(px);
         reelcore_close(v);
     }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);

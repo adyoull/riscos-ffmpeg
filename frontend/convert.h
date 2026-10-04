@@ -39,6 +39,7 @@ typedef struct {                        /* ffmpeg's -progress lines, and its err
     double out_time, speed;
     long long bytes;
     int ended, updates;
+    int exited, exit_code;              /* ffmpeg's exit status, when the Obey file could echo it */
     char error[160];
 } ConvProgress;
 
@@ -58,12 +59,14 @@ void conv_output_leaf(char *buf, size_t size, const char *src, const ConvSetting
 void conv_parse_probe(ConvSource *in, const char *text);
 void conv_describe(char *buf, size_t size, const ConvSource *in);
 void conv_parse_progress(ConvProgress *p, const char *line);
+int conv_succeeded(const ConvProgress *p);
 
 /* the window, from fffront.c's poll loop */
 void conv_init(int task, const char *ffdir);
 void conv_open(void);
 int conv_window(void);
 int conv_busy(void);
+void conv_quitting(void);
 int conv_click(const int *block);
 int conv_key(const int *block);
 int conv_close_request(const int *block);

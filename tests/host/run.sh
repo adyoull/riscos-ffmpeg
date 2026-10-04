@@ -57,6 +57,18 @@ ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=12 -f lavf
   -c:v libx264 -preset ultrafast -g 25 -c:a aac "$O/gop1s.mp4"
 "$TOP/tests/qemu/aligntrap.sh" "$O/slow_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$O/gop1s.mp4" 2>&1 | grep -v "swscaler" || bad=1
 
+# the sound changing part way (channels, rate): the resampler made again
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/sound_change_test.c" -o "$O/sound_change_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/sound_change_test" "$O/reelcore.o" \
+  "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/sound_change_test.o" $LIBS 2>/dev/null
+ffmpeg -v error -y -f lavfi -i sine=f=440:d=2:sample_rate=48000 -ac 2 -c:a aac -f adts "$O/sc1.aac"
+ffmpeg -v error -y -f lavfi -i sine=f=660:d=2:sample_rate=22050 -ac 6 -c:a aac -f adts "$O/sc2.aac"
+printf "file '%s'\n" "$O/sc1.aac" "$O/sc2.aac" "$O/sc1.aac" > "$O/sc.txt"   # stereo 48 kHz, 5.1 22.05 kHz, stereo 48 kHz
+ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=6 -f concat -safe 0 -i "$O/sc.txt" -map 0:v -map 1:a \
+  -c:v libx264 -preset ultrafast -c:a copy -f mpegts "$O/sound_change.ts"   # (as a DVB recording: TS, the ADTS kept)
+echo "== sound_change_test (the sound's channels and rate changing part way)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/sound_change_test" "$O/sound_change.ts" 6.1 2>&1 | grep -v "reelcore: \|Estimating" || bad=1
+
 # reelcore with the VideoCore's decoder (h264_vchiq, patch 0021): a stand-in for it here
 # (reelcore built for the HEVC block's frames, output_hw, as on RISC OS with devkit 0.2.8)
 $CC -DREELCORE_HEVCDEC -I$S/include -I$TOP/third_party/reelhwaccel/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore \
@@ -87,7 +99,7 @@ echo "== halve_test (big reductions halved first: NEON vs C, and the picture)"
 # what Reel finds in text: addresses, playlists, yt-dlp -g and -j output (host gcc, sanitizers)
 echo "== sources_test (web addresses and yt-dlp's output in text)"
 gcc -O1 -g -fsanitize=address,undefined -I"$TOP/player" "$TOP/player/sources.c" "$HERE/sources_test.c" -o "$O/sources_test" &&
-  "$O/sources_test" || bad=1
+  timeout 60 "$O/sources_test" || bad=1   # (a loop that never ends fails too)
 
 # the sound clock in StreamManager's 2048-frame steps, a 30 fps video with 44.1 kHz sound
 ffmpeg -v error -y -f lavfi -i testsrc2=size=640x360:rate=30:duration=7 \
@@ -106,7 +118,9 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/panel_test
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/panel_test.o" $LIBS -lm 2>/dev/null
 ffmpeg -v error -y -f lavfi -i testsrc2=size=640x360:rate=25:duration=1 -c:v libx264 -preset ultrafast -pix_fmt yuv444p "$O/c444.mp4"
 echo "== panel_test (stats drawn into the picture)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/panel_test" "$O/c30_44k.mp4" "$O/c444.mp4" 2>&1 | grep -v "reelcore: " || bad=1
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=1 -c:v mjpeg -pix_fmt yuvj422p "$O/cmjpeg.avi"
+ffmpeg -v error -y -i "$O/cmjpeg.avi" -frames:v 1 -vf extractplanes=y -f rawvideo -pix_fmt gray "$O/cmjpeg.y"
+"$TOP/tests/qemu/aligntrap.sh" "$O/panel_test" "$O/c30_44k.mp4" "$O/c444.mp4" "$O/cmjpeg.avi" "$O/cmjpeg.y" 2>&1 | grep -v "reelcore: " || bad=1
 
 # subtitles, chapters, turned pictures, frame steps
 printf '1\n00:00:01,000 --> 00:00:02,500\nHello <i>there</i>\n\n2\n00:00:03,000 --> 00:00:04,000\n\xe2\x80\x9cQuoted\xe2\x80\x9d \xe2\x80\x94 it\xe2\x80\x99s caf\xc3\xa9\nsecond line\n\n' > "$O/subs.srt"
@@ -124,7 +138,10 @@ $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/sub_te
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/sub_test" "$O/reelcore.o" \
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/sub_test.o" $LIBS -lm 2>/dev/null
 echo "== sub_test (subtitles, chapters, turned pictures, frame steps)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/sub_test" "$O/subs.mkv" "$O/plain.mp4" "$O/subs.srt" "$O/turned.mp4" "$O/subs.ass" "$O/gop.mp4" 2>&1 | grep -v "reelcore: " || bad=1
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=21 -c:v libx264 -preset ultrafast -g 25 -an "$O/long21.mp4"
+python3 "$HERE/mkpgs.py" "$O/pics.sup" 20                     # Blu-ray picture subtitles, 20 of them
+"$TOP/tests/qemu/aligntrap.sh" "$O/sub_test" "$O/subs.mkv" "$O/plain.mp4" "$O/subs.srt" "$O/turned.mp4" "$O/subs.ass" "$O/gop.mp4" \
+  "$O/long21.mp4" "$O/pics.sup" 2>&1 | grep -v "reelcore: " || bad=1
 
 # RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
 # (the hardware decoding test tools and the HEVCHW module moved to
@@ -144,6 +161,9 @@ NS=$O/netsamples; mkdir -p "$NS"
 cp "$SAMPLES/long_h264_aac_322_184.mp4" "$NS/"
 ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -map 0:v -c copy "$NS/net_video_only.mp4"
 ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -map 0:a -c copy "$NS/net_sound_only.m4a"
+for i in $(seq 0 39); do printf '%d\n00:00:%02d,123 --> 00:00:%02d,800\nLine %d\n\n' $((i + 1)) $i $i $i; done > "$NS/net_subs.srt"   # (times that aren't whole seconds)
+ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=40 -i "$NS/net_subs.srt" -map 0:v -map 1 \
+  -c:v libx264 -preset ultrafast -g 25 -c:s srt -disposition:s:0 default "$NS/net_subs.mkv"   # (longer than the read-ahead)
 NP=$((20000 + RANDOM % 20000)); : > "$O/net_headers.log"
 python3 "$HERE/httpserve.py" "$NP" "$NS" "$O/net_headers.log" >/dev/null 2>&1 & NS1=$!
 python3 "$HERE/httpserve.py" $((NP + 1)) --silent >/dev/null 2>&1 & NS2=$!

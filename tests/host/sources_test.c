@@ -113,6 +113,17 @@ int main(void)
     CHECK(n == 0 && !hls, "notes: %d", n);
     n = parse("{\"title\": \"broken\", \"url\": ", s, 8, &hls);
     CHECK(n == 0, "broken JSON: %d", n);
+    /* JSON with something else after it (yt-dlp -j ... 2>&1: its warnings
+       after the object): the objects before it, and no endless loop */
+    n = parse("{\"title\": \"A\", \"url\": \"https://a/1\"}\nWARNING: [youtube] x: nsig extraction failed\n", s, 8, &hls);
+    CHECK(n == 1 && !strcmp(s[0].url, "https://a/1"), "JSON then a warning: %d", n);
+    free_all(s, n);
+    n = parse("[]x", s, 8, &hls);
+    CHECK(n == 0, "[]x: %d", n);
+    n = parse("{} http://a/b", s, 8, &hls);
+    CHECK(n == 0, "{} then an address: %d", n);
+    n = parse("[{\"url\": \"https://a/1\"}, x]", s, 8, &hls);
+    CHECK(n == 0, "an array with a non-value: %d", n);
     n = parse("http://1/\nhttp://2/\nhttp://3/\n", s, 2, &hls);
     CHECK(n == 2, "max 2: %d", n);
     free_all(s, n);

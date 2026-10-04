@@ -201,6 +201,7 @@ static void menu_select(const int *sel)
     case 4:
         if (conv_busy() && !quit_ok())
             break;
+        conv_quitting();                      /* (stopped, and its unfinished file deleted) */
         r.r[0] = 0;
         swi(Wimp_CloseDown, &r);
         exit(0);
@@ -356,6 +357,7 @@ int fffront_main(void)
             if (conv_message(block))
                 break;
             if (block[4] == MSG_QUIT) {
+                conv_quitting();
                 r.r[0] = task;
                 swi(Wimp_CloseDown, &r);
                 return 0;

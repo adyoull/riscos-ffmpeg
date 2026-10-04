@@ -43,6 +43,10 @@ static int fails;
 static int out_buffers = -1;                 /* asked of h264_vchiq (zero-copy: devkit 0.2.1) */
 static int asked, pending, refuse_open, refuse_send, fail_after = -1, refused, vc_frames, failed;
 static int asked_hb, output_8bit = -1, fail_err = AVERROR_EXTERNAL;   /* hevc_hwdec's stand-in */
+/* the failure given back by send_packet rather than receive_frame: FFmpeg 5.1
+   runs a receive_frame decoder (h264_vchiq, hevc_hwdec) inside send_packet,
+   so that's where a real one's error comes back first */
+static int fail_in_send;
 static int output_hw = -1, vc_is_hevc, hw_live, to_i420_calls, to_half_calls, half_refused;
 
 #ifdef REELCORE_HEVCDEC
@@ -185,6 +189,8 @@ int __wrap_avcodec_open2(AVCodecContext *c, const AVCodec *codec, AVDictionary *
 int __real_avcodec_send_packet(AVCodecContext *c, const AVPacket *p);
 int __wrap_avcodec_send_packet(AVCodecContext *c, const AVPacket *p)
 {
+    if (c == vc_ctx && failed && fail_in_send)
+        return fail_err;
     if (c == vc_ctx && burst && releasing)
         return AVERROR(EAGAIN);              /* its input full while it hands pictures over */
     if (c == vc_ctx && p && refuse_send) {
@@ -199,7 +205,7 @@ int __wrap_avcodec_receive_frame(AVCodecContext *c, AVFrame *f)
 {
     int r;
     if (c == vc_ctx && failed)
-        return fail_err;
+        return fail_in_send ? AVERROR(EAGAIN) : fail_err;
     if (c == vc_ctx && burst) {
         for (;;) {
             if (releasing && stash_n) {
@@ -232,7 +238,7 @@ int __wrap_avcodec_receive_frame(AVCodecContext *c, AVFrame *f)
     if (c == vc_ctx && r >= 0 && ++vc_frames == fail_after) {
         av_frame_unref(f);
         failed = 1;
-        return fail_err;                     /* the VideoCore stopped answering (or hevc_hwdec refused) */
+        return fail_in_send ? AVERROR(EAGAIN) : fail_err;   /* the VideoCore stopped answering (or hevc_hwdec refused) */
     }
 #ifdef REELCORE_HEVCDEC
     if (c == vc_ctx && r >= 0 && vc_is_hevc && output_hw == 1)
@@ -570,7 +576,42 @@ int main(int argc, char **argv)
               a.decoder == REELCORE_DECODER_ARM_AFTER, "HEVC failed part way: fell back %d, end %d, %u shown of %u, stats %d %d",
               fell_back, a.end, a.shown, href.shown, a.decoder_early, a.decoder);
         fail_after = -1;
+        /* the same two, the error coming back from send_packet (as from the
+           real decoders): before, reelcore didn't see it, and the picture
+           stopped with no fall back to the ARM */
+        fail_in_send = 1;
+        fail_err = AVERROR(ENOSYS);
+        fail_after = 1;
+        play(argv[2], 0, &a);
+        printf("  HEVC block refused at its first picture (from send_packet): %u shown, end %d, decoder %s\n", a.shown,
+               a.end, decoder_line(a.info));
+        CHECK(fell_back == 1 && a.end && a.shown + 2 >= href.shown && a.decoder == REELCORE_DECODER_ARM_AFTER,
+              "HEVC refused at the first picture, from send_packet: fell back %d, end %d, %u shown of %u, '%s'",
+              fell_back, a.end, a.shown, href.shown, decoder_line(a.info));
+        fail_err = AVERROR_EXTERNAL;
+        fail_after = href.decoded - 5;
+        play(argv[2], 0, &a);
+        printf("  HEVC block failed at picture %d (from send_packet): %u shown, end %d, decoder %s\n", fail_after, a.shown,
+               a.end, decoder_line(a.info));
+        CHECK(fell_back == 1 && a.end && a.shown > href.shown * 8 / 10 && a.decoder == REELCORE_DECODER_ARM_AFTER,
+              "HEVC failed part way, from send_packet: fell back %d, end %d, %u shown of %u, stats %d", fell_back, a.end,
+              a.shown, href.shown, a.decoder);
+        fail_after = -1;
+        fail_in_send = 0;
+        failed = 0;
     }
+
+    /* the VideoCore failing part way, its error from send_packet */
+    fail_in_send = 1;
+    fail_err = AVERROR_EXTERNAL;
+    fail_after = 40;
+    play(argv[1], 0, &a);
+    printf("  VideoCore failed at picture 40 (from send_packet): %u shown, decoder %s\n", a.shown, decoder_line(a.info));
+    CHECK(fell_back == 1 && a.end && a.shown > ref.shown * 9 / 10 && a.decoder == REELCORE_DECODER_ARM_AFTER,
+          "VideoCore failed part way, from send_packet: fell back %d, end %d, %u shown of %u, stats %d", fell_back, a.end,
+          a.shown, ref.shown, a.decoder);
+    fail_after = -1;
+    fail_in_send = 0;
 
     printf(fails ? "vc_test: %d failures\n" : "vc_test: all passed\n", fails);
     return fails != 0;

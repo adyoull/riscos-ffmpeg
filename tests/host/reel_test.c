@@ -104,13 +104,15 @@ static int *title_ptr;
 static int proginfo_made, proginfo_icons, bar_info_sub = -99;
 static char proginfo_seen[512];     /* "Name:=Reel|Purpose:=..|" from the window's icons */
 static int proginfo_fields;         /* values in display fields (grey, "R2" slabbed in), as other programs' */
+static char pic_menu_seen[256];     /* the Picture submenu's items, "Fit|Fill (crop)|..." */
 
 static int *st(int w) { return state[w == FULL ? 1 : w == INFO ? 2 : w == MINI ? 3 : w == URLW ? 4 : 0]; }
 
 /* web addresses (REEL_TEST_URL: tests/host/httpserve.py serving the clip and
    its video-only and sound-only copies) */
 static const char *base_url;
-static int url_created, url_open, url_nicons, msg_refs = 1000;
+static int url_created, url_open, url_nicons, msg_refs = 1000, url_autoredraw;
+static int full_ext[4];             /* the full screen window's extent, as last set (Wimp_SetExtent) */
 static char *url_field;                 /* the address field's text (the icon's buffer) */
 static char *url_label_text;            /* the label above it (icon 0's buffer) */
 static ReelCore *hls_before;
@@ -305,6 +307,8 @@ static int next_event(int *b)
             break;
         case P_PICFILL:
             MENU_PICK(WIN, M_PIC, 1);                                 /* Fill (crop) */
+            CHECK(!strcmp(pic_menu_seen, "Fit|Fill (crop)|Original size|Stretch|"),
+                  "the Picture submenu's items: %s (want Fit, Fill (crop), Original size, Stretch)", pic_menu_seen);
             CHECK(reel_test_pic_flags() == REELCORE_FILL, "picture flags %d (want fill)", reel_test_pic_flags());
             check_picture("fill");
             break;
@@ -481,6 +485,9 @@ static int next_event(int *b)
                 CHECK(state[1][3] - state[1][1] == SCR_W * 2 && state[1][4] - state[1][2] == SCR_H * 2,
                       "full screen window %dx%d", state[1][3] - state[1][1], state[1][4] - state[1][2]);
                 CHECK(caret_win == FULL, "no caret in the full screen window");
+                CHECK(full_ext[2] - full_ext[0] == SCR_W * 2 && full_ext[3] - full_ext[1] == SCR_H * 2,
+                      "full screen window's extent %dx%d (set to the screen's size each time: after a mode change too)",
+                      full_ext[2] - full_ext[0], full_ext[3] - full_ext[1]);
                 plots_full = PLOTS;
             }
             break;
@@ -991,6 +998,7 @@ static int next_event(int *b)
             if (phase_step == 1) { phase_step++; b[0] = 1; b[1] = -1; return 9; }             /* Open address... */
             if (phase_step == 2) {
                 phase_step++;
+                CHECK(url_autoredraw, "Open address: not an auto-redraw window, so Reel's redraw painted the video into it");
                 CHECK(url_created == 1 && url_open && url_nicons == 5 && caret_win == URLW && url_field,
                       "Open address: made %d, open %d, %d icons, caret in %x", url_created, url_open, url_nicons, caret_win);
                 sent_action = 0;
@@ -1185,7 +1193,15 @@ static int next_event(int *b)
             if ((f = fopen(types, "r")) != NULL) { size_t n = fread(types, 1, sizeof(types) - 1, f); types[n] = 0; fclose(f); }
             else types[0] = 0;
             if (phase_step == 0) {
-                /* the default (While running, all ticked): no Run aliases of ours */
+                /* the default (While running, all ticked): no Run aliases of ours, and the other
+                   program's (planted at the start) left alone */
+                int o = fvar_find("Alias$@RunType_BF8");
+                char ow[80];
+                snprintf(ow, sizeof(ow), "/fake/!%sX %%*0", APP_NAME);
+                CHECK(o >= 0 && !strcmp(fvar_val[o], ow), "another program's Run alias was taken for ours: BF8 '%s'",
+                      o >= 0 ? fvar_val[o] : "(deleted)");
+                if (o >= 0)
+                    fvar_name[o][0] = 0;                                          /* (gone now, for what follows) */
                 CHECK(fvar_find(var) < 0 && fvar_find("Alias$@RunType_BF8") < 0, "While running set a Run alias");
                 snprintf(fvar_name[fvar_n], sizeof(fvar_name[0]), "Alias$@RunType_FFD");   /* another program ran Data files */
                 snprintf(fvar_val[fvar_n++], sizeof(fvar_val[0]), "Run <Other$Dir> %%*0");
@@ -1423,6 +1439,10 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
                     in->r[1] == 12 ? SCR_H - 1 : 0;
         return NULL;
     case 0x400C2: out->r[0] = 1; return NULL;                             /* CreateIcon */
+    case 0x400D7:                                                         /* Wimp_SetExtent */
+        if (in->r[0] == FULL)
+            memcpy(full_ext, b, sizeof(full_ext));
+        return NULL;
     case 0x400C1:                                                         /* CreateWindow */
         if (b[7] == (int)0x84000012) {                                    /* About this program */
             proginfo_made++; proginfo_icons = b[21];
@@ -1440,7 +1460,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
             out->r[0] = PROGINFO; return NULL;
         }
         if (b[7] == (int)0x80000002) { mini_created++; mini_nicons = b[21]; out->r[0] = MINI; return NULL; }
-        if (b[7] == (int)0x87000002) {                                    /* Open address */
+        if ((b[7] & ~0x10) == (int)0x87000002) {                          /* Open address */
+            url_autoredraw = (b[7] & 0x10) != 0;                          /* (not drawn by Reel: the video went into it) */
             url_created++; url_nicons = b[21];
             url_field = (char *)(intptr_t)b[22 + 8 * 1 + 5];              /* icon 1's text */
             url_label_text = (char *)(intptr_t)b[22 + 8 * 0 + 5];         /* icon 0's text */
@@ -1496,6 +1517,22 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x400D4:                                                         /* CreateMenu */
         if (b && b[7 + 3] && !strcmp((const char *)(intptr_t)b[7 + 3], "Info"))   /* the icon bar menu */
             bar_info_sub = b[7 + 1];
+        for (int i = 0; b && i < 32; i++) {   /* the window menu's Picture submenu, as the Wimp sees it */
+            const int *it = b + 7 + 6 * i;
+            if (it[3] && (it[2] & 0x100) && !strcmp((const char *)(intptr_t)it[3], "Picture") && it[1] > 0) {
+                const int *sub = (const int *)(intptr_t)it[1];
+                pic_menu_seen[0] = 0;
+                for (int k = 0; k < 8; k++) {
+                    const int *si = sub + 7 + 6 * k;
+                    snprintf(pic_menu_seen + strlen(pic_menu_seen), sizeof(pic_menu_seen) - strlen(pic_menu_seen), "%s|",
+                             si[3] && (si[2] & 0x100) ? (const char *)(intptr_t)si[3] : "(none)");
+                    if (si[0] & 0x80)
+                        break;
+                }
+            }
+            if (it[0] & 0x80)
+                break;
+        }
         return NULL;
     case 0x400D1: case 0x400CD: case 0x400DC: return NULL;
     case 0x400D2: caret_win = in->r[0]; return NULL;
@@ -1627,6 +1664,10 @@ int main(int argc, char **argv)
     clip2 = argv[2];
     clip3 = argc > 3 ? argv[3] : NULL;
     setenv(APP_NAME "$Dir", "/fake/!" APP_NAME, 1);
+    /* another program beside us whose name starts with ours (!Reel and
+       !ReelEGL): its Run alias isn't ours, so it's left alone */
+    snprintf(fvar_name[fvar_n], sizeof(fvar_name[0]), "Alias$@RunType_BF8");
+    snprintf(fvar_val[fvar_n++], sizeof(fvar_val[0]), "/fake/!%sX %%*0", APP_NAME);
     base_url = getenv("REEL_TEST_URL");
     (void)title;
     strcpy(choices_dir, "/tmp/reelchoicesXXXXXX");                        /* a fresh Choices directory */

@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <kernel.h>
 #include "convert.h"
 
@@ -411,12 +412,27 @@ void conv_parse_progress(ConvProgress *p, const char *line)
         p->speed = atof(line + 6);
     } else if (!strncmp(line, "total_size=", 11)) {
         p->bytes = atoll(line + 11);
+    } else if (!strncmp(line, "ffmpeg-exit=", 12)) {     /* the Obey file's last line: its exit status */
+        p->exited = 1;
+        p->exit_code = atoi(line + 12);
     } else if (!strncmp(line, "progress=", 9)) {
         p->ended = !strncmp(line + 9, "end", 3);
         p->updates++;
     } else if (*line && !strchr(line, '=')) {
-        snprintf(p->error, sizeof(p->error), "%s", line);   /* ffmpeg's -v error messages */
+        snprintf(p->error, sizeof(p->error), "%s", line);   /* ffmpeg's -v error messages (the last) */
     }
+}
+
+/* Did the conversion work? ffmpeg got to the end, and (when the Obey file
+   said) exited with 0. Its -v error messages aren't enough to say it
+   failed: a recording that starts part way through prints some ("no
+   frame!", "non-existing PPS referenced") and converts fine. Without the
+   exit status, messages count as failing, as before. */
+int conv_succeeded(const ConvProgress *p)
+{
+    if (!p->ended)
+        return 0;
+    return p->exited ? p->exit_code == 0 : !p->error[0];
 }
 
 /* ---- the window ---------------------------------------------------------- */
@@ -487,7 +503,8 @@ static char s_src_l[] = "Source", s_preset_l[] = "Convert to", s_format_l[] = "F
             s_opts_l[] = "Options", s_opts_h[] = "more ffmpeg options, e.g. -vf hflip", s_convert[] = "Convert", s_stop[] = "Stop",
             s_play[] = "Play", s_show[] = "Show", s_log[] = "Log", s_empty[] = "";
 static char v_popup[] = "R5;Sgright,pgright", v_display[] = "R2", v_opt[] = "Soptoff,opton", v_default[] = "R6,3",
-            v_action[] = "R5,3", v_write[] = "Pptr_write;Ktar;A~ ", v_time[] = "Pptr_write;Ktar;A0-9:.",
+            v_action[] = "R5,3", v_write[] = "Pptr_write;Ktar;A~ ", v_opts[] = "Pptr_write;Ktar",   /* (Options: spaces between its words) */
+            v_time[] = "Pptr_write;Ktar;A0-9:.",
             v_label[] = "", v_fill[] = "", v_file[16];
 
 static const char *const help[N_ICONS] = {
@@ -512,9 +529,9 @@ static const char *const help[N_ICONS] = {
                "the file is a little bigger.",
     [I_FROM] = "Convert only part of the file: start from this time (h:mm:ss, m:ss or seconds). Empty: from the start.",
     [I_TO] = "Stop at this time. Empty: to the end.",
-    [I_OPTS] = "More ffmpeg options for the new file, as on the command line (e.g. -vf hflip, -r 25, "
-               "-metadata title=Holiday). They come after the window's own, so they win: -c:v or -crf here "
-               "replaces what's chosen above, and -vf replaces the size and deinterlace filters. Empty: none.",
+    [I_OPTS] = "More ffmpeg options, as on the command line (e.g. -vf hflip, -r 25). They come after "
+               "the window's own, so they win: -c:v or -crf here replaces the choice above, and -vf the size "
+               "and deinterlace filters.",   /* (a help reply holds 235 characters) */
     [I_OPTS_H] = "More ffmpeg options for the new file, as on the command line: see the Options field.",
     [I_FILE] = "Drag this to a directory display to put the new file there instead.",
     [I_NAME] = "Where the new file goes: next to the original to start with. Edit it, or drag the icon to "
@@ -608,7 +625,7 @@ static int create_window(void)
     icon_mk(&w.icon[I_TRIM_H], 616, -532, WIN_W - 24, -484, IF_TEXT | IF_VCENT | IF_COL(4, 1), s_trim_h, v_label, sizeof(s_trim_h));
     LABEL(I_OPTS_L, 16, -588, 184, -540, s_opts_l);
     icon_mk(&w.icon[I_OPTS], 200, -588, 700, -540, IF_TEXT | IF_BORDER | IF_VCENT | IF_FILLED | IF_BUTTON(15) | IF_COL(7, 0),
-            C.t_opts, v_write, sizeof(C.t_opts));
+            C.t_opts, v_opts, sizeof(C.t_opts));
     icon_mk(&w.icon[I_OPTS_H], 716, -588, WIN_W - 24, -540, IF_TEXT | IF_VCENT | IF_COL(4, 1), s_opts_h, v_label, sizeof(s_opts_h));
     /* 3. saving */
     icon_mk(&w.icon[I_FILE], 24, -720, 132, -616, IF_TEXT | IF_SPRITE | IF_HCENT | IF_BUTTON(6) | IF_COL(7, 1),
@@ -898,6 +915,8 @@ static int run(const char *program, const char *args, int txt, const char *obey_
         return -1;
     }
     fprintf(f, "| Run by !FFmpeg's Convert window\n%s.%s %s\n", C.ffdir, program, args);
+    if (txt == TXT_CONVERT)                             /* how it ended (conv_succeeded) */
+        fprintf(f, "Echo ffmpeg-exit=<Sys$ReturnCode>\n");
     fclose(f);
     r.r[0] = 18; r.r[1] = (intptr_t)path; r.r[2] = 0xFEB;   /* an Obey file */
     swi(OS_File, &r);
@@ -987,7 +1006,7 @@ static void start(const char *out)
     char args[1200], err[200];
     _kernel_swi_regs r;
     conv_sync();
-    if (!strcmp(out, C.src)) {
+    if (!strcasecmp(out, C.src)) {            /* (RISC OS names: any case is the same file) */
         report("That's the file being converted: save the new one under another name.", 1 | 16);
         return;
     }
@@ -996,11 +1015,16 @@ static void start(const char *out)
         return;
     }
     r.r[0] = 17; r.r[1] = (intptr_t)out;           /* OS_File 17: is it there? */
-    if (!swi(OS_File, &r) && r.r[0] == 1) {
+    if (!swi(OS_File, &r) && r.r[0] != 0) {
         char msg[300], leaf[128];
         const char *l = strrchr(out, '.');
         snprintf(leaf, sizeof(leaf), "%s", l ? l + 1 : out);
-        snprintf(msg, sizeof(msg), "%s is already there. Replace it?", leaf);
+        if (r.r[0] == 2) {                          /* a directory: never replaced (or deleted, if it failed) */
+            snprintf(msg, sizeof(msg), "%s is a directory: save the new file under another name.", leaf);
+            report(msg, 1 | 16);
+            return;
+        }
+        snprintf(msg, sizeof(msg), "%s is already there%s. Replace it?", leaf, r.r[0] == 3 ? " (an image file)" : "");
         if (!ask(msg, "Replace"))
             return;
     }
@@ -1068,7 +1092,7 @@ static void finished(void)
         C.state = CONV_STOPPED;
         progress_bar(0);
         status("Stopped. The unfinished file was deleted.");
-    } else if (C.prog.ended && !C.prog.error[0]) {
+    } else if (conv_succeeded(&C.prog)) {
         const char *l = strrchr(C.out, '.');
         r.r[0] = 18; r.r[1] = (intptr_t)C.out; r.r[2] = format_filetype(C.set.format);
         swi(OS_File, &r);
@@ -1366,7 +1390,7 @@ static void reply(int *b, int action, const char *text)
     b[3] = b[2];
     b[4] = action;
     snprintf((char *)&b[5], 236, "%s", text);
-    b[0] = (20 + (int)strlen(text) + 1 + 3) & ~3;
+    b[0] = (20 + (int)strlen((const char *)&b[5]) + 1 + 3) & ~3;   /* (what was copied: at most 256) */
     r.r[0] = 17; r.r[1] = (intptr_t)b; r.r[2] = to;
     swi(Wimp_SendMessage, &r);
 }
@@ -1420,6 +1444,8 @@ int conv_message(int *b)
         if (b[5] != C.child_txt)
             return 0;
         C.child = b[1];
+        if (C.state == CONV_STOPPING)       /* Stop (or quit) before it said who it was */
+            stop_child();
         return 1;
     case MSG_TW_OUTPUT:
         if (!C.child || b[1] != C.child)
@@ -1447,11 +1473,59 @@ int conv_message(int *b)
             b[3] = b[2];
             r.r[0] = 19; r.r[1] = (intptr_t)b; r.r[2] = to;
             swi(Wimp_SendMessage, &r);
-        } else
+        } else {
+            C.state = CONV_STOPPING;        /* (conv_quitting waits for it, and the file goes) */
             stop_child();
+        }
         return 1;
     }
     return 0;
+}
+
+/* Quitting (Message_Quit, or Quit on the menu once agreed to): a conversion
+   still running is stopped, and its unfinished file deleted, before the
+   front end goes. ffmpeg has the file open until its task window ends, so
+   wait (up to 10 s) for TaskWindow_Morio, handling only messages, as the
+   window's own Stop does. */
+void conv_quitting(void)
+{
+    int b[64], t0;
+    _kernel_swi_regs r;
+    if (C.state == CONV_RUNNING) {
+        C.state = CONV_STOPPING;
+        stop_child();
+    } else if (C.state == CONV_PROBING)
+        stop_child();
+    if (C.state != CONV_STOPPING)
+        return;
+    swi(OS_ReadMonotonicTime, &r);
+    t0 = r.r[0];
+    for (int polls = 0; C.state == CONV_STOPPING && polls < 2000; polls++) {
+        /* Wimp_PollIdle: a null event at least every 10 cs, so the 10 s
+           runs out even when nothing comes; only the task window's own
+           messages are taken (a file dropped now isn't), keys passed on */
+        swi(OS_ReadMonotonicTime, &r);
+        r.r[2] = r.r[0] + 10;
+        r.r[0] = (1 << 4) | (1 << 5);      /* (pointer events not wanted) */
+        r.r[1] = (intptr_t)b;
+        if (swi(0x400E1, &r))              /* Wimp_PollIdle */
+            break;
+        if ((r.r[0] == 17 || r.r[0] == 18 || r.r[0] == 19) &&
+            (b[4] == MSG_TW_EGO || b[4] == MSG_TW_OUTPUT || b[4] == MSG_TW_MORIO))
+            conv_message(b);
+        else if (r.r[0] == 8) {            /* Key_Pressed: not ours */
+            r.r[0] = b[6];
+            swi(0x400DC, &r);              /* Wimp_ProcessKey */
+        } else if (r.r[0] == 1) {          /* Redraw_Window_Request: let the Wimp draw it (it asks until it's done) */
+            int more;
+            r.r[1] = (intptr_t)b;
+            for (more = !swi(0x400C8, &r) && r.r[0]; more; more = !swi(0x400CA, &r) && r.r[0])
+                r.r[1] = (intptr_t)b;
+        }
+        swi(OS_ReadMonotonicTime, &r);
+        if (r.r[0] - t0 > 1000)
+            break;
+    }
 }
 
 #ifdef CONV_TEST

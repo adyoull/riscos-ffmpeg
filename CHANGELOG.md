@@ -3,6 +3,85 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next FFmpeg and Reel): fixes from the code audit (2026-10-04)
+
+From a code audit of everything ours (reelcore, Reel, !FFmpeg's front
+end, the FFmpeg patches), each change then peer reviewed. Each fix has a
+host test that fails without it, unless said.
+
+- **HEVC on the ARM no longer crashes on some streams** (patch 0016).
+  Chroma whole-sample copies with uni-prediction used luma's NEON copies,
+  which take 4 rows a pass; a 4:2:0 chroma block can be 2 or 6 rows (8x4,
+  16x4 and 16x12 blocks, as x265's slower presets and many hardware
+  encoders make), and the copy ran on down the picture. Those now use the
+  C's row copies. hevc_epel_test: every width at every chroma height.
+- **Reel: a web address with a subtitle track no longer stops reading
+  ahead** (reelcore). The reader kept the newest time of each kind of
+  packet in a table of two; subtitles (the third kind) were written past
+  it, over the video's end flag. net_test: an MKV over HTTP with
+  subtitles.
+- **The fall back to the ARM works when a hardware decoder fails at
+  once.** FFmpeg 5.1 runs h264_vchiq's and hevc_hwdec's decoding inside
+  send_packet, and their errors (a raw HEVC stream the HEVC block can't
+  take, the VideoCore failing) came back from there, where reelcore didn't
+  look: the picture froze. vc_test: the stand-in fails from send_packet
+  too.
+- **Opening yt-dlp's JSON with anything after it no longer hangs the
+  desktop** (player/sources.c: the parser went round for ever on a
+  character that can't start a value). sources_test.
+- **The window menu's Picture submenu works again** (Fit, Fill, Original,
+  Stretch: they were items 4 to 7, below four blank ones). reel_test.
+- **!FFmpeg's Convert window no longer deletes a finished conversion**
+  because ffmpeg printed decoder messages along the way (a DVB recording
+  starting part way: "no frame!"). Success is ffmpeg reaching the end and
+  its exit status 0 (the Obey file echoes Sys$ReturnCode after it).
+  convert_test.
+- **Convert: the Options field takes spaces** ("-vf hflip"); **quitting
+  while converting** stops ffmpeg and deletes the unfinished file (it
+  waits up to 10 s for the task window to end); Stop before ffmpeg had
+  started is no longer lost; an existing directory of the output's name
+  isn't replaced (or deleted), an image file is asked about; the same
+  file as the source is found whatever the case; !Help's text for the
+  Options field fits a message. convert_test (not the directory, Stop
+  early and !Help parts).
+- **Reel: the sound is set up again when it changes part way** (a DVB
+  recording going from 5.1 to stereo, or 48 to 22.05 kHz: it played at
+  the wrong speed, or read channels the sound didn't have).
+  sound_change_test.
+- **Picture subtitle files (.sup, VobSub) show all their subtitles**:
+  decoded as the picture comes to them (2 s ahead; from 10 s before after
+  a seek), not all at once, when only the last 8 were kept. And a Blu-ray
+  subtitle's clear now ends it (FFmpeg gives an empty rectangle, which
+  was taken for nothing at all: it stayed up to 10 s). sub_test, with a
+  .sup made by tests/host/mkpgs.py.
+- **Full-range video other than 4:2:0 (MJPEG's yuvj422p, ...) keeps its
+  range in the overlay**: swscale made it limited while Reel said full
+  (washed out). panel_test.
+- **Reel's Open address window no longer has the video drawn into it**
+  (it's an auto-redraw window now). reel_test.
+- **Full screen covers the screen after a change to a bigger mode** (the
+  window's extent is set each time). reel_test checks the extent is set.
+- **The overlay no longer hides a menu opened over a picture that has
+  stopped coming** (a stream buffering): looked at every 20 cs, not only
+  when a picture comes. (Not tested.)
+- **Reel no longer takes ReelEGL's file type settings for its own**
+  (`...!Reel` is the start of `...!ReelEGL`). reel_test.
+- Smaller: the network reader's streams are no longer looked at through
+  FFmpeg's stream list, which the reader can grow (MPEG-TS, HLS; the
+  subtitle track list still is); reelcore's log goes on after a line
+  longer than 1 KB, and is safe from the reader thread; after a hardware
+  decoder fails, the ARM's decoder gets the fast (no deblocking) setting;
+  reelcore_draw_yuv420 checks sizes against the HEVC block's cropped
+  picture; the stats panel and subtitles aren't blended twice if the HEVC
+  block's conversion fails part way; the subtitle cache key can't collide;
+  out of memory for the first subtitle; Media info's title is the new
+  file's; the stats panel reads a new video's details afresh.
+- For riscos-reelhwaccel (patch 0023, theirs): two hevc_hwdec defects
+  handed over (a use-after-free when its frames outlive the decoder, and
+  more than 16 DPB entries written from a bad stream). For riscos-mesa
+  (the SDL2 overlay, theirs): mode changes, Wimp_ProcessKey and a second
+  window, handed over.
+
 ## 5.1.10-riscos17 (2026-10-04): HEVC on the Raspberry Pi 4's HEVC block
 
 - **hevc_hwdec: HEVC decoded by the Raspberry Pi 4's HEVC block** (patch
