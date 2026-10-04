@@ -3,7 +3,7 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next FFmpeg and Reel): HEVC on the Pi 4's HEVC block, and no more EMT traps after the VideoCore
+## 5.1.10-riscos17 (2026-10-04): HEVC on the Raspberry Pi 4's HEVC block
 
 - **hevc_hwdec: HEVC decoded by the Raspberry Pi 4's HEVC block** (patch
   0023, from riscos-reelhwaccel's devkit 0.2.6, with its hevcdec 0.1.8).
@@ -14,6 +14,31 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   every picture exactly as `hevc` decodes it (riscos-reelhwaccel's Pi 4
   tests); `-output_8bit 1` gives 8-bit from 10-bit. Refused (ENOSYS) for
   4:2:2, 4:4:4, 12-bit and machines without the block.
+- **Devkit 0.2.7** (sha256 c65b8ac5…): patch 0023 is its new hevc_hwdec
+  patch (drop_before); the libraries are 0.2.6's.
+- **Devkit 0.2.6** (sha256 80dbabab…): hevcdec 0.1.8 converts one picture
+  while the block decodes the next (about 3 ms a picture less at 1080p,
+  9–12 ms at 4K). vcdec is 0.4.2, as below.
+- **riscos-reelhwaccel devkit 0.2.4** (vcdec 0.4.2, sha256 8876f366…):
+  the contiguous memory vcdec claims for the VideoCore's pictures never
+  includes the program's own page at &8000. Taking that page made RISC OS
+  move the program to another page; ARMEABISupport 1.08 knows a program
+  by that page and isn't told, so the program's record and stacks were
+  left behind at quit, and a later program could stop with an EMT trap
+  ("code 6"). Found by riscos-unixlib; fixed in vcdec (riscos-reelhwaccel
+  r26). On RISC OS before 5.29 a pool that would include the page is
+  refused and vcdec uses PCI memory instead. Patch 0021 is the devkit's
+  (only its licence header changed: GPL version 2 only); patch 0022 is
+  redone on it. Reel claims no contiguous memory itself.
+- **riscos-reelhwaccel devkit 0.2.8** (hevcdec 0.1.9, sha256 111f82b5…):
+  `output_hw` for hevc_hwdec (frames handed out unconverted, for Reel)
+  and `hevcdec_frame_to_i420_half`. The devkit download has `libhevcdec`
+  too: link with `-lhevcdec` after `-lavcodec`.
+- **!FFmpeg's About this program window** has its values in display
+  fields (grey, slabbed in), as other programs' do.
+
+## Reel 0.1.24 (2026-10-04): HEVC on the Pi 4's HEVC block, no more EMT traps after the VideoCore
+
 - **Reel and ReelEGL use the HEVC block for HEVC by themselves**
   (reelcore: `open_video_decoder`), with `output_8bit` (everything Reel
   draws is 8-bit). Refused at open: FFmpeg's hevc on the ARM. Refused at
@@ -45,6 +70,16 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   FFmpeg's hevc on the ARM gives, the conversions are the block's, and
   no frame is held at the end; mutations (halving off, the copy kept
   from the picture before) caught.
+- **4K HEVC no longer drops to keyframes only** (seen on a Pi 4, 8-bit and
+  10-bit at 40 Mbit/s). Falling behind, reelcore set `skip_frame`, and
+  hevc_hwdec's inner hevc then gave the block keyframes only; at 4K the
+  ARM (converting each picture out of the block, then into the overlay)
+  never caught up. Devkit 0.2.7's hevc_hwdec has `drop_before`, as
+  h264_vchiq has (patch 0022): the block decodes every picture and the
+  late ones aren't converted. reelcore sets it for the HEVC block as for
+  the VideoCore, and no longer sets `skip_frame` for it. vc_test: a slow
+  machine with the HEVC stand-in drops late pictures unconverted and
+  never skips (before: 0 dropped, a skip spell).
 - **4K HEVC no longer stutters with the stats panel on** (seen on a Pi 4;
   found by riscos-reelhwaccel). The panel and subtitles were blended into
   the block's picture in the overlay itself, reading each byte back from
@@ -74,34 +109,9 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   values are display fields (grey, slabbed in, "R2"), as in a standard
   ProgInfo template, not white boxes. Reel, ReelEGL and !FFmpeg.
   reel_test checks it.
-- **4K HEVC no longer drops to keyframes only** (seen on a Pi 4, 8-bit and
-  10-bit at 40 Mbit/s). Falling behind, reelcore set `skip_frame`, and
-  hevc_hwdec's inner hevc then gave the block keyframes only; at 4K the
-  ARM (converting each picture out of the block, then into the overlay)
-  never caught up. Devkit 0.2.7's hevc_hwdec has `drop_before`, as
-  h264_vchiq has (patch 0022): the block decodes every picture and the
-  late ones aren't converted. reelcore sets it for the HEVC block as for
-  the VideoCore, and no longer sets `skip_frame` for it. vc_test: a slow
-  machine with the HEVC stand-in drops late pictures unconverted and
-  never skips (before: 0 dropped, a skip spell).
-- **Devkit 0.2.7** (sha256 c65b8ac5…): patch 0023 is its new hevc_hwdec
-  patch (drop_before); the libraries are 0.2.6's.
-- **Devkit 0.2.6** (sha256 80dbabab…): hevcdec 0.1.8 converts one picture
-  while the block decodes the next (about 3 ms a picture less at 1080p,
-  9–12 ms at 4K). vcdec is 0.4.2, as below.
-
-
-- **riscos-reelhwaccel devkit 0.2.4** (vcdec 0.4.2, sha256 8876f366…):
-  the contiguous memory vcdec claims for the VideoCore's pictures never
-  includes the program's own page at &8000. Taking that page made RISC OS
-  move the program to another page; ARMEABISupport 1.08 knows a program
-  by that page and isn't told, so the program's record and stacks were
-  left behind at quit, and a later program could stop with an EMT trap
-  ("code 6"). Found by riscos-unixlib; fixed in vcdec (riscos-reelhwaccel
-  r26). On RISC OS before 5.29 a pool that would include the page is
-  refused and vcdec uses PCI memory instead. Patch 0021 is the devkit's
-  (only its licence header changed: GPL version 2 only); patch 0022 is
-  redone on it. Reel claims no contiguous memory itself.
+- **No more EMT traps after playing with the VideoCore** (riscos-reelhwaccel
+  devkit 0.2.4, above): a program run after Reel could stop with an EMT
+  trap ("code 6").
 
 ## 5.1.10-riscos16 (2026-10-02): H.264 on the Raspberry Pi's VideoCore
 

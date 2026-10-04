@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.23
+!Reel - a video player for RISC OS                        0.1.24
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
@@ -276,8 +276,8 @@ decoder (the HEVC block), up to 4096x4096, 8-bit and 10-bit (shown in
 can't take (4:2:2, 4:4:4, 12-bit, and other machines) is decoded on the
 CPU as before; if it fails part way, Reel carries on on the CPU from
 the same place. To use the CPU only: *Set Reel$NoHEVCBlock 1
-(ReelEGL$NoHEVCBlock) before starting Reel. 4K can drop frames: the
-block keeps up, but copying each 4K picture out of it takes time.
+(ReelEGL$NoHEVCBlock) before starting Reel. On a Pi 4, 4K plays at full
+speed; 10-bit 4K with the stats shown (S) can drop a few frames.
 On the Pi the overlay sits on top of everything on the screen, so Reel
 hides it, and draws the picture as before, whenever a window or menu is
 over the picture, while paused, at the end, and while it asks you

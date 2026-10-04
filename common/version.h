@@ -14,11 +14,11 @@
 #ifndef RISCOS_FFMPEG_VERSION_H
 #define RISCOS_FFMPEG_VERSION_H
 
-#define FFMPEG_APP_VERSION  "5.1.10-riscos16"
-#define FFMPEG_APP_DATE     "02-Oct-2026"
+#define FFMPEG_APP_VERSION  "5.1.10-riscos17"
+#define FFMPEG_APP_DATE     "04-Oct-2026"
 
-#define REEL_VERSION        "0.1.23"
-#define REEL_DATE           "02-Oct-2026"
+#define REEL_VERSION        "0.1.24"
+#define REEL_DATE           "04-Oct-2026"
 
 #define APP_AUTHOR          "Andrew Youll"
 

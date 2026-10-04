@@ -199,7 +199,7 @@ themselves, showing 10-bit in 8-bit (`output_8bit`), and falling back to
 the ARM for what it can't take (4:2:2, 4:4:4, 12-bit) or if it fails part
 way. `Reel$NoHEVCBlock` keeps to the ARM.
 
-The hardware side (vcdec, and HEVC on the Pi 4's HEVC block to come) is
+The hardware side (vcdec for the VideoCore, hevcdec for the HEVC block) is
 a separate project, **ReelHWAccel**:
 https://github.com/adyoull/riscos-reelhwaccel, whose devkit is in
 `third_party/reelhwaccel`. It is a new implementation: it drives the
