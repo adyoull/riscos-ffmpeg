@@ -20,14 +20,19 @@ static int fails;
 
 static const float graph[60] = { 0.1f, 0.5f, 1.0f, 0.3f, 0.7f };
 
+static const char *speed = "1234 Kbps", *date = "Tue Sep 29 2026 12:00:00 \xa3";
+static const float *g1 = graph;
+
+void reelcore_blend_run(uint8_t *d, const uint16_t *pm, const uint8_t *ia, int n, int k);   /* (reelcore.c) */
+
 static void set(ReelCore *v, double k)
 {
     ReelCorePanel p;
     memset(&p, 0, sizeof(p));
     p.rows = 3;
     p.label[0] = "Video / Source"; p.value[0] = "clip.mp4 / mov,mp4";
-    p.label[1] = "Connection Speed"; p.value[1] = "1234 Kbps"; p.graph[1] = graph; p.graph_rgb[1] = 0x1E88E5;
-    p.label[2] = "Date"; p.value[2] = "Tue Sep 29 2026 12:00:00 \xa3";   /* a Latin-1 character too */
+    p.label[1] = "Connection Speed"; p.value[1] = speed; p.graph[1] = g1; p.graph_rgb[1] = 0x1E88E5;
+    p.label[2] = "Date"; p.value[2] = date;   /* a Latin-1 character too */
     p.graph_n = 60;
     p.yuv_scale = k;
     CHECK(reelcore_set_panel(v, &p) == 0, "set_panel failed");
@@ -176,6 +181,80 @@ int main(int argc, char **argv)
             free(full); free(got); free(want);
             reelcore_close(q);
         }
+    }
+
+    {   /* the blend (NEON, 8 at a time, then one at a time): exactly
+           (Y*a + d*(255-a)) / 255, every other layer pixel for a chroma row,
+           and nothing past the run read (the run at the end of the buffers) */
+        int bad = 0, cases = 0;
+        srand(7);
+        for (int k = 1; k <= 2; k++)
+            for (int n = 1; n <= 40; n++)
+                for (int rep = 0; rep < 20; rep++) {
+                    int len = (n - 1) * k + 1;
+                    uint16_t *pm = malloc(len * 2);
+                    uint8_t *ia = malloc(len), d[40], want[40];
+                    for (int i = 0; i < len; i++) {
+                        int a = rep == 0 ? 255 * (i & 1) : rand() % 256, y = rand() % 256;
+                        pm[i] = (uint16_t)(y * a);
+                        ia[i] = (uint8_t)(255 - a);
+                    }
+                    for (int i = 0; i < n; i++) {
+                        d[i] = (uint8_t)(rand() % 256);
+                        want[i] = (uint8_t)((pm[k * i] + d[i] * ia[k * i]) / 255);
+                    }
+                    reelcore_blend_run(d, pm, ia, n, k);
+                    bad += memcmp(d, want, n) != 0;
+                    cases++;
+                    free(pm); free(ia);
+                }
+        printf("  blend runs: %d of %d exact\n", cases - bad, cases);
+        CHECK(!bad, "blend runs: %d of %d wrong", bad, cases);
+    }
+
+    {   /* updated (once a second in Reel): only the rows that changed are
+           made again, and the picture is exactly the panel made afresh;
+           a shorter value doesn't make it narrower (or all of it again) */
+        static const float graph2[60] = { 0.9f, 0.2f, 0.4f, 0.8f, 0.6f, 0.1f };
+        int fw, fh, w0, h0, w1, h1, w2, h2;
+        reelcore_frame_size(v, &fw, &fh);
+        fw &= ~1; fh &= ~1;
+        for (int ki = 1; ki <= 2; ki++) {
+            uint8_t *ya = malloc(fw * fh * 3 / 2), *yb = malloc(fw * fh * 3 / 2);
+            uint8_t *pa[3] = { ya, ya + fw * fh, ya + fw * fh + fw * fh / 4 }, *pb[3] = { yb, yb + fw * fh, yb + fw * fh + fw * fh / 4 };
+            int pitch[3] = { fw, fw / 2, fw / 2 }, same_yuv, same_rgb;
+            for (int rgb = 0; rgb < 2; rgb++) {                     /* drawn into an overlay, then a sprite */
+                uint8_t *x = rgb ? a : ya, *y = rgb ? b : yb;
+                size_t n = rgb ? (size_t)W * H * 4 : (size_t)fw * fh * 3 / 2;
+                reelcore_set_panel(v, NULL);
+                speed = "1234 Kbps"; date = "Tue Sep 29 2026 12:00:00 \xa3"; g1 = graph;
+                set(v, ki);
+                if (rgb) reelcore_draw_pixels(v, a, W * 4, W, H, 0, REELCORE_STRETCH);
+                else reelcore_draw_yuv420(v, pa, pitch, fw, fh, NULL);   /* (made, and into Y,Cb,Cr) */
+                speed = "5678 Kbps"; date = "Tue Sep 29 2026 12:00:01 \xa3"; g1 = graph2;
+                set(v, ki);                                         /* rows 1 and 2 changed */
+                if (rgb) reelcore_draw_pixels(v, a, W * 4, W, H, 0, REELCORE_STRETCH);
+                else reelcore_draw_yuv420(v, pa, pitch, fw, fh, NULL);
+                reelcore_panel_size(v, &w0, &h0);
+                reelcore_set_panel(v, NULL);                        /* the same, afresh */
+                set(v, ki);
+                if (rgb) reelcore_draw_pixels(v, b, W * 4, W, H, 0, REELCORE_STRETCH);
+                else reelcore_draw_yuv420(v, pb, pitch, fw, fh, NULL);
+                *(rgb ? &same_rgb : &same_yuv) = !memcmp(x, y, n);
+            }
+            speed = "9 Kbps";                                       /* shorter */
+            set(v, ki);
+            reelcore_panel_size(v, &w1, &h1);
+            speed = "123456789012345678901234567890 Kbps";          /* longer than any */
+            set(v, ki);
+            reelcore_panel_size(v, &w2, &h2);
+            printf("  updated x%d: as made afresh: YV12 %s, 32bpp %s; %dx%d, a shorter value %dx%d, a longer %dx%d\n", ki,
+                   same_yuv ? "yes" : "no", same_rgb ? "yes" : "no", w0, h0, w1, h1, w2, h2);
+            CHECK(same_yuv && same_rgb, "updated x%d: not as made afresh (YV12 %d, 32bpp %d)", ki, same_yuv, same_rgb);
+            CHECK(w1 == w0 && h1 == h0 && w2 > w0 && h2 == h0, "updated x%d: sizes %dx%d, %dx%d, %dx%d", ki, w0, h0, w1, h1, w2, h2);
+            free(ya); free(yb);
+        }
+        speed = "1234 Kbps"; date = "Tue Sep 29 2026 12:00:00 \xa3"; g1 = graph;
     }
 
     {   /* off again: exactly as before */

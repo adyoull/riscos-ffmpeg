@@ -94,8 +94,12 @@ struct Net;
 /* something drawn into the picture (the stats panel, a subtitle) */
 typedef struct {
     uint8_t *rgba;                     /* premultiplied R,G,B,A, w x h */
-    uint8_t *yuv;                      /* the same as Y,Cb,Cr,A for yuv_c (made when wanted) */
+    /* the same for blending into Y,Cb,Cr in yuv_c's colours (made when
+       wanted): planes of Y*a, Cb*a, Cr*a (w x h each), and 255-a */
+    uint16_t *pm;
+    uint8_t *ia;
     int w, h, yuv_c;
+    int dirty0, dirty1;                /* rows [dirty0, dirty1) to make again (the rest are yuv_c's) */
 } Layer;
 typedef struct { const Layer *L; int x0, y0; double sx, sy; } Place;
 
@@ -267,6 +271,8 @@ struct ReelCore {
     unsigned pan_rgb[REELCORE_PANEL_ROWS];
     int pan_rows, pan_graph_n;
     int pan_font;                          /* panel_fonts[] it was made with */
+    int pan_lw, pan_made_rows;             /* its label column, and rows, as made */
+    uint32_t pan_sum[REELCORE_PANEL_ROWS]; /* each row's text and graph as made (only changed rows made again) */
     double pan_dh, pan_k;                  /* where it was last drawn: display height, pixels a display pixel */
     double yuv_k;                          /* draw_yuv420: frame pixels per display pixel */
     /* subtitles */
@@ -3055,7 +3061,8 @@ static int convert(ReelCore *v, uint8_t *dst, int pitch, int w, int h, enum AVPi
 static void layer_free(Layer *L)
 {
     av_freep(&L->rgba);
-    av_freep(&L->yuv);
+    av_freep(&L->pm);
+    av_freep(&L->ia);
     L->w = L->h = 0;
 }
 
@@ -3063,6 +3070,8 @@ static int layer_alloc(Layer *L, int w, int h)
 {
     if (w != L->w || h != L->h || !L->rgba) {
         av_freep(&L->rgba);
+        av_freep(&L->pm);
+        av_freep(&L->ia);
         if (!(L->rgba = av_malloc((size_t)w * h * 4))) {
             L->w = L->h = 0;
             return AVERROR(ENOMEM);
@@ -3075,6 +3084,9 @@ static int layer_alloc(Layer *L, int w, int h)
     return 0;
 }
 
+/* m / 255, exactly, for m 0..65025 (a product of two bytes, or a blend of them) */
+#define DIV255(m) (((unsigned)(m) + 1 + ((unsigned)(m) >> 8)) >> 8)
+
 /* src over the layer's pixel, alpha a (0-255), colour r,g,b */
 static void layer_put(Layer *L, int x, int y, int r, int g, int b, int a)
 {
@@ -3082,10 +3094,30 @@ static void layer_put(Layer *L, int x, int y, int r, int g, int b, int a)
     if (x < 0 || y < 0 || x >= L->w || y >= L->h || a <= 0)
         return;
     d = L->rgba + ((size_t)y * L->w + x) * 4;
-    d[0] = (uint8_t)((r * a + d[0] * (255 - a)) / 255);
-    d[1] = (uint8_t)((g * a + d[1] * (255 - a)) / 255);
-    d[2] = (uint8_t)((b * a + d[2] * (255 - a)) / 255);
-    d[3] = (uint8_t)(a + d[3] * (255 - a) / 255);
+    if (a >= 255) {
+        d[0] = (uint8_t)r; d[1] = (uint8_t)g; d[2] = (uint8_t)b; d[3] = 255;
+        return;
+    }
+    d[0] = (uint8_t)DIV255(r * a + d[0] * (255 - a));
+    d[1] = (uint8_t)DIV255(g * a + d[1] * (255 - a));
+    d[2] = (uint8_t)DIV255(b * a + d[2] * (255 - a));
+    d[3] = (uint8_t)(a + DIV255(d[3] * (255 - a)));
+}
+
+/* Rows y0..y1 of the layer cleared to see-through black of alpha a */
+static void layer_clear_rows(Layer *L, int y0, int y1, int a)
+{
+    uint8_t px[4] = { 0, 0, 0, (uint8_t)a };
+    uint32_t v;
+    uint32_t *d;
+    memcpy(&v, px, 4);
+    y0 = FFMAX(y0, 0);
+    y1 = FFMIN(y1, L->h);
+    if (y0 >= y1)
+        return;
+    d = (uint32_t *)(void *)(L->rgba + (size_t)y0 * L->w * 4);
+    for (size_t i = 0, n = (size_t)(y1 - y0) * L->w; i < n; i++)
+        d[i] = v;
 }
 
 static void layer_box(Layer *L, int x, int y, int w, int h, int r, int g, int b, int a)
@@ -3122,17 +3154,18 @@ static void layer_blend_rgb(const Place *pl, uint8_t *p, int pitch, int w, int h
             if (!s[3])
                 continue;
             a = 255 - s[3];
-            d[0] = (uint8_t)(s[bgr ? 2 : 0] + d[0] * a / 255);
-            d[1] = (uint8_t)(s[1] + d[1] * a / 255);
-            d[2] = (uint8_t)(s[bgr ? 0 : 2] + d[2] * a / 255);
+            d[0] = (uint8_t)(s[bgr ? 2 : 0] + DIV255(d[0] * a));
+            d[1] = (uint8_t)(s[1] + DIV255(d[1] * a));
+            d[2] = (uint8_t)(s[bgr ? 0 : 2] + DIV255(d[2] * a));
         }
     }
 }
 
-/* The layer as Y,Cb,Cr,A in the frame's colours (c: REELCORE_YUV_709/_FULL).
-   Fixed point (the colours to 1/65536, divides by a from a table): it's
-   remade whenever the panel is (once a second), and in doubles with three
-   divides a pixel that was a hitch on the picture that drew it. */
+/* The layer ready to blend into Y,Cb,Cr in the frame's colours (c:
+   REELCORE_YUV_709/_FULL): only the rows changed since it was last made
+   (the stats panel: the rows whose values changed, once a second). Fixed
+   point (the colours to 1/65536, divides by a from a table): in doubles
+   with three divides a pixel it was a hitch on the picture that drew it. */
 static int layer_yuv(Layer *L, int c)
 {
     static int32_t rc[256];                    /* 65536 / a, rounded */
@@ -3141,27 +3174,56 @@ static int layer_yuv(Layer *L, int c)
     int64_t KR = (int64_t)(kr * 65536 + 0.5), KB = (int64_t)(kb * 65536 + 0.5), KG = 65536 - KR - KB;
     int64_t YS = (int64_t)(ys * 65536 + 0.5), CBS = (int64_t)(cs / (2 * (1 - kb)) * 65536 + 0.5);
     int64_t CRS = (int64_t)(cs / (2 * (1 - kr)) * 65536 + 0.5), YO = c & REELCORE_YUV_FULL ? 0 : 16;
-    if (L->yuv && L->yuv_c == c)
+    size_t n = (size_t)L->w * L->h;
+    int y0 = L->dirty0, y1 = L->dirty1;
+    if (L->pm && L->yuv_c == c && y0 >= y1)
         return 0;
+    if (!L->pm || L->yuv_c != c) {             /* all of it */
+        y0 = 0;
+        y1 = L->h;
+    }
     if (!rc[1])
         for (int a = 1; a < 256; a++)
             rc[a] = (65536 + a / 2) / a;
-    av_freep(&L->yuv);
-    if (!(L->yuv = av_malloc((size_t)L->w * L->h * 4)))
+    if (!L->pm && (!(L->pm = av_malloc(n * 3 * sizeof(*L->pm))) || !(L->ia = av_malloc(n)))) {
+        av_freep(&L->pm);
         return AVERROR(ENOMEM);
-    for (int i = 0; i < L->w * L->h; i++) {
-        const uint8_t *s = L->rgba + (size_t)i * 4;
-        uint8_t *d = L->yuv + (size_t)i * 4;
-        int a = s[3];
+    }
+    for (size_t i = (size_t)y0 * L->w; i < (size_t)y1 * L->w; i++) {
+        const uint8_t *s = L->rgba + i * 4;
+        int a = s[3], Y, U, V;
         int64_t r = (int64_t)s[0] * rc[a], g = (int64_t)s[1] * rc[a], b = (int64_t)s[2] * rc[a];   /* 0..65536 (a 0: 0) */
         int64_t yy = (KR * r + KG * g + KB * b + 32768) >> 16;
-        d[0] = (uint8_t)av_clip((int)(YO + ((yy * YS + ((int64_t)1 << 31)) >> 32)), 0, 255);
-        d[1] = (uint8_t)av_clip((int)(128 + (((b - yy) * CBS + ((int64_t)1 << 31)) >> 32)), 0, 255);
-        d[2] = (uint8_t)av_clip((int)(128 + (((r - yy) * CRS + ((int64_t)1 << 31)) >> 32)), 0, 255);
-        d[3] = s[3];
+        Y = av_clip((int)(YO + ((yy * YS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+        U = av_clip((int)(128 + (((b - yy) * CBS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+        V = av_clip((int)(128 + (((r - yy) * CRS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+        L->pm[i] = (uint16_t)(Y * a);
+        L->pm[n + i] = (uint16_t)(U * a);
+        L->pm[2 * n + i] = (uint16_t)(V * a);
+        L->ia[i] = (uint8_t)(255 - a);
     }
     L->yuv_c = c;
+    L->dirty0 = L->dirty1 = 0;
     return 0;
+}
+
+/* d[i] = (pm[k*i] + d[i] * ia[k*i]) / 255 for i < n, k 1 or 2 (every
+   other layer pixel: a chroma row). Not static: panel_test checks it. */
+void reelcore_blend_run(uint8_t *d, const uint16_t *pm, const uint8_t *ia, int n, int k);
+void reelcore_blend_run(uint8_t *d, const uint16_t *pm, const uint8_t *ia, int n, int k)
+{
+    int i = 0;
+#ifdef REELCORE_NEON
+    for (; i + 8 + (k - 1) <= n; i += 8) {      /* (k 2: vld2's last load stays in the run) */
+        uint8x8_t a = k == 1 ? vld1_u8(ia + i) : vld2_u8(ia + 2 * i).val[0];
+        uint16x8_t m = k == 1 ? vld1q_u16(pm + i) : vld2q_u16(pm + 2 * i).val[0];
+        m = vmlal_u8(m, vld1_u8(d + i), a);                  /* <= 65025 */
+        m = vsraq_n_u16(vaddq_u16(m, vdupq_n_u16(1)), m, 8); /* m + 1 + (m >> 8) */
+        vst1_u8(d + i, vshrn_n_u16(m, 8));
+    }
+#endif
+    for (; i < n; i++)
+        d[i] = (uint8_t)DIV255(pm[k * i] + d[i] * ia[k * i]);
 }
 
 /* Does the layer touch row y of plane p (0 Y, 1 Cb, 2 Cr) of a 4:2:0 picture? */
@@ -3177,6 +3239,7 @@ static void layer_blend_row(const Place *pl, uint8_t *row, int p, int y, int w)
     const Layer *L = pl->L;
     int sub = p ? 2 : 1, ix = layer_step(pl->sx), iy = layer_step(pl->sy);
     int fy = y * sub, ly, xa, xb;
+    const uint16_t *pm;
     if (fy < pl->y0)
         fy = pl->y0;                           /* (a chroma row half in: its lower half) */
     ly = (int)(((int64_t)(fy - pl->y0) * iy) >> 16);
@@ -3184,18 +3247,22 @@ static void layer_blend_row(const Place *pl, uint8_t *row, int p, int y, int w)
         return;
     xa = FFMAX(0, (pl->x0 + sub - 1) / sub);
     xb = FFMIN(w, (pl->x0 + (int)(L->w * pl->sx + 0.5)) / sub);
+    pm = L->pm + (size_t)p * L->w * L->h;
+    if (ix == 65536) {                         /* 1:1 (the panel): a run, 8 at a time */
+        int lx = xa * sub - pl->x0, n = FFMIN(xb - xa, (L->w - lx + sub - 1) / sub);
+        if (lx >= 0 && n > 0)
+            reelcore_blend_run(row + xa, pm + (size_t)ly * L->w + lx, L->ia + (size_t)ly * L->w + lx, n, sub);
+        return;
+    }
     for (int x = xa; x < xb; x++) {
         int lx = (int)(((int64_t)(x * sub - pl->x0) * ix) >> 16);
-        const uint8_t *s;
+        size_t s;
         if (lx < 0)
             continue;
         if (lx >= L->w)
             break;
-        s = L->yuv + ((size_t)ly * L->w + lx) * 4;
-        if (s[3]) {
-            unsigned m = s[p] * s[3] + row[x] * (255 - s[3]);
-            row[x] = (uint8_t)((m + 1 + (m >> 8)) >> 8);   /* m / 255, exactly, for 0..65025 */
-        }
+        s = (size_t)ly * L->w + lx;
+        row[x] = (uint8_t)DIV255(pm[s] + row[x] * L->ia[s]);   /* (a 0: row[x] as it was) */
     }
 }
 
@@ -3245,30 +3312,79 @@ static int pan_font_for(double dh, double k)
     return n;
 }
 
+static uint32_t pan_hash(uint32_t h, const void *p, size_t n)
+{
+    const uint8_t *b = p;
+    for (size_t i = 0; i < n; i++)
+        h = (h ^ b[i]) * 16777619u;            /* FNV-1a */
+    return h;
+}
+
+/* A row's text and graph, summed (only rows whose sums change are made again) */
+static uint32_t pan_row_sum(const ReelCore *v, int i)
+{
+    uint32_t h = 2166136261u;
+    if (v->pan_label[i]) h = pan_hash(h, v->pan_label[i], strlen(v->pan_label[i]) + 1);
+    h = pan_hash(h, "|", 1);
+    if (v->pan_value[i]) h = pan_hash(h, v->pan_value[i], strlen(v->pan_value[i]) + 1);
+    if (v->pan_graph[i]) {
+        h = pan_hash(h, v->pan_graph[i], sizeof(float) * v->pan_graph_n);
+        h = pan_hash(h, &v->pan_rgb[i], sizeof(v->pan_rgb[i]));
+    }
+    return h;
+}
+
+/* The panel made at font: all of it, or (the same font, rows and label
+   column, and no wider) only the rows that changed. It's made again once a
+   second, and making every pixel of it was a hitch; it doesn't get
+   narrower while it's shown, so a value a letter shorter doesn't make all
+   of it again. */
 static void pan_build(ReelCore *v, int font)
 {
     const PanelFont *f = &panel_fonts[font];
     Layer *L = &v->pan;
-    int lw = 0, vw = 0, w, h, rows = v->pan_rows;
+    int lw = 0, vw = 0, w, h, rows = v->pan_rows, all;
     int pad = pan_px(f, PAN_PAD), gap = pan_px(f, PAN_GAP), row = f->h + pan_px(f, PAN_LEAD);
     int gw = pan_px(f, PAN_GRAPH_W), gh = FFMAX(pan_px(f, PAN_GRAPH_H), 2);
-    v->pan_font = font;
+    uint32_t sum[REELCORE_PANEL_ROWS];
     if (rows <= 0) {
         layer_free(L);
+        v->pan_made_rows = 0;
         return;
     }
     for (int i = 0; i < rows; i++) {
         int g = v->pan_graph[i] ? gw + gap : 0;
         lw = FFMAX(lw, pan_textw(f, v->pan_label[i]));
         vw = FFMAX(vw, g + pan_textw(f, v->pan_value[i]));
+        sum[i] = pan_row_sum(v, i);
     }
     w = pad + lw + gap + vw + pad;
     h = pad + rows * row + pad - pan_px(f, PAN_LEAD);
-    if (layer_alloc(L, w, h) < 0)
-        return;
-    layer_box(L, 0, 0, w, h, 0, 0, 0, PAN_BG);
+    all = !L->rgba || font != v->pan_font || rows != v->pan_made_rows || lw != v->pan_lw || h != L->h || w > L->w;
+    v->pan_font = font;
+    if (all) {
+        if (layer_alloc(L, w, h) < 0) {
+            v->pan_made_rows = 0;
+            return;
+        }
+        v->pan_lw = lw;
+        v->pan_made_rows = rows;
+    }
     for (int i = 0; i < rows; i++) {
         int y = pad + i * row, x = pad + lw + gap;
+        int b0 = i ? y : 0, b1 = i + 1 < rows ? y + row : h;   /* the row's band */
+        if (!all && sum[i] == v->pan_sum[i])
+            continue;
+        v->pan_sum[i] = sum[i];
+        layer_clear_rows(L, b0, b1, PAN_BG);
+        if (!all) {                            /* (just these rows into Y,Cb,Cr again) */
+            if (L->dirty0 >= L->dirty1) {
+                L->dirty0 = b0;
+                L->dirty1 = b1;
+            }
+            L->dirty0 = FFMIN(L->dirty0, b0);
+            L->dirty1 = FFMAX(L->dirty1, b1);
+        }
         if (v->pan_label[i])
             pan_text(L, f, pad + lw - pan_textw(f, v->pan_label[i]), y, v->pan_label[i], 255, 255, 255);
         if (v->pan_graph[i]) {
@@ -3287,7 +3403,7 @@ static void pan_build(ReelCore *v, int font)
     }
 }
 
-static void pan_forget(ReelCore *v)
+static void pan_forget_rows(ReelCore *v)
 {
     for (int i = 0; i < REELCORE_PANEL_ROWS; i++) {
         av_freep(&v->pan_label[i]);
@@ -3295,15 +3411,23 @@ static void pan_forget(ReelCore *v)
         av_freep(&v->pan_graph[i]);
     }
     v->pan_rows = 0;
+}
+
+static void pan_forget(ReelCore *v)
+{
+    pan_forget_rows(v);
     layer_free(&v->pan);
+    v->pan_made_rows = 0;
 }
 
 int reelcore_set_panel(ReelCore *v, const ReelCorePanel *p)
 {
     int rows = p ? FFMIN(p->rows, REELCORE_PANEL_ROWS) : 0;
-    pan_forget(v);
-    if (rows <= 0)
+    if (rows <= 0) {
+        pan_forget(v);
         return 0;
+    }
+    pan_forget_rows(v);                        /* (the picture kept: only changed rows made again) */
     if (p->yuv_scale > 0)
         v->yuv_k = p->yuv_scale;
     v->pan_graph_n = p->graph_n;

@@ -60,6 +60,16 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   gives the same pictures as FFmpeg's hevc on the ARM, with two
   conversions a picture and none refused; mutations (the rectangle path
   off, its source moved, a column not written back) caught.
+- **The stats panel costs less while it's shown** (Reel still slowed and
+  stuttered slightly with it on). Once a second the whole panel was made
+  again (every pixel blended with four divides) and turned into Y,Cb,Cr;
+  now only the rows whose text or graph changed are, and the panel no
+  longer gets narrower while shown (a shorter value doesn't make all of it
+  again). Each picture, the panel is blended 8 pixels at a time with NEON
+  from planes made ready for it (Y*a, Cb*a, Cr*a and 255-a), not a pixel
+  at a time from Y,Cb,Cr,A. panel_test: an updated panel is exactly the
+  same panel made afresh, in YV12 and 32bpp; the blend is exact for every
+  run length 1–40, luma and chroma; mutations caught.
 - **The About this program window looks like other programs'**: the
   values are display fields (grey, slabbed in, "R2"), as in a standard
   ProgInfo template, not white boxes. Reel, ReelEGL and !FFmpeg.
