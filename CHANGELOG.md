@@ -45,6 +45,25 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   FFmpeg's hevc on the ARM gives, the conversions are the block's, and
   no frame is held at the end; mutations (halving off, the copy kept
   from the picture before) caught.
+- **4K HEVC no longer stutters with the stats panel on** (seen on a Pi 4;
+  found by riscos-reelhwaccel). The panel and subtitles were blended into
+  the block's picture in the overlay itself, reading each byte back from
+  memory that is slow to read (about 200,000 single-byte reads a picture
+  for the panel). Now each layer's rectangle (overlapping ones as one) is
+  converted from the block's frame a second time into cached memory,
+  blended there and written over the overlay's: the overlay is only
+  written, as on the other paths. The layer blend divides by 255 with a
+  shift (`(m + 1 + (m >> 8)) >> 8`, exact for every value it gets), and
+  the panel's colours, remade once a second, are worked out in fixed
+  point rather than doubles with three divides a pixel (at most 1 level
+  apart). vc_test: the panel on at scale 1 and 2, drawn 1:1 and halved,
+  gives the same pictures as FFmpeg's hevc on the ARM, with two
+  conversions a picture and none refused; mutations (the rectangle path
+  off, its source moved, a column not written back) caught.
+- **The About this program window looks like other programs'**: the
+  values are display fields (grey, slabbed in, "R2"), as in a standard
+  ProgInfo template, not white boxes. Reel, ReelEGL and !FFmpeg.
+  reel_test checks it.
 - **4K HEVC no longer drops to keyframes only** (seen on a Pi 4, 8-bit and
   10-bit at 40 Mbit/s). Falling behind, reelcore set `skip_frame`, and
   hevc_hwdec's inner hevc then gave the block keyframes only; at 4K the

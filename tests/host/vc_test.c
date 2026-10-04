@@ -43,7 +43,7 @@ static int fails;
 static int out_buffers = -1;                 /* asked of h264_vchiq (zero-copy: devkit 0.2.1) */
 static int asked, pending, refuse_open, refuse_send, fail_after = -1, refused, vc_frames, failed;
 static int asked_hb, output_8bit = -1, fail_err = AVERROR_EXTERNAL;   /* hevc_hwdec's stand-in */
-static int output_hw = -1, vc_is_hevc, hw_live, to_i420_calls, to_half_calls;
+static int output_hw = -1, vc_is_hevc, hw_live, to_i420_calls, to_half_calls, half_refused;
 
 #ifdef REELCORE_HEVCDEC
 /* hevc_hwdec's output_hw (devkit 0.2.8): its frames are AV_PIX_FMT_HEVCDEC
@@ -100,7 +100,7 @@ int hevcdec_frame_to_i420_half(hevcdec *d, const hevcdec_frame *f, uint8_t *cons
     (void)d;
     to_half_calls++;
     if ((x & 3) || (y & 1) || x + 2 * w > s->width || y + 2 * h > s->height)
-        return HEVCDEC_UNSUPPORTED;
+        return half_refused++, HEVCDEC_UNSUPPORTED;
     for (int p = 0; p < 3; p++) {
         int pw = p ? (w + 1) / 2 : w, ph = p ? (h + 1) / 2 : h, px = p ? x / 2 : x, py = p ? y / 2 : y;
         for (int r = 0; r < ph; r++) {
@@ -305,6 +305,23 @@ static void draw(ReelCore *v, run_t *out)
     }
 }
 
+/* the stats panel on (yuv_scale panel_on), as Reel's: drawn into the picture */
+static double panel_on;
+static void set_panel(ReelCore *v)
+{
+    static float g[60];
+    ReelCorePanel p;
+    memset(&p, 0, sizeof p);
+    for (int i = 0; i < 60; i++) g[i] = (float)(i % 7) / 7;
+    p.rows = 3;
+    p.label[0] = "Decoder"; p.value[0] = "HEVC block (hardware)";
+    p.label[1] = "Convert"; p.value[1] = "7.7 ms"; p.graph[1] = g; p.graph_rgb[1] = 0x40C040;
+    p.label[2] = "Dropped"; p.value[2] = "0";
+    p.graph_n = 60;
+    p.yuv_scale = panel_on;
+    CHECK(reelcore_set_panel(v, &p) == 0, "set_panel");
+}
+
 static double seek_at = -1, seek_to, slow;   /* slow: the time each picture shown takes */
 
 static void play(const char *clip, int flags, run_t *out)
@@ -320,6 +337,8 @@ static void play(const char *clip, int flags, run_t *out)
     CHECK(v != NULL, "open %s", clip);
     if (!v) return;
     reelcore_media_info(v, out->info, sizeof out->info);
+    if (panel_on > 0)
+        set_panel(v);
     for (int i = 0; i < 40000 && r != REELCORE_END && fake_time - t0 < 30; i++) {
         r = reelcore_update(v);
         if (seek_at >= 0 && reelcore_position(v) >= seek_at) {
@@ -500,8 +519,32 @@ int main(int argc, char **argv)
                       "output_hw, %s: %u/%u drawn, sums %08x/%08x, %d+%d conversions, %d held", how[draw_mode], r2.drawn,
                       r1.drawn, r2.crc, r1.crc, to_i420_calls - c0, to_half_calls - h0, hw_live);
             }
+            /* the stats panel on: the same pictures again, the panel's
+               rectangle converted a second time into cached memory, blended
+               there and written over (the overlay never read back: 4K
+               stuttered with the panel on when it was blended in place) */
+            for (int k = 1; k <= 2; k++)
+                for (draw_mode = 1; draw_mode <= 2; draw_mode++) {
+                    run_t r0, r1, r2;
+                    int c0, h0;
+                    panel_on = 0;
+                    play(argv[2], REELCORE_NO_HEVC_BLOCK, &r0);
+                    panel_on = k;
+                    play(argv[2], REELCORE_NO_HEVC_BLOCK, &r1);
+                    c0 = to_i420_calls; h0 = to_half_calls; half_refused = 0;
+                    play(argv[2], 0, &r2);
+                    panel_on = 0;
+                    printf("  HEVC block, panel on (scale %d), drawn %s: %u and %u drawn, sums %08x %08x (no panel %08x), "
+                           "%d 1:1 and %d halved conversions\n", k, how[draw_mode], r1.drawn, r2.drawn, r1.crc, r2.crc, r0.crc,
+                           to_i420_calls - c0, to_half_calls - h0);
+                    CHECK(r2.drawn == r1.drawn && r2.drawn > 20 && r2.crc == r1.crc && r1.crc != r0.crc && !hw_live && !half_refused &&
+                          (draw_mode == 2 ? to_half_calls - h0 == 2 * (int)r2.drawn : to_i420_calls - c0 >= 2 * (int)r2.drawn),
+                          "panel on, scale %d, %s: %u/%u drawn, sums %08x/%08x (no panel %08x), %d+%d conversions, %d refused", k,
+                          how[draw_mode], r2.drawn, r1.drawn, r2.crc, r1.crc, r0.crc, to_i420_calls - c0, to_half_calls - h0,
+                          half_refused);
+                }
             draw_mode = 0;
-            asked_hb -= 3;                       /* (three more uses of the block above) */
+            asked_hb -= 7;                       /* (seven more uses of the block above) */
         }
 #endif
         refuse_open = 1;

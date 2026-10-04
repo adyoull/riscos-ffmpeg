@@ -203,6 +203,8 @@ struct ReelCore {
     int hb_failed;                     /* ... which failed or refused part way: the ARM's from here on */
     AVFrame *cur_soft;                 /* the current frame as YUV420P, when it's the block's (cur_frame) */
     unsigned hw_draws;                 /* pictures converted straight into the caller's planes */
+    uint8_t *rect_buf;                 /* a layer's rectangle of the block's picture, blended in cached memory */
+    unsigned rect_size;
     int vmore;                         /* the video decoder has frames not taken yet (the queue was full) */
     int64_t vc_drop;                   /* h264_vchiq's drop_before last set (INT64_MIN: off) */
     unsigned q_overflow;               /* pictures pushed out of a full queue (should never happen) */
@@ -1434,6 +1436,7 @@ void reelcore_close(ReelCore *v)
     clear_queue(v);
     vpk_clear(v);
     av_freep(&v->vpk);
+    av_freep(&v->rect_buf);
     apk_clear(v);
     av_freep(&v->apk);
     av_frame_free(&v->cur);
@@ -3126,25 +3129,35 @@ static void layer_blend_rgb(const Place *pl, uint8_t *p, int pitch, int w, int h
     }
 }
 
-/* The layer as Y,Cb,Cr,A in the frame's colours (c: REELCORE_YUV_709/_FULL) */
+/* The layer as Y,Cb,Cr,A in the frame's colours (c: REELCORE_YUV_709/_FULL).
+   Fixed point (the colours to 1/65536, divides by a from a table): it's
+   remade whenever the panel is (once a second), and in doubles with three
+   divides a pixel that was a hitch on the picture that drew it. */
 static int layer_yuv(Layer *L, int c)
 {
+    static int32_t rc[256];                    /* 65536 / a, rounded */
     double kr = c & REELCORE_YUV_709 ? 0.2126 : 0.299, kb = c & REELCORE_YUV_709 ? 0.0722 : 0.114;
     double ys = c & REELCORE_YUV_FULL ? 255 : 219, cs = c & REELCORE_YUV_FULL ? 255 : 224;
-    double yo = c & REELCORE_YUV_FULL ? 0 : 16;
+    int64_t KR = (int64_t)(kr * 65536 + 0.5), KB = (int64_t)(kb * 65536 + 0.5), KG = 65536 - KR - KB;
+    int64_t YS = (int64_t)(ys * 65536 + 0.5), CBS = (int64_t)(cs / (2 * (1 - kb)) * 65536 + 0.5);
+    int64_t CRS = (int64_t)(cs / (2 * (1 - kr)) * 65536 + 0.5), YO = c & REELCORE_YUV_FULL ? 0 : 16;
     if (L->yuv && L->yuv_c == c)
         return 0;
+    if (!rc[1])
+        for (int a = 1; a < 256; a++)
+            rc[a] = (65536 + a / 2) / a;
     av_freep(&L->yuv);
     if (!(L->yuv = av_malloc((size_t)L->w * L->h * 4)))
         return AVERROR(ENOMEM);
     for (int i = 0; i < L->w * L->h; i++) {
         const uint8_t *s = L->rgba + (size_t)i * 4;
         uint8_t *d = L->yuv + (size_t)i * 4;
-        double a = s[3], r = a ? s[0] / a : 0, g = a ? s[1] / a : 0, b = a ? s[2] / a : 0;   /* 0..1 */
-        double yy = kr * r + (1 - kr - kb) * g + kb * b;
-        d[0] = (uint8_t)av_clip((int)(yo + yy * ys + 0.5), 0, 255);
-        d[1] = (uint8_t)av_clip((int)(128 + (b - yy) / (2 * (1 - kb)) * cs + 0.5), 0, 255);
-        d[2] = (uint8_t)av_clip((int)(128 + (r - yy) / (2 * (1 - kr)) * cs + 0.5), 0, 255);
+        int a = s[3];
+        int64_t r = (int64_t)s[0] * rc[a], g = (int64_t)s[1] * rc[a], b = (int64_t)s[2] * rc[a];   /* 0..65536 (a 0: 0) */
+        int64_t yy = (KR * r + KG * g + KB * b + 32768) >> 16;
+        d[0] = (uint8_t)av_clip((int)(YO + ((yy * YS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+        d[1] = (uint8_t)av_clip((int)(128 + (((b - yy) * CBS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+        d[2] = (uint8_t)av_clip((int)(128 + (((r - yy) * CRS + ((int64_t)1 << 31)) >> 32)), 0, 255);
         d[3] = s[3];
     }
     L->yuv_c = c;
@@ -3179,8 +3192,10 @@ static void layer_blend_row(const Place *pl, uint8_t *row, int p, int y, int w)
         if (lx >= L->w)
             break;
         s = L->yuv + ((size_t)ly * L->w + lx) * 4;
-        if (s[3])
-            row[x] = (uint8_t)((s[p] * s[3] + row[x] * (255 - s[3])) / 255);
+        if (s[3]) {
+            unsigned m = s[p] * s[3] + row[x] * (255 - s[3]);
+            row[x] = (uint8_t)((m + 1 + (m >> 8)) >> 8);   /* m / 255, exactly, for 0..65025 */
+        }
     }
 }
 
@@ -4239,6 +4254,68 @@ int reelcore_set_audio_track(ReelCore *v, int i)
     return reelcore_seek(v, reelcore_position(v));   /* the new track from here */
 }
 
+#ifdef REELCORE_HEVCDEC
+/* The layers over the block's picture, already converted into the
+   overlay: each layer's rectangle (overlapping ones as one) converted
+   again into cached memory, blended there and written over the overlay's.
+   The overlay is only written: reading it back a byte at a time (blending
+   in place) cost 10-20 ms a picture with the stats panel on, and 4K
+   stuttered. Rectangles start on even rows and columns (1:1 wants x and y
+   even; halved, a source x a multiple of 4: fx is, and 2 * an even x). */
+static int hw_layers(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *const planes[3], const int pitch[3],
+                     int w, int h, int fx, int fy, int half, const Place *pl, int nl)
+{
+    int r[2][4], owner[2], nr = 0;            /* x0, y0, x1, y1 (output pixels) */
+    for (int i = 0; i < nl; i++) {
+        const Layer *L = pl[i].L;
+        int x0 = FFMAX(0, pl[i].x0) & ~1, y0 = FFMAX(0, pl[i].y0) & ~1;
+        int x1 = FFMIN(w, (pl[i].x0 + (int)(L->w * pl[i].sx + 0.5) + 1) & ~1);
+        int y1 = FFMIN(h, ((int)ceil(pl[i].y0 + L->h * pl[i].sy) + 1) & ~1);
+        int j;
+        owner[i] = -1;
+        if (x0 >= x1 || y0 >= y1)
+            continue;                          /* (off the picture) */
+        for (j = 0; j < nr; j++)
+            if (x0 < r[j][2] && r[j][0] < x1 && y0 < r[j][3] && r[j][1] < y1)
+                break;
+        if (j < nr) {                          /* overlapping: one rectangle round both */
+            r[j][0] = FFMIN(r[j][0], x0); r[j][1] = FFMIN(r[j][1], y0);
+            r[j][2] = FFMAX(r[j][2], x1); r[j][3] = FFMAX(r[j][3], y1);
+        } else {
+            r[nr][0] = x0; r[nr][1] = y0; r[nr][2] = x1; r[nr][3] = y1;
+            j = nr++;
+        }
+        owner[i] = j;
+    }
+    for (int j = 0; j < nr; j++) {
+        int lx = r[j][0], ly = r[j][1], lw = r[j][2] - lx, lh = r[j][3] - ly;
+        int cw = (lw + 1) / 2, ch = (lh + 1) / 2, ts[3] = { lw, cw, cw };
+        unsigned need = (unsigned)(lw * lh + 2 * cw * ch);
+        uint8_t *t[3];
+        av_fast_malloc(&v->rect_buf, &v->rect_size, need);
+        if (!v->rect_buf)
+            return AVERROR(ENOMEM);
+        t[0] = v->rect_buf; t[1] = t[0] + lw * lh; t[2] = t[1] + cw * ch;
+        if (half) {
+            if (hevcdec_frame_to_i420_half(d, hf, t, ts, fx + 2 * lx, fy + 2 * ly, lw, lh) != HEVCDEC_OK)
+                return AVERROR_EXTERNAL;
+        } else
+            hevcdec_frame_to_i420(d, hf, t, ts, fx + lx, fy + ly, lw, lh);
+        for (int p = 0; p < 3; p++) {
+            int sub = p ? 2 : 1, ox = lx / sub, oy = ly / sub, pw = p ? cw : lw, ph = p ? ch : lh;
+            for (int y = 0; y < ph; y++) {
+                uint8_t *row = t[p] + (size_t)y * ts[p];
+                for (int i = 0; i < nl; i++)   /* (the row as if the plane's: x from 0) */
+                    if (owner[i] == j && layer_touches(&pl[i], p, oy + y))
+                        layer_blend_row(&pl[i], row - ox, p, oy + y, ox + pw);
+                memcpy(planes[p] + (size_t)(oy + y) * pitch[p] + ox, row, pw);
+            }
+        }
+    }
+    return 0;
+}
+#endif
+
 int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[3], int w, int h, int *colour)
 {
     AVFrame *f = v->cur;
@@ -4282,11 +4359,12 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
             done = hevcdec_frame_to_i420_half(d, hf, planes, pitch, fx, fy, w, h) == HEVCDEC_OK;
         if (done) {
             v->hw_draws++;
-            for (int i = 0; i < nl; i++)          /* the layers over the converted rows */
-                for (int p = 0; p < 3; p++)
-                    for (int y = 0; y < (p ? (h + 1) / 2 : h); y++)
-                        if (layer_touches(&pl[i], p, y))
-                            layer_blend_row(&pl[i], planes[p] + (size_t)y * pitch[p], p, y, p ? (w + 1) / 2 : w);
+            if (nl && hw_layers(v, d, hf, planes, pitch, w, h, fx, fy, half, pl, nl) < 0)
+                for (int i = 0; i < nl; i++)      /* (no memory: blended in the overlay, reading it back) */
+                    for (int p = 0; p < 3; p++)
+                        for (int y = 0; y < (p ? (h + 1) / 2 : h); y++)
+                            if (layer_touches(&pl[i], p, y))
+                                layer_blend_row(&pl[i], planes[p] + (size_t)y * pitch[p], p, y, p ? (w + 1) / 2 : w);
             v->t_convert += av_gettime_relative() - t0;
             v->conv_w = w;
             v->conv_h = h;

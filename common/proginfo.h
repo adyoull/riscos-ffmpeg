@@ -16,6 +16,11 @@
  *
  * Returns the window handle, or -1 if the Wimp refused (the caller then
  * leaves Info without a submenu).
+ *
+ * Laid out as the standard ProgInfo template that RISC OS applications'
+ * Templates files carry: labels right-aligned on the window's grey, each
+ * value in a display field (grey, "R2": the slabbed-in border), not a
+ * white writable-looking box.
  */
 #ifndef RISCOS_FFMPEG_PROGINFO_H
 #define RISCOS_FFMPEG_PROGINFO_H
@@ -28,6 +33,7 @@
 
 /* The texts live as long as the program: the icons are indirected to them */
 static char proginfo_text[PROGINFO_ROWS][64];
+static char proginfo_valid[] = "R2";            /* a display field's slabbed-in border */
 
 static int proginfo_create(const char *name, const char *purpose, const char *author, const char *version)
 {
@@ -81,12 +87,12 @@ static int proginfo_create(const char *name, const char *purpose, const char *au
         w.icon[2 * i].box[2] = 148; w.icon[2 * i].box[3] = top;
         w.icon[2 * i].flags = 0x17000211u;      /* text, v centred, right-justified; black on grey */
         strncpy((char *)w.icon[2 * i].data, labels[i], 12);
-        /* the value: a white bordered box, indirected to the text */
+        /* the value: a display field (grey, slabbed in), indirected to the text */
         w.icon[2 * i + 1].box[0] = 152;          w.icon[2 * i + 1].box[1] = top - 48;
         w.icon[2 * i + 1].box[2] = 152 + value_w; w.icon[2 * i + 1].box[3] = top;
-        w.icon[2 * i + 1].flags = 0x0700013Du;  /* text, border, centred, filled, indirected; black on white */
+        w.icon[2 * i + 1].flags = 0x1700013Du;  /* text, border, centred, filled, indirected; black on grey */
         w.icon[2 * i + 1].data[0] = (int)(intptr_t)proginfo_text[i];
-        w.icon[2 * i + 1].data[1] = -1;
+        w.icon[2 * i + 1].data[1] = (int)(intptr_t)proginfo_valid;
         w.icon[2 * i + 1].data[2] = (int)sizeof(proginfo_text[i]);
     }
     r.r[1] = (intptr_t)&w;

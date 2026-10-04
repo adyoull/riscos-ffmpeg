@@ -103,6 +103,7 @@ static char title[64];
 static int *title_ptr;
 static int proginfo_made, proginfo_icons, bar_info_sub = -99;
 static char proginfo_seen[512];     /* "Name:=Reel|Purpose:=..|" from the window's icons */
+static int proginfo_fields;         /* values in display fields (grey, "R2" slabbed in), as other programs' */
 
 static int *st(int w) { return state[w == FULL ? 1 : w == INFO ? 2 : w == MINI ? 3 : w == URLW ? 4 : 0]; }
 
@@ -1268,6 +1269,7 @@ static void final_checks(void)
 #endif
         CHECK(proginfo_made == 1 && proginfo_icons == 8, "Info window: made %d, %d icons", proginfo_made, proginfo_icons);
         CHECK(!strcmp(proginfo_seen, want), "Info window says %s", proginfo_seen);
+        CHECK(proginfo_fields == 4, "Info window: %d of 4 values in grey slabbed-in display fields", proginfo_fields);
         CHECK(bar_info_sub == PROGINFO, "icon bar menu: Info's submenu is %x (want the Info window)", bar_info_sub);
         printf("  Info: %s\n", proginfo_seen);
     }
@@ -1425,8 +1427,11 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         if (b[7] == (int)0x84000012) {                                    /* About this program */
             proginfo_made++; proginfo_icons = b[21];
             proginfo_seen[0] = 0;
+            proginfo_fields = 0;
             for (int i = 0; i + 1 < b[21]; i += 2) {
                 const int *label = b + 22 + 8 * i, *value = label + 8;
+                proginfo_fields += value[4] == (int)0x1700013D && value[6] != -1 && !strcmp((const char *)(intptr_t)value[6], "R2") &&
+                                   (unsigned)label[4] >> 28 == 1;
                 char row[128];
                 snprintf(row, sizeof(row), "%.12s=%s|", (const char *)(label + 5),
                          (value[4] & 0x100) ? (const char *)(intptr_t)value[5] : "?");
