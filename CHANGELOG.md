@@ -67,6 +67,13 @@ Reel and ReelEGL:
   before). reel_test.
 - **Reel: the bars beside a picture drawn and plotted once**, not with
   every picture. reel_test.
+- **The stats panel over the HEVC block's pictures: each picture
+  converted once** (opt2), in bands across the whole width: the panel's
+  rows into cached memory, blended and written to the overlay, the rows
+  above and below straight in. The panel's rectangle was converted a
+  second time, from x off the block's columns: a 1440x810 window of 4K
+  10-bit with the panel on took 50 ms a picture. vc_test: the pixels
+  converted equal the pixels drawn, all from x 0.
 - **The log** (Reel$Log): FFmpeg's warnings (a damaged stream gives
   several a picture) written out once a second rather than flushed line
   by line; errors and Reel's own lines at once, and the log flushed on a

@@ -48,6 +48,8 @@ static int asked_hb, output_8bit = -1, fail_err = AVERROR_EXTERNAL;   /* hevc_hw
    so that's where a real one's error comes back first */
 static int fail_in_send;
 static int output_hw = -1, vc_is_hevc, hw_live, to_i420_calls, to_half_calls, half_refused;
+static long conv_px, drawn_px;          /* output pixels the block converted; pixels drawn */
+static int conv_x_off;                  /* conversions not starting at the window's left (x 0) */
 
 #ifdef REELCORE_HEVCDEC
 /* hevc_hwdec's output_hw (devkit 0.2.8): its frames are AV_PIX_FMT_HEVCDEC
@@ -90,6 +92,8 @@ void hevcdec_frame_to_i420(hevcdec *d, const hevcdec_frame *f, uint8_t *const pl
     const AVFrame *s = f->soft;
     (void)d;
     to_i420_calls++;
+    conv_px += (long)w * h;
+    conv_x_off += x != 0;
     for (int p = 0; p < 3; p++) {
         int pw = p ? (w + 1) / 2 : w, ph = p ? (h + 1) / 2 : h, px = p ? x / 2 : x, py = p ? y / 2 : y;
         for (int r = 0; r < ph; r++)
@@ -103,6 +107,8 @@ int hevcdec_frame_to_i420_half(hevcdec *d, const hevcdec_frame *f, uint8_t *cons
     const AVFrame *s = f->soft;
     (void)d;
     to_half_calls++;
+    conv_px += (long)w * h;
+    conv_x_off += x != 0;
     if ((x & 3) || (y & 1) || x + 2 * w > s->width || y + 2 * h > s->height)
         return half_refused++, HEVCDEC_UNSUPPORTED;
     for (int p = 0; p < 3; p++) {
@@ -306,6 +312,7 @@ static void draw(ReelCore *v, run_t *out)
             for (size_t i = 0; i < (size_t)w * h * 3 / 2 + (size_t)((w + 1) / 2) * ((h + 1) / 2); i++)
                 out->crc = out->crc * 31 + buf[i];
             out->drawn++;
+            drawn_px += (long)w * h;
         }
         free(buf);
     }
@@ -525,10 +532,12 @@ int main(int argc, char **argv)
                       "output_hw, %s: %u/%u drawn, sums %08x/%08x, %d+%d conversions, %d held", how[draw_mode], r2.drawn,
                       r1.drawn, r2.crc, r1.crc, to_i420_calls - c0, to_half_calls - h0, hw_live);
             }
-            /* the stats panel on: the same pictures again, the panel's
-               rectangle converted a second time into cached memory, blended
-               there and written over (the overlay never read back: 4K
-               stuttered with the panel on when it was blended in place) */
+            /* the stats panel on: the same pictures again, each converted
+               once, in bands across the whole width (x 0: the block's
+               columns), the panel's rows into cached memory, blended there
+               and written over (the overlay never read back: 4K stuttered
+               with the panel on when it was blended in place; converting
+               the panel's rectangle a second time cost 4K 10-bit 50 ms) */
             for (int k = 1; k <= 2; k++)
                 for (draw_mode = 1; draw_mode <= 2; draw_mode++) {
                     run_t r0, r1, r2;
@@ -538,16 +547,19 @@ int main(int argc, char **argv)
                     panel_on = k;
                     play(argv[2], REELCORE_NO_HEVC_BLOCK, &r1);
                     c0 = to_i420_calls; h0 = to_half_calls; half_refused = 0;
+                    conv_px = drawn_px = 0; conv_x_off = 0;
                     play(argv[2], 0, &r2);
                     panel_on = 0;
                     printf("  HEVC block, panel on (scale %d), drawn %s: %u and %u drawn, sums %08x %08x (no panel %08x), "
-                           "%d 1:1 and %d halved conversions\n", k, how[draw_mode], r1.drawn, r2.drawn, r1.crc, r2.crc, r0.crc,
-                           to_i420_calls - c0, to_half_calls - h0);
+                           "%d 1:1 and %d halved conversions, %.2f of each picture converted\n", k, how[draw_mode], r1.drawn,
+                           r2.drawn, r1.crc, r2.crc, r0.crc, to_i420_calls - c0, to_half_calls - h0,
+                           drawn_px ? (double)conv_px / drawn_px : 0.0);
                     CHECK(r2.drawn == r1.drawn && r2.drawn > 20 && r2.crc == r1.crc && r1.crc != r0.crc && !hw_live && !half_refused &&
-                          (draw_mode == 2 ? to_half_calls - h0 == 2 * (int)r2.drawn : to_i420_calls - c0 >= 2 * (int)r2.drawn),
-                          "panel on, scale %d, %s: %u/%u drawn, sums %08x/%08x (no panel %08x), %d+%d conversions, %d refused", k,
-                          how[draw_mode], r2.drawn, r1.drawn, r2.crc, r1.crc, r0.crc, to_i420_calls - c0, to_half_calls - h0,
-                          half_refused);
+                          conv_px == drawn_px && !conv_x_off &&
+                          (draw_mode == 2 ? to_i420_calls == c0 : to_half_calls == h0),
+                          "panel on, scale %d, %s: %u/%u drawn, sums %08x/%08x (no panel %08x), %d+%d conversions, %d refused, "
+                          "%ld of %ld pixels converted, %d not from x 0", k, how[draw_mode], r2.drawn, r1.drawn, r2.crc, r1.crc,
+                          r0.crc, to_i420_calls - c0, to_half_calls - h0, half_refused, conv_px, drawn_px, conv_x_off);
                 }
             draw_mode = 0;
             asked_hb -= 7;                       /* (seven more uses of the block above) */
