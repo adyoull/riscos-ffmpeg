@@ -4771,66 +4771,38 @@ static int hw_layers(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *
 #endif
 
 #ifdef REELCORE_HEVCDEC
-/* The block's frame with layers over it, converted once, in bands across
-   the whole width: the rows with layers into cached memory, blended there
-   and written to the overlay; the rows above and below straight into the
-   overlay. (hw_layers converted the layers' rectangles a second time, at
-   x that weren't on the block's 128-pixel columns: with a big panel, a
-   1440x810 window of 4K 10-bit, 50 ms a picture.) The overlay is only
-   written. -1 if the block refused (nothing written; the caller draws it
-   another way). */
+/* The block's frame with layers over it (the stats panel, subtitles):
+   converted with ONE call into cached memory, the layers blended there,
+   and all of it written to the overlay. hevcdec cleans and invalidates
+   the cache over the whole frame (17 MB at 4K 10-bit) at the start of
+   every conversion call, so each extra call cost a whole frame's cache
+   maintenance: converting the layers' rectangle again (hw_layers), or in
+   bands, took 4K 10-bit with the panel on to 45-50 ms a picture. The
+   extra cost now is a memcpy of the picture into the overlay, which is
+   only written. -1 if the block refused or no memory (nothing written;
+   the caller draws it another way). */
 static int hw_bands(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *const planes[3], const int pitch[3],
                     int w, int h, int fx, int fy, int half, const Place *pl, int nl)
 {
-    int by0 = h, by1 = 0, bh, cw = (w + 1) / 2, ch, ts[3] = { w, cw, cw };
-    unsigned need;
+    int cw = (w + 1) / 2, ch = (h + 1) / 2, ts[3] = { w, cw, cw };
     uint8_t *t[3];
-    for (int i = 0; i < nl; i++) {
-        const Layer *L = pl[i].L;
-        int y0 = FFMAX(0, pl[i].y0) & ~1, y1 = FFMIN(h, ((int)ceil(pl[i].y0 + L->h * pl[i].sy) + 1) & ~1);
-        if (y0 < y1) {
-            by0 = FFMIN(by0, y0);
-            by1 = FFMAX(by1, y1);
-        }
-    }
-    if (by0 >= by1)
-        by0 = by1 = 0;                         /* (all off the picture) */
-    bh = by1 - by0;
-    ch = (bh + 1) / 2;
-    if (bh) {
-        need = (unsigned)(w * bh + 2 * cw * ch);
-        av_fast_malloc(&v->rect_buf, &v->rect_size, need);
-        if (!v->rect_buf)
+    av_fast_malloc(&v->rect_buf, &v->rect_size, (size_t)w * h + 2 * (size_t)cw * ch);
+    if (!v->rect_buf)
+        return -1;
+    t[0] = v->rect_buf; t[1] = t[0] + (size_t)w * h; t[2] = t[1] + (size_t)cw * ch;
+    if (half) {
+        if (hevcdec_frame_to_i420_half(d, hf, t, ts, fx, fy, w, h) != HEVCDEC_OK)
             return -1;
-        t[0] = v->rect_buf; t[1] = t[0] + (size_t)w * bh; t[2] = t[1] + (size_t)cw * ch;
-        if (half) {
-            if (hevcdec_frame_to_i420_half(d, hf, t, ts, fx, fy + 2 * by0, w, bh) != HEVCDEC_OK)
-                return -1;
-        } else
-            hevcdec_frame_to_i420(d, hf, t, ts, fx, fy + by0, w, bh);
-    }
-    /* above and below the band: straight in */
-    for (int part = 0; part < 2; part++) {
-        int y0 = part ? by1 : 0, y1 = part ? h : by0;
-        uint8_t *o[3];
-        if (y0 >= y1)
-            continue;
-        for (int p = 0; p < 3; p++)
-            o[p] = planes[p] + (size_t)(p ? y0 / 2 : y0) * pitch[p];
-        if (half) {
-            if (hevcdec_frame_to_i420_half(d, hf, o, pitch, fx, fy + 2 * y0, w, y1 - y0) != HEVCDEC_OK)
-                return -1;                     /* (the caller draws all of it again) */
-        } else
-            hevcdec_frame_to_i420(d, hf, o, pitch, fx, fy + y0, w, y1 - y0);
-    }
-    for (int p = 0; p < 3; p++) {              /* the band: blended in cached memory, then written once */
-        int oy = p ? by0 / 2 : by0, pw = p ? cw : w, ph = p ? ch : bh;
+    } else
+        hevcdec_frame_to_i420(d, hf, t, ts, fx, fy, w, h);
+    for (int p = 0; p < 3; p++) {              /* blended in cached memory, then written once */
+        int pw = p ? cw : w, ph = p ? ch : h;
         for (int y = 0; y < ph; y++) {
             uint8_t *row = t[p] + (size_t)y * ts[p];
             for (int i = 0; i < nl; i++)
-                if (layer_touches(&pl[i], p, oy + y))
-                    layer_blend_row(&pl[i], row, p, oy + y, pw);
-            memcpy(planes[p] + (size_t)(oy + y) * pitch[p], row, pw);
+                if (layer_touches(&pl[i], p, y))
+                    layer_blend_row(&pl[i], row, p, y, pw);
+            memcpy(planes[p] + (size_t)y * pitch[p], row, pw);
         }
     }
     return 0;
@@ -4880,7 +4852,7 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
         half = w * 2 <= fw && h * 2 <= fh;
         if (nl && ((!half && w <= fw && h <= fh) || (half && w * 4 > fw && h * 4 > fh && !(fx & 3) && !(fy & 1))) &&
             hw_bands(v, d, hf, planes, pitch, w, h, fx, fy, half, pl, nl) == 0) {
-            v->hw_draws++;                        /* (with layers: converted once, in bands) */
+            v->hw_draws++;                        /* (with layers: one conversion call, then copied) */
             v->t_convert += av_gettime_relative() - t0;
             v->conv_w = w;
             v->conv_h = h;

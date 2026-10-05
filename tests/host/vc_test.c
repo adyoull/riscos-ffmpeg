@@ -533,11 +533,11 @@ int main(int argc, char **argv)
                       r1.drawn, r2.crc, r1.crc, to_i420_calls - c0, to_half_calls - h0, hw_live);
             }
             /* the stats panel on: the same pictures again, each converted
-               once, in bands across the whole width (x 0: the block's
-               columns), the panel's rows into cached memory, blended there
-               and written over (the overlay never read back: 4K stuttered
-               with the panel on when it was blended in place; converting
-               the panel's rectangle a second time cost 4K 10-bit 50 ms) */
+               with one call (hevcdec cleans and invalidates the cache over
+               the whole frame each call: a second call for the panel's
+               rectangle, or bands, cost 4K 10-bit 45-50 ms) into cached
+               memory, blended there and written over (the overlay never
+               read back: 4K stuttered when it was blended in place) */
             for (int k = 1; k <= 2; k++)
                 for (draw_mode = 1; draw_mode <= 2; draw_mode++) {
                     run_t r0, r1, r2;
@@ -556,7 +556,8 @@ int main(int argc, char **argv)
                            drawn_px ? (double)conv_px / drawn_px : 0.0);
                     CHECK(r2.drawn == r1.drawn && r2.drawn > 20 && r2.crc == r1.crc && r1.crc != r0.crc && !hw_live && !half_refused &&
                           conv_px == drawn_px && !conv_x_off &&
-                          (draw_mode == 2 ? to_i420_calls == c0 : to_half_calls == h0),
+                          (draw_mode == 2 ? to_i420_calls == c0 && to_half_calls - h0 == (int)r2.drawn
+                                          : to_half_calls == h0 && to_i420_calls - c0 == (int)r2.drawn),
                           "panel on, scale %d, %s: %u/%u drawn, sums %08x/%08x (no panel %08x), %d+%d conversions, %d refused, "
                           "%ld of %ld pixels converted, %d not from x 0", k, how[draw_mode], r2.drawn, r1.drawn, r2.crc, r1.crc,
                           r0.crc, to_i420_calls - c0, to_half_calls - h0, half_refused, conv_px, drawn_px, conv_x_off);
