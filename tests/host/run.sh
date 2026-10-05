@@ -13,7 +13,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 TOP=$(cd "$HERE/../.." && pwd)
 S=$TOP/stage-linuxarm
 F=$TOP/src-linuxarm/ffmpeg-5.1.10              # patched source (riscos_egl.c, internal headers)
-DEVKIT=${DEVKIT:-$TOP/devkit/riscos-mesa-devkit-20.3.5-7pre12}
+DEVKIT=${DEVKIT:-$TOP/devkit/riscos-mesa-devkit-20.3.5-12}
 O=$TOP/src-linuxarm/host-tests
 SAMPLES=$TOP/tests/qemu/samples
 mkdir -p "$O" "$HERE/fake/EGL" "$HERE/fake/KHR"

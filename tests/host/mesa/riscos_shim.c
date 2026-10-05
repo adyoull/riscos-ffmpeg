@@ -91,5 +91,11 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         return &err;
     }
 }
+/* (riscos-mesa 20.3.5-12's libEGL reads pixmap sprites' modes with the C flag) */
+_kernel_oserror *_kernel_swi_c(int swi, _kernel_swi_regs *in, _kernel_swi_regs *out, int *carry)
+{
+    if (carry) *carry = 0;
+    return _kernel_swi(swi, in, out);
+}
 int _kernel_osbyte(int a, int x, int y) { return 0; }
 int _kernel_oswrch(int c) { return 0; }

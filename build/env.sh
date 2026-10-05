@@ -9,7 +9,7 @@
 
 TOP=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 : "${GCCSDK_ENV:=$HOME/gccsdk/env}"
-: "${DEVKIT:=$TOP/devkit/riscos-mesa-devkit-20.3.5-7pre12}"
+: "${DEVKIT:=$TOP/devkit/riscos-mesa-devkit-20.3.5-12}"
 # LINUX_ARM_TEST=1 builds the same code for arm-linux-gnueabihf instead, for
 # tests/qemu (run under qemu-arm with RISC OS's alignment traps). No SDL2,
 # no zlib, no ffplay there.

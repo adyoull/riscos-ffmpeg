@@ -146,7 +146,7 @@ and the ARM assembly in FFmpeg, dav1d and x264 relies on that.
 
 On an x86-64 Linux with the GCCSDK GCC 10.2 environment in `~/gccsdk/env`
 (the Warzone 2100 port's `gccsdk-gcc10.2-x86_64-linux-env.tgz`) and the
-riscos-mesa devkit (20.3.5-7pre12 or later) unpacked in `devkit/`:
+riscos-mesa devkit (20.3.5-12; 20.3.5-7pre12 or later works) unpacked in `devkit/`:
 
 ```
 make sources      # checks dl/ against build/SHA256SUMS (fetch them first)

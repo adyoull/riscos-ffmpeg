@@ -75,6 +75,12 @@ Reel and ReelEGL:
   log has the block's own figures once a second (pictures left,
   conversions that waited, cache cleans). vc_test: a stall with the
   block's latency, no conversion waits.
+- **riscos-mesa 20.3.5-12** (the tagged release, replacing 7pre12) for
+  ReelEGL, ffplay, ffmpeg's EGL output and the EGL examples: EGL fixes
+  from riscos-mesa's code audit (a context drawing into a freed buffer
+  after a resize short of memory, work area surfaces over 4096 pixels,
+  eglMakeCurrent flushing), overlay fixes, faster shaders. The host
+  EGLImage test runs on its libraries.
 - **Devkit 0.2.10** (hevcdec 0.1.11, with 0.1.10's audit fixes): a
   use-after-free and a DPB overrun in hevc_hwdec, size changes part way,
   the brightest pixels of halved 10-bit no longer black, each frame's
