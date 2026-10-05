@@ -204,7 +204,7 @@ enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT
        P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
        P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_SUBDROP, P_SUBHIDE, P_SUBSHOW, P_SUBNEXT, P_STEP, P_STEPPLAY, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
-       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_QUIT };
+       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_ARGURL, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_QUIT };
 static int phase = -1, phase_step;
 /* the phases that play (deliver nulls) */
 static int next_is_null(void)
@@ -1158,6 +1158,31 @@ static int next_event(int *b)
             }
             break;
         }
+        case P_ARGURL: {                                              /* *Reel <web address>: from a second copy */
+            static ReelCore *was;
+            static char url[512];
+            if (!base_url)
+                break;
+            if (phase_step == 0) {
+                phase_step++;
+                was = reel_test_video();
+                setenv(APP_NAME "$UserAgent", "ReelTest-UA/1.0", 1);    /* (run.sh looks for it in the server's log) */
+                snprintf(url, sizeof(url), "%s/long_h264_aac_322_184.mp4?from=commandline", base_url);
+                message(b, 3, -2, -1, 0xFFF, url);                     /* (as a second copy sends it) */
+                return 17;
+            }
+            if (phase_step++ < 5000 && (reel_test_video() == was || !reel_test_video())) {
+                fake_time += 0.01;
+                usleep(2000);
+                return 0;
+            }
+            v = reel_test_video();
+            CHECK(v && v != was && reelcore_width(v) == 322, "*Reel <address>: it didn't open (%d nulls; last report '%s')",
+                  phase_step, last_report);
+            printf("  *Reel <web address> (from a second copy): opened after %d nulls\n", phase_step);
+            unsetenv(APP_NAME "$UserAgent");
+            break;
+        }
         case P_HLSRELOPENING: {
             ReelCore *was = hls_before;                               /* (a local file: it may open at once) */
             if (!base_url)
@@ -1684,6 +1709,35 @@ int main(int argc, char **argv)
               "a second copy with a file: sent %x (code %d) to %x, window %d icon %d, '%s' (want a DataLoad to the running one)",
               sent_action, sent_code, sent_to, sent_win, sent_icon, sent_name);
         printf("  a second copy passed its file to the running one\n");
+        sent_action = sent_code = sent_to = 0;
+    }
+    {   /* *Reel <web address> while a copy runs: a short one as it is; a long one
+           (longer than a message holds) in a file of addresses, in <Wimp$ScrapDir> */
+        static char longurl[1200];
+        char *two[3] = { "reel", (char *)"https://example.com/live/playlist.m3u8", NULL }, want[300], got[1300] = "";
+        FILE *f;
+        reel_main(2, two);
+        CHECK(sent_action == 3 && !strcmp(sent_name, "https://example.com/live/playlist.m3u8"),
+              "a second copy with a short address: sent %x '%s'", sent_action, sent_name);
+        snprintf(longurl, sizeof(longurl), "https://rr1.example.com/videoplayback?expire=1790000000&sig=");
+        while (strlen(longurl) < 1000)
+            strcat(longurl, "0123456789abcdef");
+        two[1] = longurl;
+        setenv("Wimp$ScrapDir", "/tmp/reeltestscrap", 1);
+        sent_action = 0;
+        reel_main(2, two);
+        snprintf(want, sizeof(want), "/tmp/reeltestscrap.%sAddress", APP_NAME);
+        if ((f = fopen(want, "r")) != NULL) {
+            if (!fgets(got, sizeof(got), f)) got[0] = 0;
+            fclose(f);
+            remove(want);
+        }
+        got[strcspn(got, "\n")] = 0;
+        CHECK(sent_action == 3 && !strcmp(sent_name, want) && !strcmp(got, longurl),
+              "a second copy with a long address: sent %x '%s' (want '%s'), the file %s", sent_action, sent_name, want,
+              strcmp(got, longurl) ? "doesn't hold it" : "holds it");
+        printf("  a second copy passed a web address to the running one (a long one in a file)\n");
+        unsetenv("Wimp$ScrapDir");
         other_copy = 0;
         sent_action = sent_code = sent_to = 0;
     }

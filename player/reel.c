@@ -1952,8 +1952,18 @@ static int subs_dropped(const char *path)
     return 1;
 }
 
+static int text_arrived(const char *text);
+
 static void list_arrived(const char *file)
 {
+    if (reelcore_is_network(file)) {     /* a web address given as the file (*Reel https://...) */
+        char msg[300];
+        if (text_arrived(file) <= 0) {
+            snprintf(msg, sizeof(msg), "%.250s: not a web address Reel can play.", file);
+            report(msg);
+        }
+        return;
+    }
     if (subs_dropped(file))
         return;
     list_arrived_list(file);
@@ -2064,6 +2074,8 @@ static void play_source(const source_t *src)
     cs.audio_url = src->audio_url;
     cs.headers = src->headers;
     cs.user_agent = src->user_agent;
+    if ((!cs.user_agent || !*cs.user_agent) && getenv(APP "$UserAgent") && *getenv(APP "$UserAgent"))
+        cs.user_agent = getenv(APP "$UserAgent");   /* (some sites refuse FFmpeg's own, Lavf/...) */
     cs.title = src->title;
     v = reelcore_open_source(&cs, (S.loop && S.list_n <= 1 ? REELCORE_LOOP : 0) | (net ? REELCORE_ASYNC : 0) |
                              (getenv(APP "$NoAutoFast") ? REELCORE_NO_AUTOFAST : 0) |
@@ -4603,12 +4615,27 @@ int reel_main(int argc, char **argv)
                than nowhere (0.1.22 dropped it: Chris on the ROOL forum) */
             if (argc > 1) {
                 int m[64];
+                const char *give = argv[1];
+                char scrap[256];
+                /* a web address too long for the message (a googlevideo
+                   one, say): written to a file of addresses, which the
+                   copy running reads as it would one dropped on it */
+                if (strlen(give) >= sizeof(m) - 44 && reelcore_is_network(give)) {
+                    const char *dir = getenv("Wimp$ScrapDir");
+                    FILE *f;
+                    snprintf(scrap, sizeof(scrap), "%s.%sAddress", dir ? dir : "", APP);
+                    if (dir && *dir && (f = fopen(scrap, "w")) != NULL) {
+                        fprintf(f, "%s\n", give);
+                        fclose(f);
+                        give = scrap;
+                    }
+                }
                 memset(m, 0, sizeof(m));
                 m[4] = MSG_DATALOAD;
                 m[5] = -2;              /* the icon bar */
                 m[6] = -1;              /* (from another copy: see to_us) */
                 m[10] = 0xFFF;
-                snprintf((char *)&m[11], sizeof(m) - 44, "%s", argv[1]);
+                snprintf((char *)&m[11], sizeof(m) - 44, "%s", give);
                 m[0] = (44 + (int)strlen((char *)&m[11]) + 1 + 3) & ~3;
                 r.r[0] = 17;
                 r.r[1] = (intptr_t)m;

@@ -3,6 +3,9 @@
 | addresses, such as yt-dlp's output), or double-click a video in the
 | Filer while Reel is loaded. %*0 = a file to play at once.
 Set Reel$Dir <Obey$Dir>
+| *Reel <a video, or a web address> plays it: for a command line, or another
+| program handing it a stream (as for mplayer and ffplay)
+SetMacro Alias$Reel /<Reel$Dir> %%*0
 IconSprites <Reel$Dir>.!Sprites
 
 RMEnsure SharedUnixLibrary 1.16 IfThere System:Modules.SharedULib Then RMLoad System:Modules.SharedULib

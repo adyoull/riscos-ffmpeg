@@ -3,6 +3,22 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next Reel): *Reel <web address>, Reel$UserAgent
+
+- **\*Reel <address>** (and \*ReelEGL): !Boot and !Run set
+  `Alias$Reel` (`/<Reel$Dir> %*0`), so another program can hand Reel a
+  stream as it would mplayer or ffplay (StreamerGUI; asked for on the
+  ROOL forum). A web address given as the file on the command line is
+  played as an address (it was taken for a file name: "can't read it").
+  With Reel already running, the new copy passes it on in a DataLoad; an
+  address too long for the message goes in a file of addresses,
+  `<Wimp$ScrapDir>.ReelAddress`. reel_test: a short and a long address
+  from a second copy, and one opened by the running copy.
+- **Reel$UserAgent** (ReelEGL$UserAgent): the user agent sent for
+  addresses that don't come with one (yt-dlp's -j gives one), for sites
+  that refuse FFmpeg's own ("Lavf/59...") with 403. run.sh checks it
+  reaches the server.
+
 ## 5.1.10-riscos18 (2026-10-05): fixes from a code audit
 
 From a code audit of everything ours (reelcore, Reel, !FFmpeg's front

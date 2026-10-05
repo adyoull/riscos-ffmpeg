@@ -258,6 +258,8 @@ echo "== reel_test (the player, scripted desktop)"
   grep -v "swscaler\|reelcore: \|ffegl: " || bad=1
 grep -q "long_h264_aac_322_184.mp4?expire=1790000000.*sig=.*END" "$O/net_headers.log" ||
   { echo "FAIL: reel_test: the long pasted address didn't reach the server whole"; bad=1; }
+grep -q "ReelTest-UA/1.0" "$O/net_headers.log" ||
+  { echo "FAIL: reel_test: Reel\$UserAgent didn't reach the server"; bad=1; }
 
 # Reel again with the sound going straight to (fake) SharedSoundBuffer, as on RISC OS
 $CC -DREELCORE_SSB -I$HERE/fake -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore_ssb.o"

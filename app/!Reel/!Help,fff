@@ -155,6 +155,16 @@ Give Reel an address by:
   - dropping a file with addresses in it on the icon or the window: a
     URI or URL file, a text file with one address a line (several make
     a playlist), an M3U playlist, or yt-dlp's output (below).
+  - *Reel <address> (a command, once the Filer has seen !Reel), as
+    another program does to hand Reel a stream (as it would to mplayer or
+    ffplay): *Reel https://example.com/live/playlist.m3u8. A file works
+    the same way. If Reel is already running, the running one plays it.
+    (*ReelEGL for ReelEGL.)
+
+Some sites refuse FFmpeg's own way of saying who's asking (its user
+agent, "Lavf/59..."), and answer 403 Forbidden. *Set Reel$UserAgent to
+another (a browser's, say) before starting Reel, and it's sent instead
+(yt-dlp's -j output says which a site wants, and Reel uses that anyway).
 
 A saved HLS playlist (.m3u8) usually names its parts relative to the
 address it was downloaded from ("hlsv.m3u8", "seg1.ts"), so on its own
