@@ -55,7 +55,9 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcode
 echo "== slow_test (decoding slower than real time)"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=12 -f lavfi -i sine=d=12:sample_rate=44100 \
   -c:v libx264 -preset ultrafast -g 25 -c:a aac "$O/gop1s.mp4"
-"$TOP/tests/qemu/aligntrap.sh" "$O/slow_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$O/gop1s.mp4" 2>&1 | grep -v "swscaler" || bad=1
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=12 -f lavfi -i sine=d=12:sample_rate=48000 \
+  -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -g 25 -b:v 200k -c:a libopus "$O/gop1s_vp9.webm"
+"$TOP/tests/qemu/aligntrap.sh" "$O/slow_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$O/gop1s.mp4" "$O/gop1s_vp9.webm" 2>&1 | grep -v "swscaler" || bad=1
 
 # the sound changing part way (channels, rate): the resampler made again
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/sound_change_test.c" -o "$O/sound_change_test.o"
@@ -92,8 +94,8 @@ echo "== options_test (speed, fast decoding, sound tracks, picture modes)"
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/halve_test.c" -o "$O/halve_test.o"
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/halve_test" "$O/reelcore.o" \
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/halve_test.o" $LIBS -lm 2>/dev/null
-echo "== halve_test (big reductions halved first: NEON vs C, and the picture)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/halve_test" "$SAMPLES/h264_aac_640_360.mp4" 2>&1 |
+echo "== halve_test (big reductions halved first: NEON vs C, and the picture; 10-bit narrowed)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/halve_test" "$SAMPLES/h264_aac_640_360.mp4" "$SAMPLES/hevc_10bit_322_182.mkv" 2>&1 |
   grep -v "swscaler\|reelcore: " || bad=1
 
 # what Reel finds in text: addresses, playlists, yt-dlp -g and -j output (host gcc, sanitizers)
@@ -214,13 +216,100 @@ $CC -O2 -I$F -c "$HERE/hevc_epel_test.c" -o "$O/hevc_epel_test.o"
 arm-linux-gnueabihf-gcc -no-pie -o "$O/hevc_epel_test" "$O/hevc_epel_test.o" -L$S/lib -lavcodec -lavutil -lm -lpthread
 echo "== hevc_epel_test (HEVC chroma MC: NEON against C)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/hevc_epel_test" || bad=1
+# HEVC weight tables that are all defaults (patch 0024): plain prediction used
+# for them, real weights still used. x265 clips with weights (a fade, a
+# brightness change), and the fade's tables rewritten for every case.
+HL="-L$S/lib -lavformat -lavcodec -lswresample -lavutil -ldav1d -lx264 -lmp3lame -lopus -lvorbisenc -lvorbis -logg -lm -lpthread"
+for t in hevc_weights_test hevc_reweight; do
+  $CC -I$F -I$S/include -c "$HERE/$t.c" -o "$O/$t.o"
+  arm-linux-gnueabihf-gcc -no-pie -o "$O/$t" "$O/$t.o" "$O/fake_riscos.o" $HL 2>/dev/null
+done
+W=(); for d in 8 10; do
+  p=yuv420p; [ $d = 10 ] && p=yuv420p10le
+  ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x180:rate=25:duration=4,fade=in:0:30,fade=out:60:30" -pix_fmt $p \
+    -c:v libx265 -x265-params weightp=1:weightb=1:log-level=error -bf 3 "$O/wfade$d.mkv"
+  ffmpeg -v error -y -f lavfi -i "testsrc2=size=320x180:rate=25:duration=4,eq=brightness='0.3*sin(t*3)':eval=frame" -pix_fmt $p \
+    -c:v libx265 -x265-params weightp=1:weightb=1:log-level=error -bf 3 "$O/wbright$d.mkv"
+  echo "== hevc_reweight wfade$d"
+  "$TOP/tests/qemu/aligntrap.sh" "$O/hevc_reweight" "$O/wfade$d.mkv" "$O/rwfade$d.hevc" || bad=1
+  for c in wfade$d.mkv rwfade$d.hevc; do
+    echo "== hevc_weights_test $c"
+    "$TOP/tests/qemu/aligntrap.sh" "$O/hevc_weights_test" "$O/$c" || bad=1
+  done
+  W+=("$O/wfade$d.mkv" "$O/wbright$d.mkv" "$O/rwfade$d.hevc")
+done
+# VP9 and AV1 with skip_loop_filter and skip_frame (patch 0026, dav1d's dav1d_riscos_set_skip)
+ffmpeg -v error -y -y -f lavfi -i "testsrc2=size=320x180:rate=25:duration=4,noise=alls=12:allf=t" -c:v libsvtav1 -g 50 -preset 10 \
+  -svtav1-params scm=0 "$O/sk_av1.mkv" 2>/dev/null                 # (hierarchical: non-reference pictures)
+ffmpeg -v error -y -y -f lavfi -i "testsrc2=size=320x180:rate=25:duration=4,noise=alls=12:allf=t" -c:v libvpx-vp9 -g 50 -b:v 300k \
+  -lag-in-frames 0 -ts-parameters "ts_number_layers=2:ts_target_bitrate=150,300:ts_rate_decimator=2,1:ts_periodicity=2:ts_layer_id=0,1:ts_layering_mode=2" \
+  "$O/sk_vp9.webm"                                                  # (two temporal layers: the upper not referred to)
+for c in sk_av1.mkv sk_vp9.webm; do
+  ffprobe -v error -select_streams v -show_entries frame=key_frame,pict_type,best_effort_timestamp_time -of csv "$O/$c" > "$O/${c%.*}.csv"
+done
+ffmpeg -v error -y -skip_frame noref -c:v libdav1d -i "$O/sk_av1.mkv" -f framemd5 "$O/sk_av1.x86noref.fm"
+python3 "$HERE/skipcheck.py" times "$O/sk_av1.x86noref.fm" > "$O/sk_av1.refs"
+ffmpeg -hide_banner -v info -i "$O/sk_vp9.webm" -c copy -bsf:v trace_headers -f null - 2> "$O/sk_vp9.trace" || true
+python3 "$HERE/skipcheck.py" vp9refs "$O/sk_vp9.trace" "$O/sk_vp9.csv" > "$O/sk_vp9.refs" || bad=1
+for c in sk_av1.mkv sk_vp9.webm; do
+  b=${c%.*}; dec=; [ $b = sk_av1 ] && dec="-c:v libdav1d"
+  fm() { "$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -threads 1 $1 $2 $dec -i "$O/$c" -f framemd5 -y "$O/$b.$1$2.fm" 2>&1 |
+         grep -v "Frame size limit" || true; }
+  echo "== $c: skip_loop_filter and skip_frame"
+  fm -skip_loop_filter default
+  ffmpeg -v error -y $dec -i "$O/$c" -f framemd5 "$O/$b.x86.fm"
+  python3 "$HERE/skipcheck.py" same "$O/$b.x86.fm" "$O/$b.-skip_loop_filterdefault.fm" || { echo "FAIL: $c not as the x86 FFmpeg decodes it"; bad=1; }
+  for m in noref nointra nokey all; do
+    fm -skip_loop_filter $m
+    python3 "$HERE/skipcheck.py" lf $m "$O/$b.-skip_loop_filterdefault.fm" "$O/$b.-skip_loop_filter$m.fm" "$O/$b.csv" "$O/$b.refs" || bad=1
+  done
+  fm -skip_frame nokey
+  python3 "$HERE/skipcheck.py" kf "$O/$b.-skip_loop_filterdefault.fm" "$O/$b.-skip_framenokey.fm" "$O/$b.csv" || bad=1
+done
+for m in noref nointra; do                 # dav1d's own skipping, as the x86 FFmpeg asks for it (when opening)
+  "$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -threads 1 -skip_frame $m -c:v libdav1d -i "$O/sk_av1.mkv" \
+    -f framemd5 -y "$O/sk_av1.sf$m.fm" 2>/dev/null
+  ffmpeg -v error -y -skip_frame $m -c:v libdav1d -i "$O/sk_av1.mkv" -f framemd5 "$O/sk_av1.x86sf$m.fm"
+  python3 "$HERE/skipcheck.py" same "$O/sk_av1.x86sf$m.fm" "$O/sk_av1.sf$m.fm" &&
+    echo "  AV1 skip_frame $m: $(grep -vc '^#' "$O/sk_av1.sf$m.fm") pictures, as the x86 FFmpeg's" || { echo "FAIL: AV1 skip_frame $m"; bad=1; }
+done
+n=$("$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -threads 1 -skip_frame all -i "$O/sk_vp9.webm" -f framemd5 - 2>"$O/sk_vp9.all.err" |
+   grep -vc "^#" || true)                 # (ffmpeg itself objects to no pictures at all; the decoder mustn't)
+[ "$n" = 0 ] && ! grep -q "vp9 @" "$O/sk_vp9.all.err" && echo "  VP9 skip_frame all: nothing decoded, no errors" ||
+  { echo "FAIL: VP9 skip_frame all ($n pictures)"; cat "$O/sk_vp9.all.err"; bad=1; }
+# the same switched while decoding, as Reel does when it falls behind
+$CC -I$S/include -c "$HERE/skip_switch_test.c" -o "$O/skip_switch_test.o"
+arm-linux-gnueabihf-gcc -no-pie -o "$O/skip_switch_test" "$O/skip_switch_test.o" "$O/fake_riscos.o" $HL 2>/dev/null
+echo "== skip_switch_test AV1 (libdav1d)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/skip_switch_test" "$O/sk_av1.mkv" libdav1d || bad=1
+echo "== skip_switch_test VP9"
+"$TOP/tests/qemu/aligntrap.sh" "$O/skip_switch_test" "$O/sk_vp9.webm" || bad=1
+
+# HEVC pictures whose loop filter skip_loop_filter skips: no boundary strengths
+# worked out for them (patch 0025), and the pictures as the x86 FFmpeg's
+$CC -I$F -I$S/include -c "$HERE/hevc_skipbs_test.c" -o "$O/hevc_skipbs_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=ff_hevc_deblocking_boundary_strengths -o "$O/hevc_skipbs_test" \
+  "$O/hevc_skipbs_test.o" "$O/fake_riscos.o" $HL 2>/dev/null
+for m in default nonref nonkey all; do
+  echo "== hevc_skipbs_test $m"
+  "$TOP/tests/qemu/aligntrap.sh" "$O/hevc_skipbs_test" "$O/wfade8.mkv" $m || bad=1
+done
+echo "== HEVC with skip_loop_filter: ffmpeg_g and x86 FFmpeg"
+for m in noref bidir nointra nokey all; do
+  for clip in "$O/wfade8.mkv" "$SAMPLES/hevc_322_182.mkv"; do
+    pics() { grep -v "^#" | awk -F, '{print $NF}' | md5sum | cut -c1-32; }
+    a=$("$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -skip_loop_filter $m -i "$clip" -f framemd5 - | pics)
+    c=$(ffmpeg -v error -skip_loop_filter $m -i "$clip" -f framemd5 - | pics)
+    if [ "$a" = "$c" ]; then echo "  ${clip##*/} $m: the same ($a)"; else echo "FAIL: ${clip##*/} $m: $a $c"; bad=1; fi
+  done
+done
 echo "== HEVC decodes: NEON, C and x86 FFmpeg"
-for clip in mv_hevc.mkv hevc_322_182.mkv hevc_640_360.mkv; do
+for clip in "$SAMPLES"/{mv_hevc.mkv,hevc_322_182.mkv,hevc_640_360.mkv} "${W[@]}"; do
   pics() { grep -v "^#" | awk -F, '{print $NF}' | md5sum | cut -c1-32; }
-  a=$("$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -i "$SAMPLES/$clip" -f framemd5 - | pics)
-  b=$("$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -cpuflags 0 -i "$SAMPLES/$clip" -f framemd5 - | pics)
-  c=$(ffmpeg -v error -i "$SAMPLES/$clip" -f framemd5 - | pics)
-  if [ "$a" = "$b" ] && [ "$a" = "$c" ]; then echo "  $clip: the same ($a)"; else echo "FAIL: $clip: $a $b $c"; bad=1; fi
+  a=$("$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -i "$clip" -f framemd5 - | pics)
+  b=$("$TOP/tests/qemu/aligntrap.sh" "$F/ffmpeg_g" -v error -cpuflags 0 -i "$clip" -f framemd5 - | pics)
+  c=$(ffmpeg -v error -i "$clip" -f framemd5 - | pics)
+  if [ "$a" = "$b" ] && [ "$a" = "$c" ]; then echo "  ${clip##*/}: the same ($a)"; else echo "FAIL: ${clip##*/}: $a $b $c"; bad=1; fi
 done
 
 # scaling to RGB32 in NEON (patch 0017) against the C
@@ -251,10 +340,10 @@ $CC -DREEL_TEST -DREEL_NO_MAIN -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I
 $CC -c "$TOP/player/sources.c" -o "$O/sources.o"
 $CC -DFAKE_SDL_ONLY -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$HERE -c "$HERE/fake_sdl_gl.c" -o "$O/fake_sdl_only.o"
 $CC -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reel_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reel_test" "$O/reel_test.o" "$O/reel.o" "$O/sources.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=fflush -o "$O/reel_test" "$O/reel_test.o" "$O/reel.o" "$O/sources.o" \
   "$O/reelcore.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
 echo "== reel_test (the player, scripted desktop)"
-"$TOP/tests/qemu/aligntrap.sh" "$O/reel_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" "$SAMPLES/twoaudio_h264_aac_322_184.mp4" 2>&1 |
+env 'Reel$Log'="$O/reel.log" "$TOP/tests/qemu/aligntrap.sh" "$O/reel_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/h264_aac_640_360.mp4" "$SAMPLES/twoaudio_h264_aac_322_184.mp4" 2>&1 |
   grep -v "swscaler\|reelcore: \|ffegl: " || bad=1
 grep -q "long_h264_aac_322_184.mp4?expire=1790000000.*sig=.*END" "$O/net_headers.log" ||
   { echo "FAIL: reel_test: the long pasted address didn't reach the server whole"; bad=1; }
@@ -264,7 +353,7 @@ grep -q "ReelTest-UA/1.0" "$O/net_headers.log" ||
 # Reel again with the sound going straight to (fake) SharedSoundBuffer, as on RISC OS
 $CC -DREELCORE_SSB -I$HERE/fake -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore_ssb.o"
 $CC -DFAKE_SSB -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reel_ssb_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reel_ssb_test" "$O/reel_ssb_test.o" "$O/reel.o" "$O/sources.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=fflush -o "$O/reel_ssb_test" "$O/reel_ssb_test.o" "$O/reel.o" "$O/sources.o" \
   "$O/reelcore_ssb.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
 echo "== reel_ssb_test (the player, sound through SharedSoundBuffer)"
 rm -f "$O/reel_ssb.log"
@@ -286,7 +375,7 @@ $CC -DFFEGL_NO_TEXTURE -I$HERE/fake -I$S/include -I$TOP/reelcore -I$TOP/ffegl -c
 $CC -DREEL_EGL -DREEL_TEST -DREEL_NO_MAIN -I$HERE/fake -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -c "$TOP/player/reel.c" -o "$O/reelegl.o"
 $CC -DFAKE_EGL_ONLY -I$HERE/fake -c "$HERE/fake_riscos.c" -o "$O/fake_egl_only.o"
 $CC -DREEL_EGL -I$HERE/fake -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reelegl_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/reelegl_test" "$O/reelegl_test.o" "$O/reelegl.o" "$O/sources.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=fflush -o "$O/reelegl_test" "$O/reelegl_test.o" "$O/reelegl.o" "$O/sources.o" \
   "$O/reelcore.o" "$O/ffegl_notex.o" "$O/fake_sdl_only.o" "$O/fake_egl_only.o" $LIBS 2>/dev/null
 echo "== reelegl_test (the EGL build of the player, scripted desktop, fake EGL)"
 rm -f "$O/reelegl.log"

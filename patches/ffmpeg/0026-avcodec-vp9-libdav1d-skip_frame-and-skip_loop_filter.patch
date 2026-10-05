@@ -1,0 +1,161 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Mon, 5 Oct 2026 20:05:00 +0100
+Subject: [PATCH] avcodec/vp9, libdav1d: skip_frame and skip_loop_filter
+
+Both decoders ignored them, so a player that has fallen behind had no
+way to make VP9 or AV1 cheaper.
+
+vp9: skip_loop_filter sets the frame's filter level to 0 for the frames
+it covers (non-reference: refreshrefmask 0; non-intra; non-key; all),
+which also skips finding the edges. skip_frame skips frames only in
+whole runs to the next keyframe (nokey, all): each frame's
+probabilities and motion vectors lead into the next, so skipping just
+the non-reference ones would spoil those that follow. Once a frame has
+been skipped, every frame to the next keyframe is (frames shown again
+too), whatever skip_frame becomes meanwhile; a flush ends that.
+
+libdav1d: with dav1d_riscos_set_skip (RISC OS's dav1d patch), both are
+passed on to dav1d whenever they change, not only when opening:
+skip_frame as decode_frame_type, skip_loop_filter as the frames whose
+deblocking, CDEF and loop restoration run. (skip_frame all is taken as
+nokey: dav1d always decodes key frames.)
+---
+ libavcodec/libdav1d.c | 20 ++++++++++++++++++++
+ libavcodec/vp9.c      | 38 ++++++++++++++++++++++++++++++++++++++
+ libavcodec/vp9dec.h   |  1 +
+ 3 files changed, 59 insertions(+)
+
+diff --git a/libavcodec/libdav1d.c b/libavcodec/libdav1d.c
+index 0a46cf2..894f285 100644
+--- a/libavcodec/libdav1d.c
++++ b/libavcodec/libdav1d.c
+@@ -53,6 +53,7 @@ typedef struct Libdav1dContext {
+     int apply_grain;
+     int operating_point;
+     int all_layers;
++    int skip_set;          /* RISC OS: skip_frame and skip_loop_filter as last given to dav1d */
+ } Libdav1dContext;
+ 
+ static const enum AVPixelFormat pix_fmt[][3] = {
+@@ -344,6 +345,25 @@ static int libdav1d_receive_frame(AVCodecContext *c, AVFrame *frame)
+         }
+     }
+ 
++#ifdef DAV1D_RISCOS_SET_SKIP
++    {
++        /* skip_frame and skip_loop_filter, which a player that has fallen
++         * behind changes while decoding: dav1d's decode_frame_type, and its
++         * in-loop filters (deblocking, CDEF, restoration) per frame. */
++        enum Dav1dDecodeFrameType t = c->skip_frame >= AVDISCARD_NONKEY   ? DAV1D_DECODEFRAMETYPE_KEY :
++                                      c->skip_frame >= AVDISCARD_NONINTRA ? DAV1D_DECODEFRAMETYPE_INTRA :
++                                      c->skip_frame >= AVDISCARD_NONREF   ? DAV1D_DECODEFRAMETYPE_REFERENCE :
++                                                                            DAV1D_DECODEFRAMETYPE_ALL;
++        int f = c->skip_loop_filter >= AVDISCARD_ALL      ? 4 :
++                c->skip_loop_filter >= AVDISCARD_NONKEY   ? 3 :
++                c->skip_loop_filter >= AVDISCARD_NONINTRA ? 2 :
++                c->skip_loop_filter >= AVDISCARD_NONREF   ? 1 : 0;
++        if (dav1d->skip_set != (int)t * 8 + f + 1) {
++            dav1d_riscos_set_skip(dav1d->c, t, f);
++            dav1d->skip_set = (int)t * 8 + f + 1;
++        }
++    }
++#endif
+     res = dav1d_send_data(dav1d->c, data);
+     if (res < 0) {
+         if (res == AVERROR(EINVAL))
+diff --git a/libavcodec/vp9.c b/libavcodec/vp9.c
+index 38b565e..00a8e51 100644
+--- a/libavcodec/vp9.c
++++ b/libavcodec/vp9.c
+@@ -1562,6 +1562,25 @@ static int vp9_export_enc_params(VP9Context *s, VP9Frame *frame)
+     return 0;
+ }
+ 
++/* A frame skipped (skip_frame): the references as they were, for the next.
++ * The frames after it are skipped too, to the next keyframe, whatever
++ * skip_frame becomes meanwhile: decoded from references, probabilities and
++ * motion vectors that missed the skipped frames, they'd come out spoilt. */
++static int vp9_skip_frame(AVCodecContext *avctx, AVPacket *pkt)
++{
++    VP9Context *s = avctx->priv_data;
++    int i, ret;
++    s->riscos_skip_to_key = 1;
++    for (i = 0; i < 8; i++) {
++        if (s->next_refs[i].f->buf[0])
++            ff_thread_release_ext_buffer(avctx, &s->next_refs[i]);
++        if (s->s.refs[i].f->buf[0] &&
++            (ret = ff_thread_ref_frame(&s->next_refs[i], &s->s.refs[i])) < 0)
++            return ret;
++    }
++    return pkt->size;
++}
++
+ static int vp9_decode_frame(AVCodecContext *avctx, AVFrame *frame,
+                             int *got_frame, AVPacket *pkt)
+ {
+@@ -1573,9 +1592,13 @@ static int vp9_decode_frame(AVCodecContext *avctx, AVFrame *frame,
+                             (!s->s.h.segmentation.enabled || !s->s.h.segmentation.update_map);
+     AVFrame *f;
+ 
++    if (avctx->skip_frame >= AVDISCARD_ALL)
++        return vp9_skip_frame(avctx, pkt);
+     if ((ret = decode_frame_header(avctx, data, size, &ref)) < 0) {
+         return ret;
+     } else if (ret == 0) {
++        if (s->riscos_skip_to_key)          /* (a frame shown again: maybe one skipped) */
++            return vp9_skip_frame(avctx, pkt);
+         if (!s->s.refs[ref].f->buf[0]) {
+             av_log(avctx, AV_LOG_ERROR, "Requested reference %d not available\n", ref);
+             return AVERROR_INVALIDDATA;
+@@ -1597,6 +1620,19 @@ static int vp9_decode_frame(AVCodecContext *avctx, AVFrame *frame,
+     data += ret;
+     size -= ret;
+ 
++    /* skip_frame and skip_loop_filter, for a player that has fallen behind.
++     * Frames can only be skipped in whole runs to the next keyframe: each
++     * frame's probabilities and motion vectors lead into the next, so
++     * skipping only the non-reference ones would spoil those that follow. */
++    if ((avctx->skip_frame >= AVDISCARD_NONKEY || s->riscos_skip_to_key) && !s->s.h.keyframe)
++        return vp9_skip_frame(avctx, pkt);
++    s->riscos_skip_to_key = 0;
++    if (avctx->skip_loop_filter >= AVDISCARD_ALL ||
++        (avctx->skip_loop_filter >= AVDISCARD_NONKEY && !s->s.h.keyframe) ||
++        (avctx->skip_loop_filter >= AVDISCARD_NONINTRA && !s->s.h.keyframe && !s->s.h.intraonly) ||
++        (avctx->skip_loop_filter >= AVDISCARD_NONREF && !s->s.h.refreshrefmask))
++        s->s.h.filter.level = 0;            /* (no edges found, no filtering) */
++
+     if (!retain_segmap_ref || s->s.h.keyframe || s->s.h.intraonly) {
+         if (s->s.frames[REF_FRAME_SEGMAP].tf.f->buf[0])
+             vp9_frame_unref(avctx, &s->s.frames[REF_FRAME_SEGMAP]);
+@@ -1799,6 +1835,7 @@ static void vp9_decode_flush(AVCodecContext *avctx)
+         vp9_frame_unref(avctx, &s->s.frames[i]);
+     for (i = 0; i < 8; i++)
+         ff_thread_release_ext_buffer(avctx, &s->s.refs[i]);
++    s->riscos_skip_to_key = 0;
+ }
+ 
+ static av_cold int vp9_decode_init(AVCodecContext *avctx)
+@@ -1856,6 +1893,7 @@ static int vp9_decode_update_thread_context(AVCodecContext *dst, const AVCodecCo
+ 
+     s->s.h.invisible = ssrc->s.h.invisible;
+     s->s.h.keyframe = ssrc->s.h.keyframe;
++    s->riscos_skip_to_key = ssrc->riscos_skip_to_key;
+     s->s.h.intraonly = ssrc->s.h.intraonly;
+     s->ss_v = ssrc->ss_v;
+     s->ss_h = ssrc->ss_h;
+diff --git a/libavcodec/vp9dec.h b/libavcodec/vp9dec.h
+index 9cbd583..28a43b7 100644
+--- a/libavcodec/vp9dec.h
++++ b/libavcodec/vp9dec.h
+@@ -111,6 +111,7 @@ typedef struct VP9Context {
+     uint8_t ss_h, ss_v;
+     uint8_t last_bpp, bpp_index, bytesperpixel;
+     uint8_t last_keyframe;
++    uint8_t riscos_skip_to_key;   // frames skipped (skip_frame): those up to the next keyframe too
+     // sb_cols/rows, rows/cols and last_fmt are used for allocating all internal
+     // arrays, and are thus per-thread. w/h and gf_fmt are synced between threads
+     // and are therefore per-stream. pix_fmt represents the value in the header
+-- 
+2.43.0
+

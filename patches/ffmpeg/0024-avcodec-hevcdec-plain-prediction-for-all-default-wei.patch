@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Mon, 5 Oct 2026 18:30:00 +0100
+Subject: [PATCH] avcodec/hevcdec: plain prediction for all-default weight
+ tables
+
+Encoders (x265 among them) often send a weight table whose weights are
+all 1 << denom with no offsets. Weighted prediction then gives exactly
+what plain prediction gives (the rounding is the same) at about twice
+the cost, so pred_weight_table notes it (SliceHeader.default_weights)
+and the motion compensation uses plain prediction for that slice.
+---
+ libavcodec/hevcdec.c | 40 ++++++++++++++++++++++++++++++++--------
+ libavcodec/hevcdec.h |  1 +
+ 2 files changed, 33 insertions(+), 8 deletions(-)
+
+diff --git a/libavcodec/hevcdec.c b/libavcodec/hevcdec.c
+index b97f9db..c03bfef 100644
+--- a/libavcodec/hevcdec.c
++++ b/libavcodec/hevcdec.c
+@@ -158,6 +158,7 @@ static int pred_weight_table(HEVCContext *s, GetBitContext *gb)
+     uint8_t chroma_weight_l1_flag[16];
+     int luma_log2_weight_denom;
+ 
++    s->sh.default_weights = 0;
+     luma_log2_weight_denom = get_ue_golomb_long(gb);
+     if (luma_log2_weight_denom < 0 || luma_log2_weight_denom > 7) {
+         av_log(s->avctx, AV_LOG_ERROR, "luma_log2_weight_denom %d is invalid\n", luma_log2_weight_denom);
+@@ -261,6 +262,25 @@ static int pred_weight_table(HEVCContext *s, GetBitContext *gb)
+             }
+         }
+     }
++    /* Encoders (x265 among them) often send a table whose weights are all
++     * 1 << denom with no offsets.  Weighted prediction then gives exactly
++     * what plain prediction gives (the rounding is the same), at about twice
++     * the cost, so note it and let the motion compensation use plain. */
++    {
++        int d = 1, k;
++        for (i = 0; i < s->sh.nb_refs[L0]; i++) {
++            d &= s->sh.luma_weight_l0[i] == 1 << s->sh.luma_log2_weight_denom && !s->sh.luma_offset_l0[i];
++            for (k = 0; k < 2; k++)
++                d &= s->sh.chroma_weight_l0[i][k] == 1 << s->sh.chroma_log2_weight_denom && !s->sh.chroma_offset_l0[i][k];
++        }
++        if (s->sh.slice_type == HEVC_SLICE_B)
++            for (i = 0; i < s->sh.nb_refs[L1]; i++) {
++                d &= s->sh.luma_weight_l1[i] == 1 << s->sh.luma_log2_weight_denom && !s->sh.luma_offset_l1[i];
++                for (k = 0; k < 2; k++)
++                    d &= s->sh.chroma_weight_l1[i][k] == 1 << s->sh.chroma_log2_weight_denom && !s->sh.chroma_offset_l1[i][k];
++            }
++        s->sh.default_weights = d;
++    }
+     return 0;
+ }
+ 
+@@ -1515,8 +1535,9 @@ static void luma_mc_uni(HEVCContext *s, uint8_t *dst, ptrdiff_t dststride,
+     int pic_height       = s->ps.sps->height;
+     int mx               = mv->x & 3;
+     int my               = mv->y & 3;
+-    int weight_flag      = (s->sh.slice_type == HEVC_SLICE_P && s->ps.pps->weighted_pred_flag) ||
+-                           (s->sh.slice_type == HEVC_SLICE_B && s->ps.pps->weighted_bipred_flag);
++    int weight_flag      = ((s->sh.slice_type == HEVC_SLICE_P && s->ps.pps->weighted_pred_flag) ||
++                            (s->sh.slice_type == HEVC_SLICE_B && s->ps.pps->weighted_bipred_flag)) &&
++                           !s->sh.default_weights;
+     int idx              = hevc_pel_weight[block_w];
+ 
+     x_off += mv->x >> 2;
+@@ -1579,8 +1600,9 @@ static void luma_mc_uni(HEVCContext *s, uint8_t *dst, ptrdiff_t dststride,
+     int my0              = mv0->y & 3;
+     int mx1              = mv1->x & 3;
+     int my1              = mv1->y & 3;
+-    int weight_flag      = (s->sh.slice_type == HEVC_SLICE_P && s->ps.pps->weighted_pred_flag) ||
+-                           (s->sh.slice_type == HEVC_SLICE_B && s->ps.pps->weighted_bipred_flag);
++    int weight_flag      = ((s->sh.slice_type == HEVC_SLICE_P && s->ps.pps->weighted_pred_flag) ||
++                            (s->sh.slice_type == HEVC_SLICE_B && s->ps.pps->weighted_bipred_flag)) &&
++                           !s->sh.default_weights;
+     int x_off0           = x_off + (mv0->x >> 2);
+     int y_off0           = y_off + (mv0->y >> 2);
+     int x_off1           = x_off + (mv1->x >> 2);
+@@ -1665,8 +1687,9 @@ static void chroma_mc_uni(HEVCContext *s, uint8_t *dst0,
+     int pic_width        = s->ps.sps->width >> s->ps.sps->hshift[1];
+     int pic_height       = s->ps.sps->height >> s->ps.sps->vshift[1];
+     const Mv *mv         = &current_mv->mv[reflist];
+-    int weight_flag      = (s->sh.slice_type == HEVC_SLICE_P && s->ps.pps->weighted_pred_flag) ||
+-                           (s->sh.slice_type == HEVC_SLICE_B && s->ps.pps->weighted_bipred_flag);
++    int weight_flag      = ((s->sh.slice_type == HEVC_SLICE_P && s->ps.pps->weighted_pred_flag) ||
++                            (s->sh.slice_type == HEVC_SLICE_B && s->ps.pps->weighted_bipred_flag)) &&
++                           !s->sh.default_weights;
+     int idx              = hevc_pel_weight[block_w];
+     int hshift           = s->ps.sps->hshift[1];
+     int vshift           = s->ps.sps->vshift[1];
+@@ -1732,8 +1755,9 @@ static void chroma_mc_bi(HEVCContext *s, uint8_t *dst0, ptrdiff_t dststride, AVF
+     uint8_t *src2        = ref1->data[cidx+1];
+     ptrdiff_t src1stride = ref0->linesize[cidx+1];
+     ptrdiff_t src2stride = ref1->linesize[cidx+1];
+-    int weight_flag      = (s->sh.slice_type == HEVC_SLICE_P && s->ps.pps->weighted_pred_flag) ||
+-                           (s->sh.slice_type == HEVC_SLICE_B && s->ps.pps->weighted_bipred_flag);
++    int weight_flag      = ((s->sh.slice_type == HEVC_SLICE_P && s->ps.pps->weighted_pred_flag) ||
++                            (s->sh.slice_type == HEVC_SLICE_B && s->ps.pps->weighted_bipred_flag)) &&
++                           !s->sh.default_weights;
+     int pic_width        = s->ps.sps->width >> s->ps.sps->hshift[1];
+     int pic_height       = s->ps.sps->height >> s->ps.sps->vshift[1];
+     Mv *mv0              = &current_mv->mv[0];
+diff --git a/libavcodec/hevcdec.h b/libavcodec/hevcdec.h
+index f6acf84..fced457 100644
+--- a/libavcodec/hevcdec.h
++++ b/libavcodec/hevcdec.h
+@@ -305,6 +305,7 @@ typedef struct SliceHeader {
+     int8_t slice_qp;
+ 
+     uint8_t luma_log2_weight_denom;
++    uint8_t default_weights;   ///< RISC OS: every weight 1<<denom and offset 0, so plain prediction gives the same pictures
+     int16_t chroma_log2_weight_denom;
+ 
+     int16_t luma_weight_l0[16];
+-- 
+2.43.0
+

@@ -210,7 +210,10 @@ struct ReelCore {
     int swr_bad[3];                    /* the sound's rate, format, channels the resampler couldn't take */
     int hb;                            /* the video decoded by the Pi 4's HEVC block (hevc_hwdec) */
     int hb_failed;                     /* ... which failed or refused part way: the ARM's from here on */
-    AVFrame *cur_soft;                 /* the current frame as YUV420P, when it's the block's (cur_frame) */
+    AVFrame *cur_soft;                 /* the current frame as 8-bit YUV, when it's the block's or 10-bit (cur_frame) */
+    AVFrame *narrow_spare;             /* the last 10-bit frame's narrowed copy, its memory used again */
+    unsigned narrowed;                 /* 10-bit pictures narrowed (cur_frame) */
+    int soft_narrowed;                 /* cur_soft is that (not the block's) */
     unsigned hw_draws;                 /* pictures converted straight into the caller's planes */
     uint8_t *rect_buf;                 /* a layer's rectangle of the block's picture, blended in cached memory */
     unsigned rect_size;
@@ -258,6 +261,7 @@ struct ReelCore {
     int paused;
     double pause_pos;
     unsigned dropped;                  /* late frames skipped */
+    unsigned late_skips;               /* times late non-reference pictures went undecoded (check_late) */
 
     /* conversion */
     struct SwsContext *sws;
@@ -1467,6 +1471,7 @@ void reelcore_close(ReelCore *v)
     av_freep(&v->apk);
     av_frame_free(&v->cur);
     cur_changed(v);
+    av_frame_free(&v->narrow_spare);
     av_frame_free(&v->frame);
     deint_close(v);
     av_packet_free(&v->pkt);
@@ -1511,12 +1516,12 @@ int reelcore_debug(const ReelCore *v, char *buf, int size)
              : v->audio_clock && v->audio_end >= 0 ? v->audio_end - (q + v->latency) * v->speed
              : (av_gettime_relative() - v->t0) / 1e6 * v->speed;
     int n = snprintf(buf, size, "pos %.2f clock %.2f%s, %d pictures and %d packets (%u KB) waiting, "
-                     "%u late%s, %u skip spells",
+                     "%u late%s, %u skip spells, %u late skips",
                      reelcore_position(v), c,
                      v->paused ? " (paused)" : v->audio_clock ? " (sound)" : " (timer)", v->qn,
                      v->vpk_n, (unsigned)(v->vpk_bytes >> 10), v->dropped,
                      v->skipping == 2 ? ", keyframes only" : v->skipping ? ", skipping non-reference frames" : "",
-                     v->skip_spells);
+                     v->skip_spells, v->late_skips);
     if (n >= size)
         return n;
     if (v->net) {
@@ -1562,6 +1567,8 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     st->decoded = v->n_decoded;
     st->shown = v->n_shown;
     st->late = v->dropped;
+    st->late_skips = v->late_skips;
+    st->narrowed = v->narrowed;
     st->decode_time = v->t_decode / 1e6;
     st->audio_time = v->t_audio / 1e6;
     st->convert_time = v->t_convert / 1e6;
@@ -1912,21 +1919,99 @@ static AVFrame *hw_soft(const AVFrame *f)
 #endif
 }
 
-/* the current frame with its pixels (the block's converted once, and kept
-   until the frame changes); NULL if none */
-static AVFrame *cur_frame(ReelCore *v)
+/* 10-bit video decoded on the ARM (HEVC Main 10 without the block, VP9
+   profile 2, AV1 10-bit) narrowed to 8 bits once a picture, in NEON, so
+   everything after (the overlay copy, halving, NEON RGB) is the 8-bit
+   path: swscale did it in C, 8-13 ms a 1080p picture. The same bytes as
+   swscale's own 10 to 8-bit copy (planarCopyWrapper, limited range, its
+   ordered dither: (s + d) >> 2, d from a 2x2 pattern by row and column).
+   vld1.16 needs 2-byte aligned addresses: the planes and pitches are. */
+static const uint16_t narrow_dither[2][8] = { { 1, 2, 1, 2, 1, 2, 1, 2 }, { 3, 0, 3, 0, 3, 0, 3, 0 } };
+
+/* One plane: w x h 10-bit samples at src (pitch in samples) to 8 at dst */
+void reelcore_narrow10_plane(uint8_t *dst, int dpitch, const uint16_t *src, int spitch, int w, int h)
 {
-    if (!hw_frame(v->cur))
-        return v->cur;
-    if (!v->cur_soft)
-        v->cur_soft = hw_soft(v->cur);
-    return v->cur_soft;
+    for (int y = 0; y < h; y++) {
+        const uint16_t *s = src + (ptrdiff_t)y * spitch, *dt = narrow_dither[y & 1];
+        uint8_t *d = dst + (ptrdiff_t)y * dpitch;
+        int x = 0;
+#ifdef REELCORE_NEON
+        uint16x8_t dv = vld1q_u16(dt);
+        for (; x + 8 <= w; x += 8)
+            vst1_u8(d + x, vqshrn_n_u16(vaddq_u16(vld1q_u16(s + x), dv), 2));   /* (s + d) >> 2, at most 255 */
+#endif
+        for (; x < w; x++) {
+            unsigned n = (s[x] + dt[x & 7]) >> 2;
+            d[x] = (uint8_t)(n - (n >> 8));
+        }
+    }
 }
 
-/* the current frame changed: its copy goes */
+static enum AVPixelFormat narrow_to(int format)
+{
+    return format == AV_PIX_FMT_YUV420P10LE ? AV_PIX_FMT_YUV420P :
+           format == AV_PIX_FMT_YUV422P10LE ? AV_PIX_FMT_YUV422P :
+           format == AV_PIX_FMT_YUV444P10LE ? AV_PIX_FMT_YUV444P : AV_PIX_FMT_NONE;
+}
+
+static AVFrame *narrow_frame(ReelCore *v, const AVFrame *f)
+{
+    const AVPixFmtDescriptor *d = av_pix_fmt_desc_get(f->format);
+    AVFrame *n = v->narrow_spare;
+    v->narrow_spare = NULL;
+    if (n && (n->format != narrow_to(f->format) || n->width != f->width || n->height != f->height ||
+              !av_frame_is_writable(n)))
+        av_frame_free(&n);                   /* (a different size: made afresh) */
+    if (!n) {
+        if (!(n = av_frame_alloc()))
+            return NULL;
+        n->format = narrow_to(f->format);
+        n->width = f->width;
+        n->height = f->height;
+        if (av_frame_get_buffer(n, 0) < 0) {
+            av_frame_free(&n);
+            return NULL;
+        }
+    }
+    while (n->nb_side_data)                  /* (a reused one: its last picture's go, or they'd pile up) */
+        av_frame_remove_side_data(n, n->side_data[0]->type);
+    av_dict_free(&n->metadata);
+    if (av_frame_copy_props(n, f) < 0) {
+        av_frame_free(&n);
+        return NULL;
+    }
+    v->narrowed++;
+    for (int p = 0; p < 3; p++)
+        reelcore_narrow10_plane(n->data[p], n->linesize[p], (const uint16_t *)f->data[p], f->linesize[p] / 2,
+                                p ? AV_CEIL_RSHIFT(f->width, d->log2_chroma_w) : f->width,
+                                p ? AV_CEIL_RSHIFT(f->height, d->log2_chroma_h) : f->height);
+    return n;
+}
+
+/* the current frame with its pixels (the block's converted once, a 10-bit
+   one narrowed once, and kept until the frame changes); NULL if none */
+static AVFrame *cur_frame(ReelCore *v)
+{
+    int narrow = v->cur && !hw_frame(v->cur) && narrow_to(v->cur->format) != AV_PIX_FMT_NONE;
+    if (!hw_frame(v->cur) && !narrow)
+        return v->cur;
+    if (!v->cur_soft) {
+        v->cur_soft = narrow ? narrow_frame(v, v->cur) : hw_soft(v->cur);
+        v->soft_narrowed = narrow && v->cur_soft;
+    }
+    return v->cur_soft || hw_frame(v->cur) ? v->cur_soft : v->cur;   /* (no memory: as it is) */
+}
+
+/* the current frame changed: its copy goes (a narrowed one's memory kept
+   for the next: 3 MB a 1080p picture not allocated each time) */
 static void cur_changed(ReelCore *v)
 {
+    if (v->cur_soft && v->soft_narrowed && !v->narrow_spare) {
+        v->narrow_spare = v->cur_soft;
+        v->cur_soft = NULL;
+    }
     av_frame_free(&v->cur_soft);
+    v->soft_narrowed = 0;
 }
 
 static void hist_push(ReelCore *v, AVFrame *f, double pts)
@@ -2556,7 +2641,7 @@ static void vc_drop(ReelCore *v)
         v->vc_drop = want;
 }
 
-static void check_late(ReelCore *v)
+static void check_late(ReelCore *v, const AVPacket *p)
 {
     static const char *what[3] = { "decoding every frame", "skipping non-reference frames",
                                    "decoding only keyframes" };
@@ -2566,18 +2651,44 @@ static void check_late(ReelCore *v)
         vc_drop(v);                        /* (the hardware decodes every picture: late ones go unconverted) */
         return;
     }
-    if (v->paused || !v->cur || v->need_first)
+    if (v->paused || !v->cur || v->need_first) {
+        if (!v->skipping && v->seek_target < 0)
+            v->vdec->skip_frame = AVDISCARD_DEFAULT;     /* (not left skipping late ones: steps, decoding ahead) */
         return;
+    }
     last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
     lag = clock_now(v) - last;
     check_slow(v, lag);
     want = lag > LATE_KEYS ? 2 : lag > LATE_SKIP ? (v->skipping > 1 ? 2 : 1) : lag < LATE_OK ? 0 : v->skipping;
+    /* VP9 and AV1 decoded again from a frame after skipped ones are spoilt
+       until the next keyframe (each frame's probabilities, motion vectors,
+       follow from the last's, not only its pictures): only start again at
+       a keyframe. (H.264 and HEVC smudge for a moment; better than waiting.) */
+    if (want < 2 && v->skipping == 2 && !(p->flags & AV_PKT_FLAG_KEY) &&
+        (v->vdec->codec_id == AV_CODEC_ID_VP9 || v->vdec->codec_id == AV_CODEC_ID_AV1))
+        want = 2;
     if (want != v->skipping) {
         if (want > v->skipping)
             v->skip_spells++;
         v->skipping = want;
         v->vdec->skip_frame = want == 2 ? AVDISCARD_NONKEY : want ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
         av_log(NULL, AV_LOG_VERBOSE, "reelcore: %.2f s behind: %s\n", lag, what[want]);
+    }
+    /* A picture already late (due more than two pictures ago, as vc_drop)
+       would only be thrown away when it came out: while nothing else is
+       being skipped, a non-reference one isn't decoded at all (4-8 ms of a
+       720p picture, 10-20 of 1080p); the reference ones must be, for the
+       pictures after them. (VP9 can't skip just those: it doesn't try.) */
+    if (!v->skipping && v->seek_target < 0 && v->vdec->codec_id != AV_CODEC_ID_VP9) {
+        enum AVDiscard d = AVDISCARD_DEFAULT;
+        if (p->pts != AV_NOPTS_VALUE) {
+            double gap = 2.0 / (v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
+            if (p->pts * av_q2d(v->vst->time_base) < clock_now(v) - gap)
+                d = AVDISCARD_NONREF;
+        }
+        if (d != AVDISCARD_DEFAULT && v->vdec->skip_frame != d)
+            v->late_skips++;
+        v->vdec->skip_frame = d;
     }
 }
 
@@ -2662,7 +2773,7 @@ static void fill(ReelCore *v)
         }
         AVPacket *p = vpk_pop(v);
         if (p) {
-            check_late(v);
+            check_late(v, p);
             if (v->seek_target >= 0 && p->pts != AV_NOPTS_VALUE) {
                 /* on the way to a seek's picture: pictures nothing else is
                    predicted from, and more than half a second before it,
@@ -4348,18 +4459,12 @@ static void fill_black(uint8_t *p, int pitch, int x, int y, int w, int h)
         memset(p + (y + j) * pitch + x * 4, 0, (size_t)w * 4);
 }
 
-int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int bgr, int flags)
+/* Where the picture goes in w x h (x, y, rw x rh; the rest bars), and the
+   part of the frame shown (cx, cy, cw x ch), for flags */
+static void place_picture(const ReelCore *v, int fw, int fh, int w, int h, int flags,
+                          int *px, int *py, int *prw, int *prh, int *pcx, int *pcy, int *pcw, int *pch)
 {
-    uint8_t *p = pixels;
-    AVFrame *f = cur_frame(v);
-    int x = 0, y = 0, rw = w, rh = h, cx = 0, cy = 0, cw, ch;
-
-    if (!f)
-        return AVERROR(EAGAIN);
-    if (w < 1 || h < 1)
-        return AVERROR(EINVAL);
-    cw = f->width;
-    ch = f->height;
+    int x = 0, y = 0, rw = w, rh = h, cx = 0, cy = 0, cw = fw, ch = fh;
     if (flags & (REELCORE_FILL | REELCORE_ORIGINAL)) {
         /* the whole picture at scale s (display pixels, aspect applied):
            fill = cover the rectangle, original = 1:1; what's outside the
@@ -4368,10 +4473,10 @@ int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int
         double dw = v->w * s, dh = v->h * s;
         rw = FFMAX(dw < w ? (int)(dw + 0.5) : w, 1);
         rh = FFMAX(dh < h ? (int)(dh + 0.5) : h, 1);
-        cw = FFMIN(FFMAX((int)(f->width * rw / dw + 0.5), 1), f->width);
-        ch = FFMIN(FFMAX((int)(f->height * rh / dh + 0.5), 1), f->height);
-        cx = (f->width - cw) / 2;
-        cy = (f->height - ch) / 2;
+        cw = FFMIN(FFMAX((int)(fw * rw / dw + 0.5), 1), fw);
+        ch = FFMIN(FFMAX((int)(fh * rh / dh + 0.5), 1), fh);
+        cx = (fw - cw) / 2;
+        cy = (fh - ch) / 2;
         x = (w - rw) / 2;
         y = (h - rh) / 2;
     } else if (!(flags & REELCORE_STRETCH)) {
@@ -4386,6 +4491,42 @@ int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int
         x = (w - rw) / 2;
         y = (h - rh) / 2;
     }
+    *px = x; *py = y; *prw = rw; *prh = rh;
+    *pcx = cx; *pcy = cy; *pcw = cw; *pch = ch;
+}
+
+int reelcore_place(const ReelCore *v, int w, int h, int flags, int *x, int *y, int *rw, int *rh)
+{
+    AVFrame *f = v->cur;
+    int cx, cy, cw, ch;
+    if (!f)
+        return AVERROR(EAGAIN);
+    if (w < 1 || h < 1)
+        return AVERROR(EINVAL);
+    place_picture(v, f->width, f->height, w, h, flags, x, y, rw, rh, &cx, &cy, &cw, &ch);
+    return 0;
+}
+
+double reelcore_queued_time(ReelCore *v)
+{
+    double t;
+    if (!v->qn || v->paused || !v->ready)
+        return 0;
+    t = (v->qpts[v->qn - 1] - clock_now(v)) / v->speed;
+    return t > 0 ? t : 0;
+}
+
+int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h, int bgr, int flags)
+{
+    uint8_t *p = pixels;
+    AVFrame *f = cur_frame(v);
+    int x, y, rw, rh, cx, cy, cw, ch;
+
+    if (!f)
+        return AVERROR(EAGAIN);
+    if (w < 1 || h < 1)
+        return AVERROR(EINVAL);
+    place_picture(v, f->width, f->height, w, h, flags, &x, &y, &rw, &rh, &cx, &cy, &cw, &ch);
     if ((x || y || rw < w || rh < h) && !(flags & REELCORE_NO_BORDERS)) {
         fill_black(p, pitch, 0, 0, w, y);
         fill_black(p, pitch, 0, y + rh, w, h - y - rh);
@@ -4689,6 +4830,8 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
             return AVERROR(ENOMEM);
     }
 #endif
+    if (!(f = cur_frame(v)))                      /* (10-bit: narrowed, in NEON) */
+        return AVERROR(ENOMEM);
     /* smaller than the frame (4K into an HD-sized overlay): halved */
     half = w * 2 <= f->width && h * 2 <= f->height;
     if ((f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P) &&

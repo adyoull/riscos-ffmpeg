@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <math.h>
+#include "libavutil/log.h"
 #include "kernel.h"
 #include "reelcore.h"
 #include "fake_sdl_gl.h"
@@ -52,6 +53,9 @@ const uint8_t *reel_test_sprite(int *w, int *h, int *rows);
 #define FRAMES_DRAWN updates
 #endif
 int reel_test_fullscreen(void);
+#ifndef REEL_EGL
+int reel_test_waiting(void);
+#endif
 int reel_test_pic_flags(void);
 int reel_test_ab(double *a, double *b);
 const char *reel_test_panel(void);
@@ -145,6 +149,15 @@ static int ovl_arr[3][6];
 static int cover_on;                  /* COVERW is open over the picture */
 static int fake_vsync;
 static int last_poll_idle;               /* the poll now was Wimp_PollIdle */
+static int full_updates, full_upd[4];     /* Wimp_UpdateWindow on the full screen window: how many, the last box */
+static int log_flushes;                   /* fflush (Reel's log: tests/host/run.sh sets Reel$Log) */
+int __real_fflush(FILE *f);
+int __wrap_fflush(FILE *f)
+{
+    if (f && f != stdout && f != stderr)
+        log_flushes++;
+    return __real_fflush(f);
+}
 static int vsync_held = -1;             /* >= 0: the vsync counter stands still at this */
 static int ovl_last_vsync = -1, ovl_same_vsync;   /* two switches before one vsync: it would tear */
 static int vsync_now(void) { return vsync_held >= 0 ? vsync_held : (fake_vsync + (int)(fake_time * 60)) & 0xFF; }
@@ -201,7 +214,7 @@ static int script(int *b)
 /* the phases after the first drop */
 enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
        P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PANEL, P_PANELOFF, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL, P_PTRHIDE,
-       P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
+       P_FULLWAIT, P_LOGFLUSH, P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
        P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_SUBDROP, P_SUBHIDE, P_SUBSHOW, P_SUBNEXT, P_STEP, P_STEPPLAY, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
        P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_ARGURL, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_QUIT };
@@ -516,10 +529,105 @@ static int next_event(int *b)
             CHECK(ptr_shape == 0 && ptr_offs == 2, "left alone again: shape %d, hidden %d times", ptr_shape, ptr_offs);
             printf("  full screen: pointer hidden after 2 s left alone, back when the mouse moved\n");
             break;
+        case P_FULLWAIT: {
+#ifndef REEL_EGL
+            /* full screen, Vsync: a picture waits for the refresh without
+               blocking (no OS_Byte 19), not sleeping; plotted when it comes,
+               just the picture (the bars are there already, and stay) */
+            static int upd0, vs0, waited, filled, tries;
+            if (phase_step == 0) { filled = waited = tries = 0; }
+            if (filled < 30) { filled++; phase_step = 1; fake_time += 0.002; return 0; }   /* pictures decoded ahead first */
+            if (filled == 30) {
+                int w, h, rows;
+                uint32_t *px = (uint32_t *)reel_test_sprite(&w, &h, &rows);
+                filled++;
+                vsync_held = vsync_now();
+                if (px) px[(size_t)5 * w + 2] = 0x123456;            /* a mark in the bar: not drawn over again */
+            }
+            if (!waited) {                                            /* until a picture comes and waits */
+                if (reel_test_waiting()) {
+                    waited = phase_step = 1;
+                    upd0 = full_updates; vs0 = vsyncs;
+                } else {
+                    CHECK(tries++ < 40, "full screen, Vsync, no refresh: no picture waiting for it");
+                    if (tries > 40) { vsync_held = -1; break; }
+                    fake_time += 0.002;
+                    return 0;
+                }
+            }
+            if (phase_step++ < 6) { fake_time += 0.005; return 0; }      /* 25 ms more, no refresh */
+            if (phase_step == 7) {
+                CHECK(reel_test_waiting(), "no refresh: the picture no longer waiting");
+                CHECK(full_updates == upd0 && vsyncs == vs0, "no refresh: %d plotted, %d OS_Byte 19 waits (want none, none)",
+                      full_updates - upd0, vsyncs - vs0);
+                CHECK(!last_poll_idle, "a picture waiting for the refresh, yet Reel slept");
+                vsync_held = -1;                                      /* the refresh comes */
+                fake_time += 0.005;
+                return 0;
+            }
+            if (phase_step == 8) { fake_time += 0.005; return 0; }
+            {
+                int w, h, rows, x0, bad = 0;
+                const uint32_t *px = (const uint32_t *)reel_test_sprite(&w, &h, &rows);
+                CHECK(full_updates > upd0, "the refresh came: nothing plotted");
+                CHECK(px && px[(size_t)5 * w + 2] == 0x123456, "the bars drawn again with each picture");
+                if (px) ((uint32_t *)px)[(size_t)5 * w + 2] = px[0];
+                /* 322x184 (1.75) on 1920x1080: bars 15 pixels each side */
+                x0 = (SCR_W - (int)(SCR_H * 322.0 / 184 + 0.5)) / 2;
+                CHECK(full_upd[2] - full_upd[0] < SCR_W * 2 && full_upd[0] >= 2 * (x0 - 1),
+                      "a picture full screen updated %d,%d to %d,%d (want just the picture, between the bars)",
+                      full_upd[0], full_upd[1], full_upd[2], full_upd[3]);
+                for (int y = 0; px && y < h; y += 7)
+                    for (int x = 0; x < x0 - 1; x++)
+                        bad += px[(size_t)y * w + x] != px[0] || px[(size_t)y * w + w - 1 - x] != px[0];
+                CHECK(px && bad == 0 && (px[0] & 0xFFFFFF) == 0, "the bars aren't black: %d pixels", bad);
+                printf("  full screen, Vsync: a picture waited for the refresh without blocking; then just the picture plotted"
+                       " (%d wide of %d)\n", (full_upd[2] - full_upd[0]) / 2, SCR_W);
+            }
+#endif
+            break;
+        }
+        case P_LOGFLUSH: {
+            /* warnings (a damaged stream: several a picture) written to the
+               log a second at a time, not flushed line by line; errors at once */
+            static int f0;
+            static char want[64];
+            if (!getenv(APP_NAME "$Log"))
+                break;
+            if (phase_step++ == 0) {
+                f0 = log_flushes;
+                for (int i = 0; i < 30; i++)
+                    av_log(NULL, AV_LOG_WARNING, "reel_test warning %d\n", i);
+                CHECK(log_flushes - f0 <= 1, "30 warnings: the log flushed %d times (want at most 1)", log_flushes - f0);
+                f0 = log_flushes;
+                av_log(NULL, AV_LOG_ERROR, "reel_test error\n");
+                CHECK(log_flushes == f0 + 1, "an error: the log flushed %d times (want 1)", log_flushes - f0);
+                av_log(NULL, AV_LOG_WARNING, "reel_test last warning\n");
+                snprintf(want, sizeof(want), "reel_test last warning");
+                fake_time += 0.6;
+                return 0;
+            }
+            if (phase_step < 4) { fake_time += 0.6; return 0; }
+            {
+                char line[400];
+                int found = 0;
+                FILE *f = fopen(getenv(APP_NAME "$Log"), "r");
+                while (f && fgets(line, sizeof(line), f))
+                    found |= strstr(line, want) != NULL;
+                if (f) fclose(f);
+                CHECK(found, "a warning not in the log file within a second or two");
+                printf("  the log: 30 warnings flushed together, an error at once, all written within a second\n");
+            }
+            break;
+        }
         case P_VSYNCOFF:                                              /* Vsync off: Direct */
 #ifndef REEL_EGL
             if (phase_step == 0)
-                CHECK(vsyncs > 0, "full screen didn't wait for the vsync");
+            {   /* waited for with OS_Byte 19 only with no pictures in hand (catching up after the jumps above) */
+                printf("  full screen, Vsync: %d pictures plotted, %d after an OS_Byte 19 wait\n", full_updates, vsyncs);
+                CHECK(vsyncs * 4 < full_updates, "full screen busy-waited for the vsync: %d times for %d pictures",
+                      vsyncs, full_updates);
+            }
 #endif
             MENU_PICK(FULL, M_VSYNC, -1);
 #ifdef REEL_EGL
@@ -1641,6 +1749,7 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x400C9: case 0x400C8: {                                         /* Update/RedrawWindow */
         int w = b[0], *s = st(w);
         if (swi == 0x400C9) updates++;
+        if (swi == 0x400C9 && w == FULL) { full_updates++; memcpy(full_upd, b + 1, sizeof(full_upd)); }
         drawing_info = w == INFO;
         if (w == INFO && swi == 0x400C9) { info_updates++; info_seen[0] = 0; }
         memcpy(b + 1, s + 1, 24);                                         /* visible box, scroll */

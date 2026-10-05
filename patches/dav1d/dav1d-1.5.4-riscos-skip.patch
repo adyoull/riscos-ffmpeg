@@ -1,0 +1,206 @@
+diff -ru a/include/dav1d/dav1d.h dav1d-1.5.4/include/dav1d/dav1d.h
+--- dav1d-1.5.4.orig/include/dav1d/dav1d.h	2026-07-14 07:39:09.000000000 +0100
++++ dav1d-1.5.4/include/dav1d/dav1d.h	2026-10-05 18:57:33.089062944 +0100
+@@ -265,6 +265,22 @@
+  */
+ DAV1D_API void dav1d_flush(Dav1dContext *c);
+ 
++/**
++ * RISC OS: change while decoding which frames are decoded (as
++ * Dav1dSettings.decode_frame_type) and which frames' in-loop filters
++ * (deblocking, CDEF, loop restoration, as allowed by
++ * Dav1dSettings.inloop_filters) run: skip_filters 0 every frame's, 1 not
++ * for frames nothing refers to (refresh_frame_flags 0), 2 not for inter
++ * frames, 3 not for any but key frames, 4 none. For a player that has
++ * fallen behind. Frames already submitted keep what they had. Once a
++ * frame others refer to has been skipped, every frame to the next key
++ * frame is skipped too, whatever decode_frame_type becomes meanwhile (the
++ * references they'd use were never decoded).
++ */
++#define DAV1D_RISCOS_SET_SKIP 1
++DAV1D_API void dav1d_riscos_set_skip(Dav1dContext *c, enum Dav1dDecodeFrameType decode_frame_type,
++                                     int skip_filters);
++
+ enum Dav1dEventFlags {
+     /**
+      * The last returned picture contains a reference to a new Sequence Header,
+diff -ru a/src/decode.c dav1d-1.5.4/src/decode.c
+--- dav1d-1.5.4.orig/src/decode.c	2026-07-14 07:39:09.000000000 +0100
++++ dav1d-1.5.4/src/decode.c	2026-10-05 18:14:00.019941516 +0100
+@@ -3381,6 +3381,16 @@
+     dav1d_ref_inc(f->seq_hdr_ref);
+     f->frame_hdr = c->frame_hdr;
+     f->frame_hdr_ref = c->frame_hdr_ref;
++    {
++        const enum Dav1dFrameType ft = f->frame_hdr->frame_type;
++        const int skip = c->riscos_skip_filters;
++        f->inloop_filters = c->inloop_filters;
++        if (skip >= 4 ||
++            (skip >= 3 && ft != DAV1D_FRAME_TYPE_KEY) ||
++            (skip >= 2 && ft != DAV1D_FRAME_TYPE_KEY && ft != DAV1D_FRAME_TYPE_INTRA) ||
++            (skip >= 1 && !f->frame_hdr->refresh_frame_flags))
++            f->inloop_filters = DAV1D_INLOOPFILTER_NONE;
++    }
+     c->frame_hdr = NULL;
+     c->frame_hdr_ref = NULL;
+     f->dsp = &c->dsp[f->seq_hdr->hbd];
+diff -ru a/src/internal.h dav1d-1.5.4/src/internal.h
+--- dav1d-1.5.4.orig/src/internal.h	2026-07-14 07:39:09.000000000 +0100
++++ dav1d-1.5.4/src/internal.h	2026-10-05 18:57:21.469477257 +0100
+@@ -189,6 +189,8 @@
+     int output_invisible_frames;
+     enum Dav1dInloopFilterType inloop_filters;
+     enum Dav1dDecodeFrameType decode_frame_type;
++    int riscos_skip_filters; // dav1d_riscos_set_skip
++    int riscos_await_key;    // a frame refreshing references skipped: all skipped to the next key frame
+     int drain;
+     enum PictureFlags frame_flags;
+     enum Dav1dEventFlags event_flags;
+@@ -213,6 +215,7 @@
+ };
+ 
+ struct Dav1dFrameContext {
++    enum Dav1dInloopFilterType inloop_filters; // this frame's (c->inloop_filters less any skipped)
+     Dav1dRef *seq_hdr_ref;
+     Dav1dSequenceHeader *seq_hdr;
+     Dav1dRef *frame_hdr_ref;
+diff -ru a/src/lib.c dav1d-1.5.4/src/lib.c
+--- dav1d-1.5.4.orig/src/lib.c	2026-07-14 07:39:09.000000000 +0100
++++ dav1d-1.5.4/src/lib.c	2026-10-05 18:57:21.473580515 +0100
+@@ -523,6 +523,17 @@
+     return res;
+ }
+ 
++void dav1d_riscos_set_skip(Dav1dContext *const c, const enum Dav1dDecodeFrameType decode_frame_type,
++                           const int skip_filters)
++{
++    validate_input(c != NULL);
++    validate_input(decode_frame_type >= DAV1D_DECODEFRAMETYPE_ALL &&
++                   decode_frame_type <= DAV1D_DECODEFRAMETYPE_KEY);
++    validate_input(skip_filters >= 0 && skip_filters <= 4);
++    c->decode_frame_type = decode_frame_type;
++    c->riscos_skip_filters = skip_filters;
++}
++
+ void dav1d_flush(Dav1dContext *const c) {
+     dav1d_data_unref_internal(&c->in);
+     if (c->out.p.frame_hdr)
+@@ -532,6 +543,7 @@
+ 
+     c->drain = 0;
+     c->cached_error = 0;
++    c->riscos_await_key = 0;
+ 
+     for (int i = 0; i < 8; i++) {
+         if (c->refs[i].p.p.frame_hdr)
+diff -ru a/src/obu.c dav1d-1.5.4/src/obu.c
+--- dav1d-1.5.4.orig/src/obu.c	2026-07-14 07:39:09.000000000 +0100
++++ dav1d-1.5.4/src/obu.c	2026-10-05 18:57:21.473243933 +0100
+@@ -1525,17 +1525,21 @@
+         break;
+     }
+ 
++    // RISC OS: once a frame others refer to has been skipped, the frames up
++    // to the next key frame are too, whatever decode_frame_type becomes
++    // meanwhile: the references they'd use hold only headers
++    const enum Dav1dDecodeFrameType dft = c->riscos_await_key ? DAV1D_DECODEFRAMETYPE_KEY : c->decode_frame_type;
+     if (c->seq_hdr && c->frame_hdr) {
+         if (c->frame_hdr->show_existing_frame) {
+             if (!c->refs[c->frame_hdr->existing_frame_idx].p.p.frame_hdr) goto error;
+             switch (c->refs[c->frame_hdr->existing_frame_idx].p.p.frame_hdr->frame_type) {
+             case DAV1D_FRAME_TYPE_INTER:
+             case DAV1D_FRAME_TYPE_SWITCH:
+-                if (c->decode_frame_type > DAV1D_DECODEFRAMETYPE_REFERENCE)
++                if (dft > DAV1D_DECODEFRAMETYPE_REFERENCE)
+                     goto skip;
+                 break;
+             case DAV1D_FRAME_TYPE_INTRA:
+-                if (c->decode_frame_type > DAV1D_DECODEFRAMETYPE_INTRA)
++                if (dft > DAV1D_DECODEFRAMETYPE_INTRA)
+                     goto skip;
+                 // fall-through
+             default:
+@@ -1618,6 +1622,7 @@
+             }
+             if (c->refs[c->frame_hdr->existing_frame_idx].p.p.frame_hdr->frame_type == DAV1D_FRAME_TYPE_KEY) {
+                 const int r = c->frame_hdr->existing_frame_idx;
++                c->riscos_await_key = 0;
+                 c->refs[r].p.showable = 0;
+                 for (int i = 0; i < 8; i++) {
+                     if (i == r) continue;
+@@ -1641,14 +1646,14 @@
+             switch (c->frame_hdr->frame_type) {
+             case DAV1D_FRAME_TYPE_INTER:
+             case DAV1D_FRAME_TYPE_SWITCH:
+-                if (c->decode_frame_type > DAV1D_DECODEFRAMETYPE_REFERENCE ||
+-                    (c->decode_frame_type == DAV1D_DECODEFRAMETYPE_REFERENCE &&
++                if (dft > DAV1D_DECODEFRAMETYPE_REFERENCE ||
++                    (dft == DAV1D_DECODEFRAMETYPE_REFERENCE &&
+                      !c->frame_hdr->refresh_frame_flags))
+                     goto skip;
+                 break;
+             case DAV1D_FRAME_TYPE_INTRA:
+-                if (c->decode_frame_type > DAV1D_DECODEFRAMETYPE_INTRA ||
+-                    (c->decode_frame_type == DAV1D_DECODEFRAMETYPE_REFERENCE &&
++                if (dft > DAV1D_DECODEFRAMETYPE_INTRA ||
++                    (dft == DAV1D_DECODEFRAMETYPE_REFERENCE &&
+                      !c->frame_hdr->refresh_frame_flags))
+                     goto skip;
+                 // fall-through
+@@ -1657,6 +1662,8 @@
+             }
+             if (!c->n_tile_data)
+                 goto error;
++            if (c->frame_hdr->frame_type == DAV1D_FRAME_TYPE_KEY)
++                c->riscos_await_key = 0;
+             if ((res = dav1d_submit_frame(c)) < 0)
+                 return res;
+             assert(!c->n_tile_data);
+@@ -1668,6 +1675,8 @@
+     return gb.ptr_end - gb.ptr_start;
+ 
+ skip:
++    if (c->frame_hdr->refresh_frame_flags)
++        c->riscos_await_key = 1;
+     // update refs with only the headers in case we skip the frame
+     for (int i = 0; i < 8; i++) {
+         if (c->frame_hdr->refresh_frame_flags & (1 << i)) {
+diff -ru a/src/recon_tmpl.c dav1d-1.5.4/src/recon_tmpl.c
+--- dav1d-1.5.4.orig/src/recon_tmpl.c	2026-07-14 07:39:09.000000000 +0100
++++ dav1d-1.5.4/src/recon_tmpl.c	2026-10-05 18:14:00.020629411 +0100
+@@ -1985,7 +1985,7 @@
+ }
+ 
+ void bytefn(dav1d_filter_sbrow_deblock_cols)(Dav1dFrameContext *const f, const int sby) {
+-    if (!(f->c->inloop_filters & DAV1D_INLOOPFILTER_DEBLOCK) ||
++    if (!(f->inloop_filters & DAV1D_INLOOPFILTER_DEBLOCK) ||
+         (!f->frame_hdr->loopfilter.level_y[0] && !f->frame_hdr->loopfilter.level_y[1]))
+     {
+         return;
+@@ -2011,7 +2011,7 @@
+         f->lf.p[2] + (y * PXSTRIDE(f->cur.stride[1]) >> ss_ver)
+     };
+     Av1Filter *mask = f->lf.mask + (sby >> !f->seq_hdr->sb128) * f->sb128w;
+-    if (f->c->inloop_filters & DAV1D_INLOOPFILTER_DEBLOCK &&
++    if (f->inloop_filters & DAV1D_INLOOPFILTER_DEBLOCK &&
+         (f->frame_hdr->loopfilter.level_y[0] || f->frame_hdr->loopfilter.level_y[1]))
+     {
+         bytefn(dav1d_loopfilter_sbrow_rows)(f, p, mask, sby);
+@@ -2024,7 +2024,7 @@
+ 
+ void bytefn(dav1d_filter_sbrow_cdef)(Dav1dTaskContext *const tc, const int sby) {
+     const Dav1dFrameContext *const f = tc->f;
+-    if (!(f->c->inloop_filters & DAV1D_INLOOPFILTER_CDEF)) return;
++    if (!(f->inloop_filters & DAV1D_INLOOPFILTER_CDEF)) return;
+     const int sbsz = f->sb_step;
+     const int y = sby * sbsz * 4;
+     const int ss_ver = f->cur.p.layout == DAV1D_PIXEL_LAYOUT_I420;
+@@ -2086,7 +2086,7 @@
+ }
+ 
+ void bytefn(dav1d_filter_sbrow_lr)(Dav1dFrameContext *const f, const int sby) {
+-    if (!(f->c->inloop_filters & DAV1D_INLOOPFILTER_RESTORATION)) return;
++    if (!(f->inloop_filters & DAV1D_INLOOPFILTER_RESTORATION)) return;
+     const int y = sby * f->sb_step * 4;
+     const int ss_ver = f->cur.p.layout == DAV1D_PIXEL_LAYOUT_I420;
+     pixel *const sr_p[3] = {

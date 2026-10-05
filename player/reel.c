@@ -51,6 +51,7 @@
  * Part of riscos-ffmpeg. GPL v2 or later.
  */
 #include <stdarg.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -301,20 +302,63 @@ static int now_cs(void)
     return r.r[0];
 }
 
-static void lg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
-static void lg(const char *fmt, ...)
+static int log_dirty, log_flush_t;    /* written but not flushed; when last flushed */
+
+static void lgv(int urgent, const char *fmt, va_list ap)
 {
-    va_list ap;
     int t;
     if (!logf)
         return;
     t = now_cs() - log_t0;
     fprintf(logf, "%4d.%02d ", t / 100, t % 100);
-    va_start(ap, fmt);
     vfprintf(logf, fmt, ap);
-    va_end(ap);
     fputc('\n', logf);
-    fflush(logf);                       /* all there even if we crash */
+    if (urgent || t - log_flush_t >= 100) {
+        fflush(logf);                   /* all there even if we crash */
+        log_flush_t = t;
+        log_dirty = 0;
+    } else
+        log_dirty = 1;                  /* (tick() flushes it within a second) */
+}
+
+static void lg(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void lg(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    lgv(1, fmt, ap);
+    va_end(ap);
+}
+
+static void lg_soon(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void lg_soon(const char *fmt, ...)    /* flushed within a second */
+{
+    va_list ap;
+    va_start(ap, fmt);
+    lgv(0, fmt, ap);
+    va_end(ap);
+}
+
+/* A crash (a damaged stream that trips a decoder up, say): the warnings
+   before it, written at last; then as before */
+static void log_crash(int sig)
+{
+    if (logf)
+        fflush(logf);
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+/* FFmpeg's warnings and the like, which a damaged stream can give several
+   of a picture: written out once a second, not line by line (0.5-3 ms a
+   line on an SD card); errors and Reel's own lines at once */
+static void lg_flush_due(void)
+{
+    if (logf && log_dirty && now_cs() - log_t0 - log_flush_t >= 100) {
+        fflush(logf);
+        log_flush_t = now_cs() - log_t0;
+        log_dirty = 0;
+    }
 }
 
 /* FFmpeg's and reelcore's messages (AV_LOG_ERROR 16, WARNING 24, INFO 32, VERBOSE 40) */
@@ -325,10 +369,13 @@ static void ff_log(int level, const char *line)
         return;
     }
     if (log_repeats)
-        lg("  (repeated %d more times)", log_repeats);
+        lg_soon("  (repeated %d more times)", log_repeats);
     log_repeats = 0;
     snprintf(log_last, sizeof(log_last), "%s", line);
-    lg("%s%s", level <= 16 ? "ERROR " : level <= 24 ? "warning " : "", line);
+    if (level <= 16)
+        lg("ERROR %s", line);
+    else
+        lg_soon("%s%s", level <= 24 ? "warning " : "", line);
 }
 
 static void log_module(const char *name)
@@ -390,6 +437,11 @@ static void log_open(void)
         _kernel_swi(0x08, &r, &r);
     }
     log_t0 = now_cs();
+    signal(SIGSEGV, log_crash);
+    signal(SIGBUS, log_crash);
+    signal(SIGILL, log_crash);
+    signal(SIGFPE, log_crash);
+    signal(SIGABRT, log_crash);
     lg("%s log (built " __DATE__ " " __TIME__ "), times in seconds", APP);
     log_module("SharedSound");
     log_module("StreamManager");
@@ -551,12 +603,24 @@ static void format_time(char *buf, size_t n, double s)
    with extra rows, which the clipping hides. */
 #define MIN_SPRITE_BYTES (1024 * 1024)
 
+/* The bars beside or above and below the picture (its shape kept): drawn
+   into the sprite, and plotted, once for each sprite, picture mode and
+   video shape, not with every picture (full screen, a wide film: 0.5-3 ms
+   a picture). key: what they were drawn for; shown: plotted since. */
+static struct { int key[5], drawn, shown; } bars;
+
+/* Full screen with Vsync: the picture converted into the sprite, waiting
+   for the screen's next refresh to be plotted (show_frame_now) */
+static struct { int ready, vsync, cs, now; } spw;
+
 static void sprite_free(void)
 {
     free(S.area);
     S.area = NULL;
     S.spr_w = S.spr_h = 0;
     S.have_frame = 0;
+    bars.drawn = bars.shown = 0;
+    spw.ready = 0;
 }
 
 static int *sprite_header(void) { return S.area + 4; }
@@ -607,10 +671,20 @@ static int sprite_make(int w, int h)
 /* Converts the current frame into the sprite (black bars around it). */
 static void sprite_draw_frame(void)
 {
+    int flags = pic_flags_of[S.pic_mode], key[5];
     if (!S.v || !S.area)
         return;
-    if (reelcore_draw_pixels(S.v, sprite_pixels(), S.spr_w * 4, S.spr_w, S.spr_h, S.trgb, pic_flags_of[S.pic_mode]) == 0)
+    key[0] = S.spr_w; key[1] = S.spr_h; key[2] = S.pic_mode;
+    key[3] = reelcore_width(S.v); key[4] = reelcore_height(S.v);
+    if (bars.drawn && !memcmp(key, bars.key, sizeof(key)))
+        flags |= REELCORE_NO_BORDERS;               /* the bars are there already */
+    else
+        bars.drawn = bars.shown = 0;
+    if (reelcore_draw_pixels(S.v, sprite_pixels(), S.spr_w * 4, S.spr_w, S.spr_h, S.trgb, flags) == 0) {
         S.have_frame = 1;
+        memcpy(bars.key, key, sizeof(key));
+        bars.drawn = 1;
+    }
 }
 
 /* Plots the sprite with its top left at screen (x, y1), clipped to clip. */
@@ -1180,6 +1254,9 @@ static void ov_destroy(void)
     }
     ov.id = ov.shown = ov.win = 0;
     S.ov_pending = 0;
+#ifndef REEL_EGL
+    bars.shown = 0;                     /* (the picture drawn as before: all of it, bars too, the first time) */
+#endif
 }
 
 static void ov_fail(const char *why)
@@ -1197,6 +1274,9 @@ static int ov_hide(void)
     ov_call(OV_DISPLAY, ov.id, -1);
     ov.shown = 0;
     S.ov_pending = 0;
+#ifndef REEL_EGL
+    bars.shown = 0;
+#endif
     return 1;
 }
 
@@ -1413,6 +1493,9 @@ static int ov_show_frame(void)
     if (!ov.shown) {
         box_t pic = ov_pic_box(w);
         ov.shown = 1;
+#ifndef REEL_EGL
+        bars.shown = 0;
+#endif
         lg("overlay: showing");
         force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);   /* VideoOverlay_RedrawWindow prepares the area */
     }
@@ -1479,19 +1562,23 @@ static void redraw(int *block)
 #endif
 }
 
-static void show_frame_now(void);
+static int show_frame_now(void);
 
 /* The picture waiting (S.ov_pending): through the overlay, or drawn as
-   before; or left waiting for the overlay's next switch. */
+   before; or left waiting for the overlay's next switch (or, full screen
+   with Vsync, the refresh: show_frame_now). */
 static void show_pending(void)
 {
-    int t0 = now_cs(), s = ov_show_frame();
+    int t0 = now_cs(), s = ov_show_frame(), wait;
     if (s == 2)
         return;
-    S.ov_pending = 0;
-    if (!s)
-        show_frame_now();
+    wait = !s && show_frame_now();
     S.draw_cs += now_cs() - t0;
+    if (wait) {
+        S.ov_pending = 1;               /* (ov_show_frame can have cleared it: the overlay gone) */
+        return;
+    }
+    S.ov_pending = 0;
     S.draw_n++;
 }
 
@@ -1499,32 +1586,61 @@ static void show_frame(void)
 {
     if (S.ov_pending)
         S.ov_replaced++;                /* two pictures before one refresh: the newer one wins */
+#ifndef REEL_EGL
+    spw.ready = 0;                      /* (and is converted afresh) */
+#endif
     S.ov_pending = 1;
     show_pending();
     if (S.ov_pending)
         S.ov_waited++;
 }
 
-static void show_frame_now(void)
+/* Draws the current picture; 1 if it's left waiting for the refresh */
+static int show_frame_now(void)
 {
 #ifdef REEL_EGL
     pic_refresh();                      /* ffegl_draw_surface + eglSwapBuffers */
+    return 0;
 #else
-    int b[11];
+    int b[11], x, y, rw, rh;
     _kernel_swi_regs r;
     int w = S.fullscreen ? S.full : S.win;
     box_t pic = S.fullscreen ? (box_t){ 0, -S.vis_h, S.vis_w, 0 } : S.pic;
-    sprite_draw_frame();
-    if (S.fullscreen && S.vsync) {      /* wait for the screen's refresh: no tearing */
-        r.r[0] = 19;                    /* OS_Byte 19 */
-        swi(0x06, &r);
+    if (S.fullscreen && S.vsync && !reelcore_paused(S.v)) {
+        /* No tearing: plotted as a refresh starts. Not by waiting for it
+           (OS_Byte 19 busy-waits, up to a whole refresh, 8 ms on average
+           at 60 Hz, on the only core): converted now, then plotted once
+           the vsync counter has moved on, tick() looking often meanwhile
+           and leaving the decoding until after while there are pictures
+           in hand (if not, it waits as before: tick). Plotted anyway
+           after 50 ms: a machine whose counter doesn't move. */
+        if (!spw.ready) {
+            sprite_draw_frame();
+            spw.ready = 1;
+            spw.vsync = ov_vsyncs();
+            spw.cs = now_cs();
+        }
+        if (ov_vsyncs() == spw.vsync && now_cs() - spw.cs < 5 && !spw.now)
+            return 1;
+        spw.ready = 0;
+    } else {
+        spw.ready = 0;
+        sprite_draw_frame();
     }
+    if (bars.drawn && bars.shown &&
+        reelcore_place(S.v, S.spr_w, S.spr_h, pic_flags_of[S.pic_mode], &x, &y, &rw, &rh) == 0) {
+        box_t p = { pic.x0 + (x << S.xeig), pic.y1 - ((y + rh) << S.yeig),
+                    pic.x0 + ((x + rw) << S.xeig), pic.y1 - (y << S.yeig) };
+        pic = p;                        /* the bars are on screen: just the picture */
+    } else
+        bars.shown = bars.drawn;
     b[0] = w;
     b[1] = pic.x0; b[2] = pic.y0; b[3] = pic.x1; b[4] = pic.y1;
     r.r[1] = (intptr_t)b;
     if (swi(Wimp_UpdateWindow, &r))
-        return;
+        return 0;
     draw_rects(w, b, r.r[0], 1);
+    return 0;
 #endif
 }
 
@@ -4167,6 +4283,10 @@ static void toggle_pause(void)
     } else
         reelcore_pause(S.v, !reelcore_paused(S.v));
     lg("%s at %.2f", reelcore_paused(S.v) ? "pause" : "play", reelcore_position(S.v));
+#ifndef REEL_EGL
+    if (reelcore_paused(S.v) && spw.ready && S.ov_pending)
+        show_pending();                 /* the picture waiting for the refresh: now (no nulls while paused) */
+#endif
     if (reelcore_paused(S.v))
         ov_hide_and_draw();             /* paused: an ordinary window, which menus can cover */
     if (S.info_open) {                  /* no null events while paused: show where it stopped */
@@ -4282,6 +4402,28 @@ static void tick(void)
         opening_tick();
     if (!S.v || S.ended)
         return;
+#ifndef REEL_EGL
+    if (spw.ready && S.ov_pending) {
+        /* a picture waiting for the refresh (full screen, Vsync): plotted
+           as soon as it comes, so while there are pictures in hand the
+           decoding waits until after it (a refresh at most) */
+        show_pending();
+        if (S.ov_pending && reelcore_queued_time(S.v) > 0.05) {
+            S.idle_cs = 0;
+            return;
+        }
+        if (S.ov_pending) {
+            /* few pictures in hand: decoding first (10-20 ms at 1080p)
+               would plot it well into the refresh, tearing: wait for the
+               refresh here, as before, then decode */
+            r.r[0] = 19;                /* OS_Byte 19 */
+            swi(0x06, &r);
+            spw.now = 1;
+            show_pending();
+            spw.now = 0;
+        }
+    }
+#endif
     r2 = reelcore_update(S.v);
     S.log_nulls++;
     S.st_nulls++;
@@ -4676,6 +4818,7 @@ int reel_main(int argc, char **argv)
                 continue;
         } else if (swi(Wimp_Poll, &r))
             continue;
+        lg_flush_due();                 /* (paused or ended too) */
         switch (r.r[0]) {
         case 0:                                            /* null */
             if (playing)
@@ -4832,6 +4975,9 @@ const uint8_t *reel_test_sprite(int *w, int *h, int *rows)
 }
 #endif
 int reel_test_fullscreen(void) { return S.fullscreen; }
+#ifndef REEL_EGL
+int reel_test_waiting(void) { return spw.ready && S.ov_pending; }   /* a picture waiting for the refresh */
+#endif
 int reel_test_pic_flags(void) { return pic_flags_of[S.pic_mode]; }
 int reel_test_ab(double *a, double *b) { *a = S.ab_a; *b = S.ab_b; return S.ab; }
 int reel_test_list(int *n) { *n = S.list_n; return S.list_i; }

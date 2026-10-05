@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Mon, 5 Oct 2026 19:10:00 +0100
+Subject: [PATCH] avcodec/hevcdec: no boundary strengths for pictures not
+ filtered
+
+When skip_loop_filter skips the deblocking of a whole picture (all,
+non-key pictures, non-reference pictures: the tests in
+ff_hevc_hls_filter that don't depend on the slice), the boundary
+strengths worked out for every transform and coding unit are never
+used. Decide it in hevc_frame_start and don't work them out. A player
+that has fallen behind and turned the loop filter off saves that too.
+---
+ libavcodec/hevcdec.c | 16 ++++++++++++----
+ libavcodec/hevcdec.h |  1 +
+ 2 files changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/libavcodec/hevcdec.c b/libavcodec/hevcdec.c
+index c03bfef..652ca1c 100644
+--- a/libavcodec/hevcdec.c
++++ b/libavcodec/hevcdec.c
+@@ -1458,7 +1458,8 @@ do {
+                 }
+         }
+         if (!s->sh.disable_deblocking_filter_flag) {
+-            ff_hevc_deblocking_boundary_strengths(s, x0, y0, log2_trafo_size);
++            if (!s->no_bs)
++                ff_hevc_deblocking_boundary_strengths(s, x0, y0, log2_trafo_size);
+             if (s->ps.pps->transquant_bypass_enable_flag &&
+                 lc->cu.cu_transquant_bypass_flag)
+                 set_deblocking_bypass(s, x0, y0, log2_trafo_size);
+@@ -1486,7 +1487,7 @@ static int hls_pcm_sample(HEVCContext *s, int x0, int y0, int log2_cb_size)
+     const uint8_t *pcm = skip_bytes(&lc->cc, (length + 7) >> 3);
+     int ret;
+ 
+-    if (!s->sh.disable_deblocking_filter_flag)
++    if (!s->sh.disable_deblocking_filter_flag && !s->no_bs)
+         ff_hevc_deblocking_boundary_strengths(s, x0, y0, log2_cb_size);
+ 
+     ret = init_get_bits(&gb, pcm, length);
+@@ -2257,7 +2258,7 @@ static int hls_coding_unit(HEVCContext *s, int x0, int y0, int log2_cb_size)
+         hls_prediction_unit(s, x0, y0, cb_size, cb_size, log2_cb_size, 0, idx);
+         intra_prediction_unit_default_value(s, x0, y0, log2_cb_size);
+ 
+-        if (!s->sh.disable_deblocking_filter_flag)
++        if (!s->sh.disable_deblocking_filter_flag && !s->no_bs)
+             ff_hevc_deblocking_boundary_strengths(s, x0, y0, log2_cb_size);
+     } else {
+         int pcm_flag = 0;
+@@ -2345,7 +2346,7 @@ static int hls_coding_unit(HEVCContext *s, int x0, int y0, int log2_cb_size)
+                 if (ret < 0)
+                     return ret;
+             } else {
+-                if (!s->sh.disable_deblocking_filter_flag)
++                if (!s->sh.disable_deblocking_filter_flag && !s->no_bs)
+                     ff_hevc_deblocking_boundary_strengths(s, x0, y0, log2_cb_size);
+             }
+         }
+@@ -3052,6 +3053,13 @@ static int hevc_frame_start(HEVCContext *s)
+     s->is_decoded        = 0;
+     s->first_nal_type    = s->nal_unit_type;
+ 
++    /* When skip_loop_filter skips every CTB of this picture (the tests in
++     * ff_hevc_hls_filter that don't depend on the slice), the boundary
++     * strengths would never be used: don't work them out. */
++    s->no_bs = s->avctx->skip_loop_filter >= AVDISCARD_ALL ||
++               (s->avctx->skip_loop_filter >= AVDISCARD_NONKEY && !IS_IDR(s)) ||
++               (s->avctx->skip_loop_filter >= AVDISCARD_NONREF && ff_hevc_nal_is_nonref(s->nal_unit_type));
++
+     s->no_rasl_output_flag = IS_IDR(s) || IS_BLA(s) || (s->nal_unit_type == HEVC_NAL_CRA_NUT && s->last_eos);
+ 
+     if (s->ps.pps->tiles_enabled_flag)
+diff --git a/libavcodec/hevcdec.h b/libavcodec/hevcdec.h
+index fced457..106e676 100644
+--- a/libavcodec/hevcdec.h
++++ b/libavcodec/hevcdec.h
+@@ -540,6 +540,7 @@ typedef struct HEVCContext {
+ 
+     uint8_t *cbf_luma; // cbf_luma of colocated TU
+     uint8_t *is_pcm;
++    int no_bs;   ///< RISC OS: skip_loop_filter skips the whole picture, so no boundary strengths
+ 
+     // CTB-level flags affecting loop filter operation
+     uint8_t *filter_slice_edges;
+-- 
+2.43.0
+

@@ -15,7 +15,15 @@
  * keep up without skipping; with REELCORE_NO_AUTOFAST it can't. A light
  * video never has it turned off, and one that gets lighter has it back.
  *
- *   slow_test CLIP   (a 6 s clip with B-frames and sound)
+ * A stall too short to start skipping (0.28 s): the pictures already late
+ * after it that nothing refers to aren't decoded at all (skip_frame
+ * nonref for just those packets), and none are when nothing is late.
+ * VP9 (as AV1) that has fallen to keyframes only goes back to decoding
+ * every frame only at a keyframe: from any other frame it would be spoilt
+ * to the next.
+ *
+ *   slow_test CLIP [GOP1S [VP9]]   (a 6 s clip with B-frames and sound; one
+ *   with keyframes each second; VP9, keyframes each second, with sound)
  */
 #include <stdio.h>
 #include <string.h>
@@ -27,11 +35,20 @@
 
 int __real_avcodec_send_packet(AVCodecContext *c, const AVPacket *p);
 static double cost = 0.06;                   /* a decoded picture (heavy: 0.4, a 4K film on a Pi) */
+static int resumes, bad_resumes;             /* keyframes only left: VP9/AV1 must leave at a keyframe */
+static int nonref_sends;                     /* packets sent with skip_frame nonref */
+static enum AVDiscard last_skip = AVDISCARD_DEFAULT;
 int __wrap_avcodec_send_packet(AVCodecContext *c, const AVPacket *p)
 {
     static int n;
     if (c->codec_type == AVMEDIA_TYPE_VIDEO && p) {
         int key = p->flags & AV_PKT_FLAG_KEY;
+        if (last_skip >= AVDISCARD_NONKEY && c->skip_frame < AVDISCARD_NONKEY) {
+            resumes++;
+            bad_resumes += !key && (c->codec_id == AV_CODEC_ID_VP9 || c->codec_id == AV_CODEC_ID_AV1);
+        }
+        last_skip = c->skip_frame;
+        nonref_sends += c->skip_frame == AVDISCARD_NONREF;
         n++;
         double k = c->skip_loop_filter == AVDISCARD_ALL ? cost * 0.75 : cost;
         if (c->skip_frame == AVDISCARD_DEFAULT || key)
@@ -55,6 +72,7 @@ static void log_line(int level, const char *line)
 
 /* plays clip for up to secs with pictures costing c (c2 from after2 s on) */
 static double hiccup_at = -1;               /* a stall this far in (going full screen, say) */
+static double hiccup_len = 0.3;
 static void play(const char *clip, int flags, double c, double c2, double after, double secs,
                  ReelCoreStats *st, unsigned *shown)
 {
@@ -72,7 +90,7 @@ static void play(const char *clip, int flags, double c, double c2, double after,
         if (fake_time - t0 > after)
             cost = c2;
         if (hiccup_at >= 0 && !hiccuped && fake_time - t0 > hiccup_at) {
-            fake_time += 0.3;
+            fake_time += hiccup_len;
             hiccuped = 1;
         }
         r = reelcore_update(v);
@@ -119,7 +137,7 @@ int main(int argc, char **argv)
            frames, end_at, worst, worst_at, most_sound, d);
     CHECK(most_sound < 0.6, "the sound queued reached %.2f s", most_sound);
     CHECK(r == REELCORE_END && end_at < 7.5, "didn't end on time: %.1f s", end_at);
-    CHECK(strstr(d, " 0 skip spells") == NULL, "never skipped frames");
+    CHECK(strstr(d, " 0 skip spells, 0 late skips") == NULL, "never skipped frames");
     CHECK(worst < 2.0, "pictures fell %.2f s behind", worst);
     CHECK(frames > 12, "only %d pictures", frames);
     reelcore_close(v);
@@ -162,13 +180,53 @@ int main(int argc, char **argv)
         /* the same without: it falls behind */
         play(argv[2], REELCORE_NO_AUTOFAST, 0.048, 0.048, 99, 10, &st, &shown);
         CHECK(st.auto_fast_spells == 0, "no auto: deblocking turned off");
-        CHECK(st.skip_spells > 0 || st.late > shown / 10, "no auto: kept up anyway");
+        CHECK(st.skip_spells > 0 || st.late_skips > 0 || st.late > shown / 10, "no auto: kept up anyway");
         /* light: left alone */
         play(argv[2], 0, 0.015, 0.015, 99, 10, &st, &shown);
         CHECK(st.auto_fast_spells == 0, "light: deblocking turned off");
         /* lighter after 2 s: on again (after 5 s off) */
         play(argv[2], 0, 0.048, 0.01, 2, 11, &st, &shown);
         CHECK(st.auto_fast_spells == 1 && !st.auto_fast, "lighter: deblocking not back on");
+        /* decoding easily, a 0.28 s stall 1 s in: the late non-reference
+           pictures after it not decoded, no skip spell; none without it */
+        nonref_sends = 0;
+        play(argv[2], 0, 0.015, 0.015, 99, 4, &st, &shown);
+        CHECK(nonref_sends == 0, "nothing late, yet %d packets sent to be skipped", nonref_sends);
+        hiccup_at = 1;
+        hiccup_len = 0.28;
+        play(argv[2], 0, 0.015, 0.015, 99, 4, &st, &shown);
+        hiccup_at = -1;
+        hiccup_len = 0.3;
+        printf("  a 0.28 s stall: %d packets of late pictures sent to be skipped if nothing refers to them\n", nonref_sends);
+        CHECK(nonref_sends > 0 && st.skip_spells == 0, "a 0.28 s stall: %d packets for skipping, %u skip spells (want some, none)",
+              nonref_sends, st.skip_spells);
+        /* ... and paused straight after it, then stepped: those packets
+           all decoded (the late skipping not left on) */
+        {
+            int r2 = 0, before;
+            double t0 = fake_time;
+            v = reelcore_open(argv[2], 0);
+            cost = 0.015;
+            for (int i = 0; i < 4000 && fake_time - t0 < 1; i++, fake_time += 0.002)
+                reelcore_update(v);
+            fake_time += 0.28;
+            nonref_sends = 0;
+            for (int i = 0; i < 200 && !nonref_sends; i++, fake_time += 0.002)
+                r2 = reelcore_update(v);
+            CHECK(nonref_sends > 0, "pause after a stall: nothing skipped as late to begin with");
+            reelcore_pause(v, 1);
+            before = nonref_sends;
+            for (int i = 0; i < 200; i++, fake_time += 0.002)
+                reelcore_update(v);
+            for (int i = 0; i < 8; i++)
+                reelcore_step(v);
+            printf("  paused after a late picture: %d packets sent to be skipped while paused and stepping\n",
+                   nonref_sends - before);
+            CHECK(nonref_sends == before, "paused and stepping: %d packets still sent to be skipped as late",
+                  nonref_sends - before);
+            (void)r2;
+            reelcore_close(v);
+        }
         /* decoding easily (0.8 of the time) with a stall 1 s in: not off
            for good (autofast1: a 1080p trailer full screen) */
         hiccup_at = 1;
@@ -181,6 +239,15 @@ int main(int argc, char **argv)
         CHECK(st.auto_fast && st.auto_fast_spells >= 3 && st.auto_fast_spells <= 5,
               "too slow: deblocking off %u times, now %s", st.auto_fast_spells, st.auto_fast ? "off" : "on");
         CHECK(st.late < shown / 20, "too slow: %u late of %u", st.late, shown);
+    }
+    if (argc > 3) {
+        ReelCoreStats st;
+        unsigned shown;
+        resumes = bad_resumes = 0;
+        last_skip = AVDISCARD_DEFAULT;
+        play(argv[3], 0, 0.4, 0.4, 99, 12, &st, &shown);
+        printf("  VP9: keyframes only left %d times, %d of them not at a keyframe\n", resumes, bad_resumes);
+        CHECK(resumes > 0 && !bad_resumes, "VP9: decoding every frame again from a frame other than a keyframe");
     }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;

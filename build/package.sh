@@ -145,6 +145,10 @@ PY
   cp "$TOP"/patches/ffmpeg/0016-*.patch "$R/docs/source/patches/hevc-epel-neon,fff"
   cp "$TOP"/patches/ffmpeg/0017-*.patch "$R/docs/source/patches/sws-rgb-neon,fff"
   cp "$TOP"/patches/ffmpeg/0018-*.patch "$R/docs/source/patches/tls-acornssl,fff"
+  cp "$TOP"/patches/ffmpeg/0024-*.patch "$R/docs/source/patches/hevc-default-weights,fff"
+  cp "$TOP"/patches/ffmpeg/0025-*.patch "$R/docs/source/patches/hevc-skip-bs,fff"
+  cp "$TOP"/patches/ffmpeg/0026-*.patch "$R/docs/source/patches/vp9-dav1d-skip,fff"
+  cp "$TOP"/patches/dav1d/dav1d-1.5.4-riscos-skip.patch "$R/docs/source/patches/dav1d-skip,fff"
   cp "$TOP/build/build-apps.sh" "$R/docs/source/build-apps_sh,fff"
   cat > "$R/docs/source/ReadMe,fff" <<EOF
 $app $RV's own source is here (player/reel.c, and sources.c, which finds

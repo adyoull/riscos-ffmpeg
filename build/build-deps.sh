@@ -122,6 +122,8 @@ dep_dav1d() {
   # bitstream refill, and the NEON rewrite (tools/neon-align.py).
   if [ ! -f .riscos-align ]; then
     patch -s -p1 < "$TOP/patches/dav1d/dav1d-1.5.4-riscos.patch"
+    # and dav1d_riscos_set_skip: FFmpeg's skip_frame and skip_loop_filter
+    patch -s -p1 < "$TOP/patches/dav1d/dav1d-1.5.4-riscos-skip.patch"
     "$TOP/tools/neon-align-apply.sh" "$TOP/tools/neon-align-dav1d.allow" src/arm/32/*.S
     touch .riscos-align
   fi

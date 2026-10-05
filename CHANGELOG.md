@@ -19,6 +19,59 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   that refuse FFmpeg's own ("Lavf/59...") with 403. run.sh checks it
   reaches the server.
 
+## Unreleased (next FFmpeg and Reel): speed-ups (opt1)
+
+From a survey of where the time goes on a Pi (docs: optimisation-survey);
+each change peer reviewed, each with a host test that fails without it.
+
+FFmpeg:
+
+- **HEVC with all-default weight tables** (patch 0024): x265 and others
+  send a weight table on most P/B slices even when every weight is
+  1 << denom with no offset. Weighted prediction then gives exactly what
+  plain prediction gives at about twice the cost; such slices now use
+  plain prediction (a quarter of an x265 HEVC decode). hevc_weights_test
+  wraps the weighted functions: none called for default slices, still
+  called for real ones (fades, brightness changes, and tables rewritten
+  with FFmpeg's CBS so each term of the test decides some slice:
+  hevc_reweight); framemd5 against the x86 FFmpeg.
+- **HEVC with skip_loop_filter** (patch 0025): pictures whose filtering
+  is skipped (all, non-key, non-reference) no longer have their
+  boundary strengths worked out. hevc_skipbs_test, and framemd5 against
+  the x86 FFmpeg for every skip_loop_filter.
+- **VP9 and AV1 honour skip_loop_filter and skip_frame** (patch 0026,
+  dav1d's `dav1d_riscos_set_skip`): they ignored them, so Reel falling
+  behind couldn't make them cheaper. VP9: the loop filter skipped per
+  frame; frames skipped only in runs to the next keyframe. AV1:
+  deblocking, CDEF and loop restoration skipped per frame, and dav1d's
+  own frame skipping, both changeable while decoding. Once frames others
+  refer to are skipped, both skip to the next keyframe whatever
+  skip_frame becomes, rather than decode spoilt pictures. skipcheck.py,
+  skip_switch_test.
+
+Reel and ReelEGL:
+
+- **10-bit video narrowed to 8 bits in NEON** (HEVC Main 10 without the
+  HEVC block, VP9 profile 2, AV1 10-bit): swscale did it in C, 8-13 ms a
+  1080p picture; byte for byte the same as swscale's. halve_test.
+- **Late pictures nothing refers to aren't decoded at all**: one already
+  late would only be thrown away when it came out; while nothing else is
+  being skipped, its packet is decoded with skip_frame nonref (as
+  drop_before does for the VideoCore). slow_test.
+- **VP9 and AV1 leave "keyframes only" at a keyframe**: decoding every
+  frame again from any other frame gave spoilt pictures. slow_test.
+- **Reel, full screen with Vsync, no longer busy-waits for the refresh**
+  (OS_Byte 19, up to a whole refresh on the only core): the picture is
+  converted, then plotted when the vsync counter moves, the decoding left
+  until after while there are pictures in hand (with few, it waits as
+  before). reel_test.
+- **Reel: the bars beside a picture drawn and plotted once**, not with
+  every picture. reel_test.
+- **The log** (Reel$Log): FFmpeg's warnings (a damaged stream gives
+  several a picture) written out once a second rather than flushed line
+  by line; errors and Reel's own lines at once, and the log flushed on a
+  crash. reel_test.
+
 ## 5.1.10-riscos18 (2026-10-05): fixes from a code audit
 
 From a code audit of everything ours (reelcore, Reel, !FFmpeg's front

@@ -188,6 +188,8 @@ typedef struct ReelCoreStats {
        sound's reading moved (running totals, seconds): the lip sync */
     double sync_err_sum;
     unsigned sync_err_n;
+    unsigned late_skips;              /* times late non-reference pictures weren't decoded at all */
+    unsigned narrowed;                /* 10-bit pictures narrowed to 8 bits (NEON) */
 } ReelCoreStats;
 void reelcore_stats(const ReelCore *v, ReelCoreStats *st);
 
@@ -210,6 +212,12 @@ int reelcore_update(ReelCore *v);
    ahead, so that's plenty). Pictures are decoded ahead before sleeping, so
    waking when one is due is enough to show it on time. */
 double reelcore_idle_time(ReelCore *v);
+
+/* How long the pictures already decoded would last: until the last one
+   queued is due, in seconds (0 if none, or paused). A caller with a
+   picture to show at the next refresh can leave decoding (reelcore_update)
+   until after it while this is more than a refresh or two. */
+double reelcore_queued_time(ReelCore *v);
 
 /* Position of the current frame in seconds. */
 double reelcore_position(const ReelCore *v);
@@ -261,6 +269,8 @@ int reelcore_fast(const ReelCore *v);
    times; see reelcore.c. reelcore_halve_plane is exported for the tests. */
 #define REELCORE_HALVINGS 3
 void reelcore_halve_plane(uint8_t *dst, int dpitch, const uint8_t *src, int spitch, int w, int h);
+/* 10-bit samples to 8 (as swscale's own copy, its dither); exported for the tests */
+void reelcore_narrow10_plane(uint8_t *dst, int dpitch, const uint16_t *src, int spitch, int w, int h);
 
 /* The file's sound tracks: how many, which one plays (0 = the first; -1 =
    none), a short description ("aac, 2 ch, eng, Commentary"), and changing
@@ -275,6 +285,11 @@ int reelcore_set_audio_track(ReelCore *v, int track);
    bgr = 1: bytes B,G,R,x (0x00RRGGBB). */
 int reelcore_draw_pixels(ReelCore *v, void *pixels, int pitch, int w, int h,
                       int bgr, int flags);
+
+/* Where reelcore_draw_pixels puts the picture in w x h with these flags:
+   x, y (from the top left) and rw x rh; the rest is bars. 0, or
+   AVERROR(EAGAIN) before the first frame. */
+int reelcore_place(const ReelCore *v, int w, int h, int flags, int *x, int *y, int *rw, int *rh);
 
 /* The current frame's own size in pixels (as decoded, before the display
    aspect): for converting it 1:1 with reelcore_draw_pixels(..., REELCORE_STRETCH).
