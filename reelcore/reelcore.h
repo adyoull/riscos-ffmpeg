@@ -190,6 +190,10 @@ typedef struct ReelCoreStats {
     unsigned sync_err_n;
     unsigned late_skips;              /* times late non-reference pictures weren't decoded at all */
     unsigned narrowed;                /* 10-bit pictures narrowed to 8 bits (NEON) */
+    unsigned hb_not_done;             /* due pictures left a moment: the HEVC block not done with them */
+    int hb_stats;                     /* the HEVC block's own (hevcdec_get_stats), so far: */
+    unsigned hb_convert_waits, hb_cs_convert_wait;   /* conversions that waited for their picture, cs */
+    unsigned hb_cache_cleans, hb_cs_cache;           /* frames cleaned and invalidated, cs */
 } ReelCoreStats;
 void reelcore_stats(const ReelCore *v, ReelCoreStats *st);
 

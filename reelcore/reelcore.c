@@ -67,6 +67,7 @@ static void cur_changed(ReelCore *v);
 #define LATE_SKIP     0.3    /* this far behind: skip decoding non-reference frames, */
 #define LATE_KEYS     1.5    /* this far: decode only keyframes, */
 #define LATE_OK       0.05   /* until this close again */
+#define HB_WAIT_MAX   0.25   /* the HEVC block's picture not done: left this long at most (reelcore_update) */
 /* Deblocking turned off by itself: when pictures take longer to decode
    than FAST_SLOW of the time between them (or they're LATE_FAST behind
    and take over FAST_BUSY: a hiccup on a video that decodes easily, going
@@ -215,6 +216,7 @@ struct ReelCore {
     unsigned narrowed;                 /* 10-bit pictures narrowed (cur_frame) */
     int soft_narrowed;                 /* cur_soft is that (not the block's) */
     unsigned hw_draws;                 /* pictures converted straight into the caller's planes */
+    unsigned hb_not_done;              /* times a due picture was left: the HEVC block not done with it */
     uint8_t *rect_buf;                 /* a layer's rectangle of the block's picture, blended in cached memory */
     unsigned rect_size;
     int vmore;                         /* the video decoder has frames not taken yet (the queue was full) */
@@ -1549,6 +1551,8 @@ int reelcore_debug(const ReelCore *v, char *buf, int size)
     return n + snprintf(buf + n, size - n, "; SDL %s, queued %.2f s", v->stalled ? "stalled" : "playing", q);
 }
 
+static int hw_frame(const AVFrame *f);
+
 void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
 {
     ReelCore *w = (ReelCore *)v;
@@ -1568,6 +1572,18 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     st->shown = v->n_shown;
     st->late = v->dropped;
     st->late_skips = v->late_skips;
+    st->hb_not_done = v->hb_not_done;
+#ifdef REELCORE_HEVCDEC
+    if (v->cur && hw_frame(v->cur)) {          /* the block's own: conversions that waited, cleans */
+        hevcdec_stats hs;
+        hevcdec_get_stats(hevcdec_frame_decoder((const hevcdec_frame *)v->cur->data[3]), &hs);
+        st->hb_stats = 1;
+        st->hb_convert_waits = hs.convert_waits;
+        st->hb_cs_convert_wait = hs.cs_convert_wait;
+        st->hb_cache_cleans = hs.cache_cleans;
+        st->hb_cs_cache = hs.cs_cache;
+    }
+#endif
     st->narrowed = v->narrowed;
     st->decode_time = v->t_decode / 1e6;
     st->audio_time = v->t_audio / 1e6;
@@ -1911,7 +1927,8 @@ static AVFrame *hw_soft(const AVFrame *f)
         av_frame_free(&s);
         return NULL;
     }
-    hevcdec_frame_to_i420(hevcdec_frame_decoder(hf), hf, s->data, s->linesize, x, y, w, h);
+    if (hevcdec_frame_to_i420(hevcdec_frame_decoder(hf), hf, s->data, s->linesize, x, y, w, h) != HEVCDEC_OK)
+        av_frame_free(&s);                     /* (the picture can't be finished: the decoder stopped) */
     return s;
 #else
     (void)f;
@@ -2919,6 +2936,23 @@ int reelcore_update(ReelCore *v)
             take_frame(v);
             v->dropped++;
         }
+#ifdef REELCORE_HEVCDEC
+        /* The HEVC block's picture not decoded yet: converting it now would
+           wait for it (its latency, both of the block's phases one after
+           the other: 17 ms and more at 4K 10-bit), with nothing else given
+           to the block meanwhile. Behind, that's every picture, and it
+           never caught up (4K 10-bit with the stats panel: 14 a second).
+           So leave it, keep feeding the block (fill), and look again: the
+           one on screen stays a moment; if it's too late, the next one
+           due takes its place (above). At most HB_WAIT_MAX, then wait. */
+        if (v->hb && hw_frame(v->q[0]) && now - v->qpts[0] < HB_WAIT_MAX) {
+            const hevcdec_frame *hf = (const hevcdec_frame *)v->q[0]->data[3];
+            if (!hevcdec_frame_done(hevcdec_frame_decoder(hf), hf)) {
+                v->hb_not_done++;
+                goto end_check;
+            }
+        }
+#endif
         take_frame(v);
         pace_note(v);
         v->n_shown++;
@@ -4793,8 +4827,8 @@ static int hw_bands(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *c
     if (half) {
         if (hevcdec_frame_to_i420_half(d, hf, t, ts, fx, fy, w, h) != HEVCDEC_OK)
             return -1;
-    } else
-        hevcdec_frame_to_i420(d, hf, t, ts, fx, fy, w, h);
+    } else if (hevcdec_frame_to_i420(d, hf, t, ts, fx, fy, w, h) != HEVCDEC_OK)
+        return -1;
     for (int p = 0; p < 3; p++) {              /* blended in cached memory, then written once */
         int pw = p ? cw : w, ph = p ? ch : h;
         for (int y = 0; y < ph; y++) {
@@ -4860,8 +4894,7 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
             return 0;
         }
         if (!half && w <= fw && h <= fh) {
-            hevcdec_frame_to_i420(d, hf, planes, pitch, fx, fy, w, h);
-            done = 1;
+            done = hevcdec_frame_to_i420(d, hf, planes, pitch, fx, fy, w, h) == HEVCDEC_OK;
         } else if (half && w * 4 > fw && h * 4 > fh && !(fx & 3) && !(fy & 1))
             done = hevcdec_frame_to_i420_half(d, hf, planes, pitch, fx, fy, w, h) == HEVCDEC_OK;
         if (done) {

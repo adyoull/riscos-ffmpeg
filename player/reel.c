@@ -4491,6 +4491,13 @@ static void tick(void)
            draws ? (S.draw_cs - p_draw_cs) * 10.0 / draws : 0.0,
            st.deinterlaced > p.deinterlaced ? (st.deinterlace_time - p.deinterlace_time) * 1000 / (st.deinterlaced - p.deinterlaced) : 0.0,
            S.ov_waited - p_waited, S.ov_replaced - p_replaced);
+        if (st.hb_cache_cleans < p.hb_cache_cleans || st.hb_convert_waits < p.hb_convert_waits)
+            p.hb_cache_cleans = p.hb_cs_cache = p.hb_convert_waits = p.hb_cs_convert_wait = 0;   /* (a new decoder) */
+        if (st.hb_stats)                  /* the HEVC block's: pictures not done when due, conversions that waited */
+            lg("  HEVC block: %u pictures left a moment (not done when due), %u conversions waited (%u cs), "
+               "%u frames cleaned (%u cs)", st.hb_not_done - p.hb_not_done, st.hb_convert_waits - p.hb_convert_waits,
+               st.hb_cs_convert_wait - p.hb_cs_convert_wait, st.hb_cache_cleans - p.hb_cache_cleans,
+               st.hb_cs_cache - p.hb_cs_cache);
         p_waited = S.ov_waited;
         p_replaced = S.ov_replaced;
         p = st;

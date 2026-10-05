@@ -56,7 +56,29 @@ static int conv_x_off;                  /* conversions not starting at the windo
    with data[3] a hevcdec_frame, converted by the caller when shown. Here
    that frame holds FFmpeg's own decoded picture, and the conversions copy
    from it (1:1) or take its 2x2 rounded means (halved). */
-struct hevcdec_frame { AVFrame *soft; };
+struct hevcdec_frame { AVFrame *soft; double ready_at; };
+/* the block's latency (devkit 0.2.10): a picture handed out is decoded this
+   long after (fake time); converting it sooner waits until then */
+static double hb_latency;
+static int conv_waited;
+static void conv_wait(const hevcdec_frame *f)
+{
+    if (fake_time < f->ready_at) {
+        conv_waited++;
+        fake_time = f->ready_at;
+    }
+}
+int hevcdec_frame_done(hevcdec *d, const hevcdec_frame *f)
+{
+    (void)d;
+    return fake_time >= f->ready_at;
+}
+void hevcdec_get_stats(const hevcdec *d, hevcdec_stats *s)
+{
+    (void)d;
+    memset(s, 0, sizeof(*s));
+    s->convert_waits = conv_waited;
+}
 
 static void hf_free(void *opaque, uint8_t *data)
 {
@@ -78,6 +100,7 @@ static void to_hw(AVFrame *f)
     f->height = h->soft->height;
     f->buf[0] = av_buffer_create((uint8_t *)h, sizeof *h, hf_free, h, 0);
     f->data[3] = (uint8_t *)h;
+    h->ready_at = fake_time + hb_latency;
     hw_live++;
 }
 
@@ -86,11 +109,12 @@ hevcdec *hevcdec_frame_decoder(const hevcdec_frame *f)
     return f ? (hevcdec *)1 : NULL;
 }
 
-void hevcdec_frame_to_i420(hevcdec *d, const hevcdec_frame *f, uint8_t *const planes[3], const int strides[3], int x,
-                           int y, int w, int h)
+int hevcdec_frame_to_i420(hevcdec *d, const hevcdec_frame *f, uint8_t *const planes[3], const int strides[3], int x,
+                          int y, int w, int h)
 {
     const AVFrame *s = f->soft;
     (void)d;
+    conv_wait(f);
     to_i420_calls++;
     conv_px += (long)w * h;
     conv_x_off += x != 0;
@@ -99,6 +123,7 @@ void hevcdec_frame_to_i420(hevcdec *d, const hevcdec_frame *f, uint8_t *const pl
         for (int r = 0; r < ph; r++)
             memcpy(planes[p] + (size_t)r * strides[p], s->data[p] + (size_t)(py + r) * s->linesize[p] + px, pw);
     }
+    return HEVCDEC_OK;
 }
 
 int hevcdec_frame_to_i420_half(hevcdec *d, const hevcdec_frame *f, uint8_t *const planes[3], const int strides[3], int x,
@@ -106,6 +131,7 @@ int hevcdec_frame_to_i420_half(hevcdec *d, const hevcdec_frame *f, uint8_t *cons
 {
     const AVFrame *s = f->soft;
     (void)d;
+    conv_wait(f);
     to_half_calls++;
     conv_px += (long)w * h;
     conv_x_off += x != 0;
@@ -337,8 +363,10 @@ static void set_panel(ReelCore *v)
 
 static double seek_at = -1, seek_to, slow;   /* slow: the time each picture shown takes */
 
+static double hiccup_at = -1;               /* the desktop busy 0.3 s this far in: the queue empties */
 static void play(const char *clip, int flags, run_t *out)
 {
+    int hiccuped = 0;
     ReelCore *v;
     ReelCoreStats st;
     int r = 0;
@@ -353,6 +381,10 @@ static void play(const char *clip, int flags, run_t *out)
     if (panel_on > 0)
         set_panel(v);
     for (int i = 0; i < 40000 && r != REELCORE_END && fake_time - t0 < 30; i++) {
+        if (hiccup_at >= 0 && !hiccuped && fake_time - t0 > hiccup_at) {
+            fake_time += 0.3;
+            hiccuped = 1;
+        }
         r = reelcore_update(v);
         if (seek_at >= 0 && reelcore_position(v) >= seek_at) {
             reelcore_seek(v, seek_to);
@@ -562,8 +594,35 @@ int main(int argc, char **argv)
                           "%ld of %ld pixels converted, %d not from x 0", k, how[draw_mode], r2.drawn, r1.drawn, r2.crc, r1.crc,
                           r0.crc, to_i420_calls - c0, to_half_calls - h0, half_refused, conv_px, drawn_px, conv_x_off);
                 }
+            /* the block's latency 0.06 s (fine while pictures are queued
+               0.16 s ahead), and the desktop busy for 0.3 s 0.5 s in: the
+               queue empties, and the picture due is the one just handed
+               out. Converting it then would wait for it (its latency, with
+               nothing given to the block meanwhile: on the Pi, 4K 10-bit
+               with the panel went to 14 a second and stayed there); a due
+               picture not yet done is left a moment instead, and the block
+               fed. So no conversion waits (but the first picture's) */
+            {
+                run_t r3;
+                int w0;
+                ReelCoreStats st0;
+                (void)st0;
+                draw_mode = 2;
+                hb_latency = 0.06;
+                hiccup_at = 0.5;
+                conv_waited = 0;
+                play(argv[2], 0, &r3);
+                w0 = conv_waited;
+                hb_latency = 0;
+                hiccup_at = -1;
+                printf("  HEVC block, 0.06 s latency, a 0.3 s stall: %u drawn, %d conversions waited, end %d\n",
+                       r3.drawn, w0, r3.end);
+                CHECK(r3.drawn > 10 && w0 <= 1 && r3.end && !hw_live,
+                      "HEVC block not done when due: %u drawn, %d conversions waited (want at most the first's), end %d, "
+                      "%d held", r3.drawn, w0, r3.end, hw_live);
+            }
             draw_mode = 0;
-            asked_hb -= 7;                       /* (seven more uses of the block above) */
+            asked_hb -= 8;                       /* (eight more uses of the block above) */
         }
 #endif
         refuse_open = 1;

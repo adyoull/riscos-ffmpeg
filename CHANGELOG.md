@@ -67,6 +67,18 @@ Reel and ReelEGL:
   before). reel_test.
 - **Reel: the bars beside a picture drawn and plotted once**, not with
   every picture. reel_test.
+- **The HEVC block falling behind no longer locks into a slow crawl**
+  (opt4, devkit 0.2.10): a due picture the block hasn't finished is left
+  a moment (`hevcdec_frame_done`) rather than converted, which waited
+  for it with nothing else given to the block: 4K 10-bit at 60 fps with
+  the stats panel dropped to 14 pictures a second and stayed there. The
+  log has the block's own figures once a second (pictures left,
+  conversions that waited, cache cleans). vc_test: a stall with the
+  block's latency, no conversion waits.
+- **Devkit 0.2.10** (hevcdec 0.1.11, with 0.1.10's audit fixes): a
+  use-after-free and a DPB overrun in hevc_hwdec, size changes part way,
+  the brightest pixels of halved 10-bit no longer black, each frame's
+  cache cleaned once; patch 0023 is its new hevc_hwdec patch.
 - **The stats panel over the HEVC block's pictures: one conversion call
   a picture** (opt3): converted into cached memory, the panel blended
   there, then written to the overlay. hevcdec cleans and invalidates the
