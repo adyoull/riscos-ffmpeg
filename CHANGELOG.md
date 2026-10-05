@@ -3,11 +3,40 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next FFmpeg and Reel): fixes from the code audit (2026-10-04)
+## 5.1.10-riscos18 (2026-10-05): fixes from a code audit
 
 From a code audit of everything ours (reelcore, Reel, !FFmpeg's front
 end, the FFmpeg patches), each change then peer reviewed. Each fix has a
 host test that fails without it, unless said.
+
+- **HEVC on the ARM no longer crashes on some streams** (patch 0016).
+  Chroma whole-sample copies with uni-prediction used luma's NEON copies,
+  which take 4 rows a pass; a 4:2:0 chroma block can be 2 or 6 rows (8x4,
+  16x4 and 16x12 blocks, as x265's slower presets and many hardware
+  encoders make), and the copy ran on down the picture. Those now use the
+  C's row copies. hevc_epel_test: every width at every chroma height.
+- **!FFmpeg's Convert window no longer deletes a finished conversion**
+  because ffmpeg printed decoder messages along the way (a DVB recording
+  starting part way: "no frame!"). Success is ffmpeg reaching the end and
+  its exit status 0 (the Obey file echoes Sys$ReturnCode after it).
+  convert_test.
+- **Convert: the Options field takes spaces** ("-vf hflip"); **quitting
+  while converting** stops ffmpeg and deletes the unfinished file (it
+  waits up to 10 s for the task window to end); Stop before ffmpeg had
+  started is no longer lost; an existing directory of the output's name
+  isn't replaced (or deleted), an image file is asked about; the same
+  file as the source is found whatever the case; !Help's text for the
+  Options field fits a message. convert_test (not the directory, Stop
+  early and !Help parts).
+- For riscos-reelhwaccel (patch 0023, theirs): two hevc_hwdec defects
+  handed over (a use-after-free when its frames outlive the decoder, and
+  more than 16 DPB entries written from a bad stream). For riscos-mesa
+  (the SDL2 overlay, theirs): mode changes, Wimp_ProcessKey and a second
+  window, handed over.
+- The reelcore fixes below are in the devkit's libreelcore and the EGL
+  examples too.
+
+## Reel 0.1.25 (2026-10-05): fixes from a code audit
 
 - **HEVC on the ARM no longer crashes on some streams** (patch 0016).
   Chroma whole-sample copies with uni-prediction used luma's NEON copies,
@@ -31,19 +60,6 @@ host test that fails without it, unless said.
   character that can't start a value). sources_test.
 - **The window menu's Picture submenu works again** (Fit, Fill, Original,
   Stretch: they were items 4 to 7, below four blank ones). reel_test.
-- **!FFmpeg's Convert window no longer deletes a finished conversion**
-  because ffmpeg printed decoder messages along the way (a DVB recording
-  starting part way: "no frame!"). Success is ffmpeg reaching the end and
-  its exit status 0 (the Obey file echoes Sys$ReturnCode after it).
-  convert_test.
-- **Convert: the Options field takes spaces** ("-vf hflip"); **quitting
-  while converting** stops ffmpeg and deletes the unfinished file (it
-  waits up to 10 s for the task window to end); Stop before ffmpeg had
-  started is no longer lost; an existing directory of the output's name
-  isn't replaced (or deleted), an image file is asked about; the same
-  file as the source is found whatever the case; !Help's text for the
-  Options field fits a message. convert_test (not the directory, Stop
-  early and !Help parts).
 - **Reel: the sound is set up again when it changes part way** (a DVB
   recording going from 5.1 to stereo, or 48 to 22.05 kHz: it played at
   the wrong speed, or read channels the sound didn't have).
@@ -76,11 +92,6 @@ host test that fails without it, unless said.
   block's conversion fails part way; the subtitle cache key can't collide;
   out of memory for the first subtitle; Media info's title is the new
   file's; the stats panel reads a new video's details afresh.
-- For riscos-reelhwaccel (patch 0023, theirs): two hevc_hwdec defects
-  handed over (a use-after-free when its frames outlive the decoder, and
-  more than 16 DPB entries written from a bad stream). For riscos-mesa
-  (the SDL2 overlay, theirs): mode changes, Wimp_ProcessKey and a second
-  window, handed over.
 
 ## 5.1.10-riscos17 (2026-10-04): HEVC on the Raspberry Pi 4's HEVC block
 
