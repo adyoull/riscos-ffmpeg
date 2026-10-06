@@ -71,8 +71,25 @@ Reel and ReelEGL:
   rectangle goes through cached memory** (opt6); the rest is converted
   straight into the overlay, every part from one of the block's columns.
   All of it through cached memory (opt3) took 4K 10-bit from 9.5 to
-  18 ms a picture. While a picture waits for the block, Reel looks again
-  every 10 ms rather than thousands of times a second. vc_test.
+  18 ms a picture. vc_test.
+- **A hardware decoder that only just keeps up, with no sound, catches
+  up again** (opt7): the HEVC block decodes every picture, so skipping
+  can't make up time, and 4K 10-bit at 60 fps once behind (turning the
+  stats panel on was enough) stayed a few tenths behind for good, nearly
+  every picture given back unconverted: 9 shown a second. Behind by
+  0.1 s with nothing in hand for 0.5 s, the clock is moved back to a
+  little before the next picture, so some are decoded in hand again; the
+  log counts these "clock slips". (With sound the clock can't move: the
+  block would have to skip.) While a picture waits for the block, Reel
+  looks again at once: sleeping 10 ms (opt6) gave the block nothing
+  meanwhile. vc_test: the block only just keeping up with its latency, a
+  stall: one slip, then every picture on time (without it, 55 of 150
+  shown); no sleeps while a picture waits.
+- **ReelEGL full screen with Vsync doesn't wait in the swap** with
+  riscos-mesa 20.3.5-13 (`eglSwapWouldWaitRISCOS` now answers for the
+  full screen sprite plot): the picture is converted, then swapped once
+  the vsync is under 3 ms away, as Reel's sprite. 20.3.5-12 always says
+  the swap wouldn't wait, so nothing changes until then. reel_test.
 - **The HEVC block falling behind no longer locks into a slow crawl**
   (opt4, devkit 0.2.10): a due picture the block hasn't finished is left
   a moment (`hevcdec_frame_done`) rather than converted, which waited

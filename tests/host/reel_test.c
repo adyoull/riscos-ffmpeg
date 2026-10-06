@@ -53,9 +53,7 @@ const uint8_t *reel_test_sprite(int *w, int *h, int *rows);
 #define FRAMES_DRAWN updates
 #endif
 int reel_test_fullscreen(void);
-#ifndef REEL_EGL
 int reel_test_waiting(void);
-#endif
 int reel_test_pic_flags(void);
 int reel_test_ab(double *a, double *b);
 const char *reel_test_panel(void);
@@ -584,6 +582,40 @@ static int next_event(int *b)
                 printf("  full screen, Vsync: a picture waited for the refresh without blocking; then just the picture plotted"
                        " (%d wide of %d)\n", (full_upd[2] - full_upd[0]) / 2, SCR_W);
             }
+#else
+            /* ReelEGL, full screen, Vsync, riscos-mesa 20.3.5-13: the swap
+               would wait for the vsync (eglSwapWouldWaitRISCOS), so the
+               picture is converted and left, not swapped, and Reel doesn't
+               sleep; swapped once it wouldn't wait. (20.3.5-12 always says
+               it wouldn't: swapped at once, as in the other phases.) */
+            static int sw0, a0, waited, filled, tries;
+            if (phase_step == 0) { filled = waited = tries = 0; }
+            if (filled < 30) { filled++; phase_step = 1; fake_time += 0.002; return 0; }   /* pictures decoded ahead first */
+            if (filled == 30) { filled++; fake_swap_would_wait = 1; a0 = fake_would_wait_asks; }
+            if (!waited) {                                            /* until a picture comes and waits */
+                if (reel_test_waiting()) {
+                    waited = phase_step = 1;
+                    sw0 = fake_swaps;
+                } else {
+                    CHECK(tries++ < 40, "ReelEGL full screen, the swap would wait: no picture waiting for it");
+                    if (tries > 40) { fake_swap_would_wait = 0; break; }
+                    fake_time += 0.002;
+                    return 0;
+                }
+            }
+            if (phase_step++ < 4) { fake_time += 0.005; return 0; }      /* 15 ms more */
+            if (phase_step == 5) {
+                CHECK(reel_test_waiting(), "the swap would wait: the picture no longer waiting");
+                CHECK(fake_swaps == sw0, "the swap would wait: swapped %d times (want none)", fake_swaps - sw0);
+                CHECK(!last_poll_idle, "a picture waiting for the swap, yet ReelEGL slept");
+                fake_swap_would_wait = 0;                             /* the vsync close */
+                fake_time += 0.005;
+                return 0;
+            }
+            CHECK(fake_swaps > sw0 && !reel_test_waiting(), "the swap wouldn't wait now: %d swaps, still waiting %d",
+                  fake_swaps - sw0, reel_test_waiting());
+            printf("  ReelEGL full screen, Vsync: a picture waited for the swap without blocking (asked %d times), then swapped\n",
+                   fake_would_wait_asks - a0);
 #endif
             break;
         }

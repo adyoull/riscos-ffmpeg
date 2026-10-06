@@ -154,6 +154,9 @@ EGLBoolean eglSwapBuffers(EGLDisplay d, EGLSurface s)
     return EGL_TRUE;
 }
 EGLBoolean eglRedrawWindowRISCOS(EGLDisplay d, int *block) { return EGL_TRUE; }
+/* riscos-mesa 20.3.5-13: whether a swap now would wait for the vsync */
+int fake_swap_would_wait, fake_would_wait_asks;
+EGLBoolean eglSwapWouldWaitRISCOS(EGLDisplay d, EGLSurface s) { fake_would_wait_asks++; return fake_swap_would_wait ? EGL_TRUE : EGL_FALSE; }
 EGLBoolean eglPlotSurfaceRISCOS(EGLDisplay d, EGLSurface s, const int *block)
 {
     if (!mem) return EGL_FALSE;

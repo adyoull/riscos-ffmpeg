@@ -597,6 +597,11 @@ static void format_time(char *buf, size_t n, double s)
 
 /* ---- the picture sprite ------------------------------------------------ */
 
+/* Full screen with Vsync: the picture converted (into the sprite, or the
+   EGL surface), waiting for the screen's next refresh to be plotted
+   (show_frame_now) */
+static struct { int ready, vsync, cs, now; } spw;
+
 #ifndef REEL_EGL   /* the Reel build: a sprite plotted with OS_SpriteOp */
 /* On the Pi small sprites weren't always replotted with their new contents
    (riscos-mesa found this); sprites of 1 MB or more always were, so pad
@@ -609,9 +614,6 @@ static void format_time(char *buf, size_t n, double s)
    a picture). key: what they were drawn for; shown: plotted since. */
 static struct { int key[5], drawn, shown; } bars;
 
-/* Full screen with Vsync: the picture converted into the sprite, waiting
-   for the screen's next refresh to be plotted (show_frame_now) */
-static struct { int ready, vsync, cs, now; } spw;
 
 static void sprite_free(void)
 {
@@ -751,6 +753,7 @@ static void surf_free(void)
     if (S.surf != EGL_NO_SURFACE)
         eglDestroySurface(S.dpy, S.surf);
     S.surf = EGL_NO_SURFACE;
+    spw.ready = 0;
     S.surf_w = S.surf_h = 0;
     S.have_frame = 0;
 }
@@ -822,6 +825,7 @@ static void pic_refresh(void)
 #ifdef REEL_EGL
     if (!S.v || S.surf == EGL_NO_SURFACE)
         return;
+    spw.ready = 0;
     if (ffegl_draw_surface(S.v, S.dpy, S.surf, 0, 0, 0, 0, pic_flags_of[S.pic_mode]) == 0) {
         eglSwapBuffers(S.dpy, S.surf);
         S.have_frame = 1;
@@ -1586,9 +1590,7 @@ static void show_frame(void)
 {
     if (S.ov_pending)
         S.ov_replaced++;                /* two pictures before one refresh: the newer one wins */
-#ifndef REEL_EGL
     spw.ready = 0;                      /* (and is converted afresh) */
-#endif
     S.ov_pending = 1;
     show_pending();
     if (S.ov_pending)
@@ -1599,6 +1601,27 @@ static void show_frame(void)
 static int show_frame_now(void)
 {
 #ifdef REEL_EGL
+    if (S.fullscreen && S.vsync && !reelcore_paused(S.v) && S.surf != EGL_NO_SURFACE) {
+        /* Full screen, Vsync: the swap plots the picture just after the
+           vsync, waiting for it (up to a whole refresh, on the only core).
+           riscos-mesa 20.3.5-13 says whether it would wait
+           (eglSwapWouldWaitRISCOS: yes unless the vsync is under 3 ms
+           away): converted now, swapped once it wouldn't, tick() looking
+           often meanwhile, as the sprite's (20.3.5-12 says no: swapped at
+           once, as before). Swapped anyway after 50 ms. */
+        if (!spw.ready) {
+            if (ffegl_draw_surface(S.v, S.dpy, S.surf, 0, 0, 0, 0, pic_flags_of[S.pic_mode]) != 0)
+                return 0;
+            spw.ready = 1;
+            spw.cs = now_cs();
+        }
+        if (!spw.now && now_cs() - spw.cs < 5 && eglSwapWouldWaitRISCOS(S.dpy, S.surf))
+            return 1;
+        spw.ready = 0;
+        eglSwapBuffers(S.dpy, S.surf);
+        S.have_frame = 1;
+        return 0;
+    }
     pic_refresh();                      /* ffegl_draw_surface + eglSwapBuffers */
     return 0;
 #else
@@ -4283,10 +4306,8 @@ static void toggle_pause(void)
     } else
         reelcore_pause(S.v, !reelcore_paused(S.v));
     lg("%s at %.2f", reelcore_paused(S.v) ? "pause" : "play", reelcore_position(S.v));
-#ifndef REEL_EGL
     if (reelcore_paused(S.v) && spw.ready && S.ov_pending)
         show_pending();                 /* the picture waiting for the refresh: now (no nulls while paused) */
-#endif
     if (reelcore_paused(S.v))
         ov_hide_and_draw();             /* paused: an ordinary window, which menus can cover */
     if (S.info_open) {                  /* no null events while paused: show where it stopped */
@@ -4402,7 +4423,6 @@ static void tick(void)
         opening_tick();
     if (!S.v || S.ended)
         return;
-#ifndef REEL_EGL
     if (spw.ready && S.ov_pending) {
         /* a picture waiting for the refresh (full screen, Vsync): plotted
            as soon as it comes, so while there are pictures in hand the
@@ -4416,14 +4436,15 @@ static void tick(void)
             /* few pictures in hand: decoding first (10-20 ms at 1080p)
                would plot it well into the refresh, tearing: wait for the
                refresh here, as before, then decode */
+#ifndef REEL_EGL
             r.r[0] = 19;                /* OS_Byte 19 */
             swi(0x06, &r);
+#endif                                  /* (EGL: the swap waits) */
             spw.now = 1;
             show_pending();
             spw.now = 0;
         }
     }
-#endif
     r2 = reelcore_update(S.v);
     S.log_nulls++;
     S.st_nulls++;
@@ -4982,9 +5003,7 @@ const uint8_t *reel_test_sprite(int *w, int *h, int *rows)
 }
 #endif
 int reel_test_fullscreen(void) { return S.fullscreen; }
-#ifndef REEL_EGL
 int reel_test_waiting(void) { return spw.ready && S.ov_pending; }   /* a picture waiting for the refresh */
-#endif
 int reel_test_pic_flags(void) { return pic_flags_of[S.pic_mode]; }
 int reel_test_ab(double *a, double *b) { *a = S.ab_a; *b = S.ab_b; return S.ab; }
 int reel_test_list(int *n) { *n = S.list_n; return S.list_i; }

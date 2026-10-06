@@ -68,6 +68,9 @@ static void cur_changed(ReelCore *v);
 #define LATE_KEYS     1.5    /* this far: decode only keyframes, */
 #define LATE_OK       0.05   /* until this close again */
 #define HB_WAIT_MAX   0.25   /* the HEVC block's picture not done: left this long at most (reelcore_update) */
+#define SLIP_LATE     0.1    /* a hardware decoder, no sound: this far behind with nothing in hand, */
+#define SLIP_AFTER    0.5    /* for this long: the timer moved back to the next picture (slip_check), */
+#define SLIP_AHEAD    0.15   /* and this much more: time to decode some in hand again */
 /* Deblocking turned off by itself: when pictures take longer to decode
    than FAST_SLOW of the time between them (or they're LATE_FAST behind
    and take over FAST_BUSY: a hiccup on a video that decodes easily, going
@@ -217,7 +220,10 @@ struct ReelCore {
     int soft_narrowed;                 /* cur_soft is that (not the block's) */
     unsigned hw_draws;                 /* pictures converted straight into the caller's planes */
     unsigned hb_not_done;              /* times a due picture was left: the HEVC block not done with it */
-    int hb_wait;                       /* one is being left now (reelcore_idle_time: look again in 10 ms) */
+    int hb_wait;                       /* one is being left now (reelcore_idle_time: look again soon) */
+    int64_t behind_since;              /* slip_check: behind since (av_gettime_relative), 0 if not */
+    int slip;                          /* ... long enough: the timer to be moved back to the next picture */
+    unsigned clock_slips;              /* times it was */
     uint8_t *rect_buf;                 /* a layer's rectangle of the block's picture, blended in cached memory */
     unsigned rect_size;
     int vmore;                         /* the video decoder has frames not taken yet (the queue was full) */
@@ -1519,12 +1525,12 @@ int reelcore_debug(const ReelCore *v, char *buf, int size)
              : v->audio_clock && v->audio_end >= 0 ? v->audio_end - (q + v->latency) * v->speed
              : (av_gettime_relative() - v->t0) / 1e6 * v->speed;
     int n = snprintf(buf, size, "pos %.2f clock %.2f%s, %d pictures and %d packets (%u KB) waiting, "
-                     "%u late%s, %u skip spells, %u late skips",
+                     "%u late%s, %u skip spells, %u late skips, %u clock slips",
                      reelcore_position(v), c,
                      v->paused ? " (paused)" : v->audio_clock ? " (sound)" : " (timer)", v->qn,
                      v->vpk_n, (unsigned)(v->vpk_bytes >> 10), v->dropped,
                      v->skipping == 2 ? ", keyframes only" : v->skipping ? ", skipping non-reference frames" : "",
-                     v->skip_spells, v->late_skips);
+                     v->skip_spells, v->late_skips, v->clock_slips);
     if (n >= size)
         return n;
     if (v->net) {
@@ -1573,6 +1579,7 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     st->shown = v->n_shown;
     st->late = v->dropped;
     st->late_skips = v->late_skips;
+    st->clock_slips = v->clock_slips;
     st->hb_not_done = v->hb_not_done;
 #ifdef REELCORE_HEVCDEC
     if (v->cur && hw_frame(v->cur)) {          /* the block's own: conversions that waited, cleans */
@@ -2651,12 +2658,48 @@ static void vc_drop(ReelCore *v)
     AVRational tb = v->vst->time_base;
     if (v->seek_target >= 0 && !v->bstep)
         before = v->seek_target - 0.001;     /* (queue_picture throws those away) */
-    else if (!v->paused && v->cur && !v->need_first && v->seek_target < 0)
+    else if (!v->paused && v->cur && !v->need_first && v->seek_target < 0 && !v->slip)
         before = clock_now(v) - 2.0 / (v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
     if (before > 0 && tb.num > 0)
         want = (int64_t)floor(before / av_q2d(tb));
     if (want != v->vc_drop && av_opt_set_int(v->vdec, "drop_before", want, AV_OPT_SEARCH_CHILDREN) >= 0)
         v->vc_drop = want;
+}
+
+/* A hardware decoder (h264_vchiq, hevc_hwdec) decodes every picture, so
+   skipping can't make up time: one that only just keeps up (the HEVC block
+   with 4K 10-bit at 60 fps) never caught up once behind. Pictures came out
+   a few tenths late, nearly all given back unconverted (drop_before) and
+   the rest shown: 4K 10-bit with the stats panel, 9 a second for good
+   after a moment's hold-up. With no sound to keep to, behind by SLIP_LATE
+   with nothing in hand for SLIP_AFTER, the timer is moved back instead:
+   nothing more is given back, and the next picture out is shown on time
+   (a pause, as the sound-less pictures were held up anyway). With sound,
+   the decoder must skip (hevc_hwdec: not yet). */
+static void slip_check(ReelCore *v, double now)
+{
+    int64_t t = av_gettime_relative();
+    double last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
+    if (!(v->vc || v->hb) || v->audio_clock || v->paused || v->need_first || v->seek_target >= 0 || v->bstep ||
+        !v->cur || now - last < SLIP_LATE) {
+        v->behind_since = 0;
+        v->slip = 0;
+        return;
+    }
+    if (!v->behind_since)
+        v->behind_since = t;
+    if (!v->slip && t - v->behind_since >= (int64_t)(SLIP_AFTER * 1e6)) {
+        v->slip = 1;
+        vc_drop(v);                        /* (nothing more given back) */
+    }
+    if (v->slip && v->qn) {
+        av_log(NULL, AV_LOG_VERBOSE, "reelcore: %.2f s behind with nothing in hand: the clock moved back\n", now - last);
+        timer_set(v, v->qpts[0] - SLIP_AHEAD);
+        v->clock_slips++;
+        v->slip = 0;
+        v->behind_since = 0;
+        vc_drop(v);
+    }
 }
 
 static void check_late(ReelCore *v, const AVPacket *p)
@@ -2924,6 +2967,8 @@ int reelcore_update(ReelCore *v)
         return REELCORE_SAME_FRAME;
 
     now = clock_now(v);
+    slip_check(v, now);
+    now = clock_now(v);
     if (v->qn && v->qpts[0] <= now + 0.005) {
         /* skip the frames that are already late: those whose next is due
            more than a picture's time ago. A picture that took longer than
@@ -3002,11 +3047,12 @@ static double reelcore_idle_time_play(ReelCore *v)
         return IDLE_MAX;
     if (v->need_first)
         return 0;
-    /* a picture due, left for the HEVC block to finish: looked at again in
-       10 ms rather than at once (thousands of times a second, on the Pi,
-       each going through the decoder and the block's phases) */
+    /* a picture due, left for the HEVC block to finish: looked at again at
+       once. Reel's sleeps are whole centiseconds, and while it's asleep
+       nothing is given to the block: 10 ms each time took 4K 10-bit with
+       the stats panel from 12-18 pictures a second to 9 (0.1.25-opt6) */
     if (v->hb_wait && v->qn)
-        return 0.01;
+        return 0;
     /* pictures still to decode */
     if (v->qn < pics_wanted(v) && (v->vpk_n || !v->eof_demux || !v->vflushed || v->vmore))
         return 0;
