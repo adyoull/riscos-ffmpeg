@@ -217,6 +217,7 @@ struct ReelCore {
     int soft_narrowed;                 /* cur_soft is that (not the block's) */
     unsigned hw_draws;                 /* pictures converted straight into the caller's planes */
     unsigned hb_not_done;              /* times a due picture was left: the HEVC block not done with it */
+    int hb_wait;                       /* one is being left now (reelcore_idle_time: look again in 10 ms) */
     uint8_t *rect_buf;                 /* a layer's rectangle of the block's picture, blended in cached memory */
     unsigned rect_size;
     int vmore;                         /* the video decoder has frames not taken yet (the queue was full) */
@@ -2949,9 +2950,11 @@ int reelcore_update(ReelCore *v)
             const hevcdec_frame *hf = (const hevcdec_frame *)v->q[0]->data[3];
             if (!hevcdec_frame_done(hevcdec_frame_decoder(hf), hf)) {
                 v->hb_not_done++;
+                v->hb_wait = 1;
                 goto end_check;
             }
         }
+        v->hb_wait = 0;
 #endif
         take_frame(v);
         pace_note(v);
@@ -2999,6 +3002,11 @@ static double reelcore_idle_time_play(ReelCore *v)
         return IDLE_MAX;
     if (v->need_first)
         return 0;
+    /* a picture due, left for the HEVC block to finish: looked at again in
+       10 ms rather than at once (thousands of times a second, on the Pi,
+       each going through the decoder and the block's phases) */
+    if (v->hb_wait && v->qn)
+        return 0.01;
     /* pictures still to decode */
     if (v->qn < pics_wanted(v) && (v->vpk_n || !v->eof_demux || !v->vflushed || v->vmore))
         return 0;
@@ -4805,38 +4813,80 @@ static int hw_layers(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *
 #endif
 
 #ifdef REELCORE_HEVCDEC
-/* The block's frame with layers over it (the stats panel, subtitles):
-   converted with ONE call into cached memory, the layers blended there,
-   and all of it written to the overlay. hevcdec cleans and invalidates
-   the cache over the whole frame (17 MB at 4K 10-bit) at the start of
-   every conversion call, so each extra call cost a whole frame's cache
-   maintenance: converting the layers' rectangle again (hw_layers), or in
-   bands, took 4K 10-bit with the panel on to 45-50 ms a picture. The
-   extra cost now is a memcpy of the picture into the overlay, which is
-   only written. -1 if the block refused or no memory (nothing written;
-   the caller draws it another way). */
+/* One part of the block's frame (x, y, w x h of the output, x and y even)
+   into planes at that part's top left */
+static int hw_part(hevcdec *d, const hevcdec_frame *hf, uint8_t *const planes[3], const int pitch[3], int fx, int fy,
+                   int half, int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0)
+        return HEVCDEC_OK;
+    return half ? hevcdec_frame_to_i420_half(d, hf, planes, pitch, fx + 2 * x, fy + 2 * y, w, h)
+                : hevcdec_frame_to_i420(d, hf, planes, pitch, fx + x, fy + y, w, h);
+}
+
+/* The block's frame with layers over it (the stats panel, subtitles),
+   each pixel converted once: the layers' rectangle (widened to the
+   block's 128-pixel columns) into cached memory, blended there and
+   written to the overlay; everything else straight into the overlay.
+   Converting all of it into cached memory and copying it over (opt3)
+   took 4K 10-bit from 9.5 to 18 ms a picture (twice the memory traffic,
+   which the block's own decoding shares). The overlay is only written.
+   (hevcdec 0.1.11 cleans a frame's cache once however many calls.) -1 if
+   the block refused or no memory (the caller draws it another way). */
 static int hw_bands(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *const planes[3], const int pitch[3],
                     int w, int h, int fx, int fy, int half, const Place *pl, int nl)
 {
-    int cw = (w + 1) / 2, ch = (h + 1) / 2, ts[3] = { w, cw, cw };
-    uint8_t *t[3];
-    av_fast_malloc(&v->rect_buf, &v->rect_size, (size_t)w * h + 2 * (size_t)cw * ch);
-    if (!v->rect_buf)
-        return -1;
-    t[0] = v->rect_buf; t[1] = t[0] + (size_t)w * h; t[2] = t[1] + (size_t)cw * ch;
-    if (half) {
-        if (hevcdec_frame_to_i420_half(d, hf, t, ts, fx, fy, w, h) != HEVCDEC_OK)
+    int x0 = w, y0 = h, x1 = 0, y1 = 0, col = half ? 64 : 128, rw, rh, cw, ch, ts[3];
+    uint8_t *t[3] = { NULL, NULL, NULL };
+    for (int i = 0; i < nl; i++) {
+        const Layer *L = pl[i].L;
+        int a = FFMAX(0, pl[i].x0), b = FFMAX(0, pl[i].y0);
+        int c = FFMIN(w, pl[i].x0 + (int)(L->w * pl[i].sx + 0.5) + 1);
+        int e = FFMIN(h, (int)ceil(pl[i].y0 + L->h * pl[i].sy) + 1);
+        if (a < c && b < e) {
+            x0 = FFMIN(x0, a); y0 = FFMIN(y0, b);
+            x1 = FFMAX(x1, c); y1 = FFMAX(y1, e);
+        }
+    }
+    if (x0 >= x1 || y0 >= y1)
+        x0 = y0 = x1 = y1 = 0;                 /* (all off the picture) */
+    x0 = x0 / col * col;                       /* (the block's columns: whole ones are its quick path) */
+    x1 = FFMIN(w, (x1 + col - 1) / col * col);
+    x1 = x0 + ((x1 - x0) & ~1);
+    y0 &= ~1;
+    y1 = FFMIN(h, (y1 + 1) & ~1);
+    rw = x1 - x0; rh = y1 - y0;
+    cw = (rw + 1) / 2; ch = (rh + 1) / 2;
+    ts[0] = rw; ts[1] = ts[2] = cw;
+    if (rw > 0 && rh > 0) {                    /* the layers' rectangle: into cached memory first */
+        av_fast_malloc(&v->rect_buf, &v->rect_size, (size_t)rw * rh + 2 * (size_t)cw * ch);
+        if (!v->rect_buf)
             return -1;
-    } else if (hevcdec_frame_to_i420(d, hf, t, ts, fx, fy, w, h) != HEVCDEC_OK)
-        return -1;
-    for (int p = 0; p < 3; p++) {              /* blended in cached memory, then written once */
-        int pw = p ? cw : w, ph = p ? ch : h;
+        t[0] = v->rect_buf; t[1] = t[0] + (size_t)rw * rh; t[2] = t[1] + (size_t)cw * ch;
+        if (hw_part(d, hf, t, ts, fx, fy, half, x0, y0, rw, rh) != HEVCDEC_OK)
+            return -1;                         /* (nothing written yet) */
+    }
+    {   /* the rest straight in: above, below, left and right of it */
+        const int part[4][4] = { { 0, 0, w, y0 }, { 0, y1, w, h - y1 }, { 0, y0, x0, rh }, { x1, y0, w - x1, rh } };
+        for (int k = 0; k < 4; k++) {
+            int px = part[k][0], py = part[k][1];
+            uint8_t *o[3];
+            if (part[k][2] <= 0 || part[k][3] <= 0)
+                continue;
+            for (int p = 0; p < 3; p++)
+                o[p] = planes[p] + (size_t)(p ? py / 2 : py) * pitch[p] + (p ? px / 2 : px);
+            if (hw_part(d, hf, o, pitch, fx, fy, half, px, py, part[k][2], part[k][3]) != HEVCDEC_OK)
+                return -1;                     /* (the caller draws all of it again) */
+        }
+    }
+    for (int p = 0; p < 3 && rw > 0 && rh > 0; p++) {   /* the rectangle: blended, then written once */
+        int ox = p ? x0 / 2 : x0, oy = p ? y0 / 2 : y0, pw = p ? cw : rw, ph = p ? ch : rh;
         for (int y = 0; y < ph; y++) {
             uint8_t *row = t[p] + (size_t)y * ts[p];
-            for (int i = 0; i < nl; i++)
-                if (layer_touches(&pl[i], p, y))
-                    layer_blend_row(&pl[i], row, p, y, pw);
-            memcpy(planes[p] + (size_t)y * pitch[p], row, pw);
+            for (int i = 0; i < nl; i++)       /* (the row as if the plane's: x from 0) */
+                if (layer_touches(&pl[i], p, oy + y))
+                    layer_blend_row(&pl[i], row - ox, p, oy + y, ox + pw);
+            memcpy(planes[p] + (size_t)(oy + y) * pitch[p] + ox, row, pw);
         }
     }
     return 0;
