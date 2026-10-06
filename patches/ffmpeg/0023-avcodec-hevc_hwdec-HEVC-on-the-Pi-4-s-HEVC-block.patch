@@ -1,4 +1,4 @@
-From 3416bb048a893769af28aba3c2aa9e92ab3c5230 Mon Sep 17 00:00:00 2001
+From 628aae4271aefd478926a9deedc329703ba53e6c Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Sat, 3 Oct 2026 08:43:26 +0100
 Subject: [PATCH] avcodec: hevc_hwdec, HEVC on the Raspberry Pi 4's HEVC block
@@ -14,12 +14,12 @@ given out as YUV420P frames (YUV420P10 for 10-bit streams).
  configure               |   8 +
  libavcodec/Makefile     |   1 +
  libavcodec/allcodecs.c  |   1 +
- libavcodec/hevc_hwdec.c | 968 ++++++++++++++++++++++++++++++++++++++++
+ libavcodec/hevc_hwdec.c | 992 ++++++++++++++++++++++++++++++++++++++++
  libavcodec/hevcdec.c    |  10 +
  libavcodec/hwaccels.h   |   1 +
  libavutil/pixdesc.c     |   4 +
  libavutil/pixfmt.h      |   6 +
- 8 files changed, 999 insertions(+)
+ 8 files changed, 1023 insertions(+)
  create mode 100644 libavcodec/hevc_hwdec.c
 
 diff --git a/configure b/configure
@@ -95,10 +95,10 @@ index 5014510..8c7dd31 100644
  extern const FFCodec ff_hevc_v4l2m2m_decoder;
 diff --git a/libavcodec/hevc_hwdec.c b/libavcodec/hevc_hwdec.c
 new file mode 100644
-index 0000000..55652ca
+index 0000000..dbf28f8
 --- /dev/null
 +++ b/libavcodec/hevc_hwdec.c
-@@ -0,0 +1,968 @@
+@@ -0,0 +1,992 @@
 +/*
 + * hevc_hwdec: HEVC decoded by the Raspberry Pi 4's HEVC block on RISC OS
 + * (hevcdec, from riscos-reelhwaccel), as two parts:
@@ -231,6 +231,7 @@ index 0000000..55652ca
 +    int64_t drop_before;        /* pictures with an earlier pts (pkt_timebase) are decoded but not converted or given out */
 +    int output_hw;              /* frames given out unconverted (AV_PIX_FMT_HEVCDEC): the caller converts them */
 +    unsigned dropped;
++    int64_t skipped;            /* non-reference pictures not given to the block (skip_frame >= AVDISCARD_NONREF) */
 +} HWDecContext;
 +
 +typedef struct HWDecPicture {
@@ -823,6 +824,8 @@ index 0000000..55652ca
 +    HWDecContext *w = avctx->priv_data;
 +    if (w->dropped)
 +        av_log(avctx, AV_LOG_VERBOSE, "%u late pictures decoded but not converted (drop_before)\n", w->dropped);
++    if (w->skipped)
++        av_log(avctx, AV_LOG_VERBOSE, "%"PRId64" non-reference pictures skipped (skip_frame)\n", w->skipped);
 +    av_frame_free(&w->hwf);
 +    av_frame_free(&w->held);
 +    av_packet_free(&w->pkt);
@@ -953,6 +956,18 @@ index 0000000..55652ca
 +    w->dropped++;
 +}
 +
++/* the pictures of the packet just decoded that skip_frame kept from the block: its non-reference
++   pictures' first slices (FFmpeg's HEVC decoder skips every such NAL unit at AVDISCARD_NONREF) */
++static void count_skipped(HWDecContext *w)
++{
++    const HEVCContext *h = w->inner->priv_data;
++    for (int i = 0; i < h->pkt.nb_nals; i++) {
++        const H2645NAL *nal = &h->pkt.nals[i];
++        if (nal->nuh_layer_id == 0 && ff_hevc_nal_is_nonref(nal->type) && nal->size > 2 && (nal->data[2] & 0x80))
++            w->skipped++;                    /* (first_slice_segment_in_pic_flag: one a picture) */
++    }
++}
++
 +static int hwdec_receive_frame(AVCodecContext *avctx, AVFrame *frame)
 +{
 +    HWDecContext *w = avctx->priv_data;
@@ -1004,7 +1019,13 @@ index 0000000..55652ca
 +        } else if (ret < 0) {
 +            return ret;
 +        } else {
++            /* (the caller's skip_frame, as it is now: a player that's behind sets AVDISCARD_NONREF so the
++               block isn't given the pictures nothing refers to, and can catch up; FFmpeg's HEVC decoder
++               drops their NAL units before parsing them, so they never reach the hwaccel) */
++            w->inner->skip_frame = avctx->skip_frame;
 +            ret = avcodec_send_packet(w->inner, w->pkt);
++            if (ret >= 0 && avctx->skip_frame >= AVDISCARD_NONREF && avctx->skip_frame < AVDISCARD_ALL)
++                count_skipped(w);
 +            av_packet_unref(w->pkt);
 +        }
 +        if (ret < 0 && ret != AVERROR(EAGAIN)) {
@@ -1040,6 +1061,9 @@ index 0000000..55652ca
 +      INT64_MAX, VD },
 +    { "output_hw", "give frames out unconverted (AV_PIX_FMT_HEVCDEC, data[3] the hevcdec_frame) for the caller to convert "
 +      "with hevcdec_frame_to_i420(_16, _half)", OFFSET(output_hw), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, VD },
++    { "skipped", "(read only) non-reference pictures kept from the block by skip_frame (AVDISCARD_NONREF): a player "
++      "that's behind sets skip_frame, and reads this to say how many", OFFSET(skipped), AV_OPT_TYPE_INT64, { .i64 = 0 },
++      0, INT64_MAX, AV_OPT_FLAG_DECODING_PARAM | AV_OPT_FLAG_EXPORT | AV_OPT_FLAG_READONLY },
 +    { NULL }
 +};
 +

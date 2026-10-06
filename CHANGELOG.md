@@ -85,6 +85,20 @@ Reel and ReelEGL:
   meanwhile. vc_test: the block only just keeping up with its latency, a
   stall: one slip, then every picture on time (without it, 55 of 150
   shown); no sleeps while a picture waits.
+- **The HEVC block, behind, isn't given the pictures nothing refers to**
+  (opt8, devkit 0.2.11, whose hevc_hwdec passes `skip_frame` on): while
+  the last picture decoded is due more than two pictures ago, Reel sets
+  skip_frame nonref, so non-reference pictures (a quarter to a half of
+  most streams) never reach the block and it gets ahead again, with sound
+  too; cleared once two pictures ahead. Never nonkey (keyframes only).
+  The log's "HEVC block" line counts the pictures skipped. A stream with
+  no non-reference pictures, and no sound, still catches up by the clock
+  slip. On the way to a seek's picture, the non-reference pictures more
+  than half a second before it now aren't given to the block either.
+  vc_test: the block only just keeping up after a stall, with B pictures
+  caught up by skipping, no slip; P only, one slip.
+- **Devkit 0.2.11**: only its hevc_hwdec patch changed (patch 0023):
+  `skip_frame` passed on, and the read-only option `skipped`.
 - **ReelEGL full screen with Vsync doesn't wait in the swap** with
   riscos-mesa 20.3.5-13 (`eglSwapWouldWaitRISCOS` now answers for the
   full screen sprite plot): the picture is converted, then swapped once

@@ -329,7 +329,7 @@ static void log_line(int level, const char *line)
     }
 }
 
-typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells, crc, drawn, slips; double pos, last, lag_late; char info[4096]; } run_t;
+typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells, crc, drawn, slips; int max_skip; double pos, last, lag_late; char info[4096]; } run_t;
 
 /* each picture shown, drawn (1: 1:1 YUV, as into an overlay; 2: halved, as
    4K into an HD overlay; 3: 32bpp, as into a sprite), its bytes summed */
@@ -424,6 +424,8 @@ static void play(const char *clip, int flags, run_t *out)
             if (out->last > 0 && at < out->last)
                 out->back++;
             out->last = at;
+            reelcore_stats(v, &st);
+            if (st.skip_level > out->max_skip) out->max_skip = st.skip_level;
             if (fake_time - t0 > 3) {         /* how late pictures are shown, from 3 s on */
                 reelcore_stats(v, &st);
                 if (st.clock - at > out->lag_late) out->lag_late = st.clock - at;
@@ -565,16 +567,20 @@ int main(int argc, char **argv)
               asked - asked0, a.end, a.decoded, href.decoded, output_8bit, decoder_line(a.info), a.decoder_early, a.decoder);
         CHECK(!vc_dropped && !a.slips, "HEVC block, keeping up: %d dropped, %u clock slips", vc_dropped, a.slips);
         /* a slow machine (60 ms a picture shown, at 25 fps): late pictures
-           dropped unconverted (drop_before, devkit 0.2.7), never skip_frame
-           (which left 4K on the Pi keyframes only) */
+           dropped unconverted (drop_before, devkit 0.2.7), and while behind
+           the non-reference ones not decoded at all (skip_frame nonref,
+           devkit 0.2.11); never keyframes only (skip_frame nonkey left 4K
+           on the Pi keyframes only) */
         slow = 0.06;
         play(argv[2], 0, &a);
         slow = 0;
-        printf("  HEVC block, slow: %u shown, %u late, %d dropped unconverted, %u skip spells, end %d\n", a.shown, a.late,
-               vc_dropped, a.skip_spells, a.end);
-        CHECK(a.end && !a.back && vc_dropped > 0 && !a.skip_spells && !a.slips && a.shown + a.late + vc_dropped == href.decoded,
-              "HEVC block, slow: end %d, back %d, %u shown + %u late + %d dropped of %u, %u skip spells", a.end, a.back,
-              a.shown, a.late, vc_dropped, href.decoded, a.skip_spells);
+        printf("  HEVC block, slow: %u shown, %u late, %d dropped unconverted, %u not decoded, %u skip spells "
+               "(at most level %d), end %d\n", a.shown, a.late, vc_dropped, href.decoded - a.decoded - vc_dropped,
+               a.skip_spells, a.max_skip, a.end);
+        CHECK(a.end && !a.back && vc_dropped > 0 && a.max_skip <= 1 && !a.slips && a.shown + a.late == a.decoded &&
+              a.decoded + vc_dropped <= href.decoded,
+              "HEVC block, slow: end %d, back %d, %u shown + %u late of %u decoded + %d dropped of %u, skip level %d, "
+              "%u slips", a.end, a.back, a.shown, a.late, a.decoded, vc_dropped, href.decoded, a.max_skip, a.slips);
 #ifdef REELCORE_HEVCDEC
         /* output_hw: each picture shown converted straight into the caller's
            planes, 1:1 or halved, or copied for 32bpp; the same pictures as
@@ -657,29 +663,37 @@ int main(int argc, char **argv)
                time, as 4K 10-bit at 60 fps on the Pi) with its 0.06 s
                latency, no sound, and the desktop busy 0.3 s: behind for
                good, pictures out late, most given back unconverted (on the
-               Pi, 9 a second from then on; here 55 of 150 shown). The clock
-               is moved back instead, once, to a little before the next
-               picture (moved to it, it was soon behind again: 7 times),
-               and from then on every picture is shown on time, some in
-               hand. (A 6 s clip.) */
-            if (argc > 3) {
+               Pi, 9 a second from then on; here 55 of 150 shown).
+               - argv[3], half its pictures non-reference (B): those aren't
+                 given to the block while behind (skip_frame nonref, devkit
+                 0.2.11), so it gets ahead again by itself, no clock slip;
+               - argv[4], P pictures only (nothing to skip): the clock is
+                 moved back instead, once, to a little before the next
+                 picture (moved to it, it was soon behind again: 7 times).
+               Either way, from 3 s on every picture is shown on time.
+               (6 s clips.) */
+            for (int c = 3; c < argc && c <= 4; c++) {
                 run_t r4, r5;
                 double fps = 25;
-                play(argv[3], REELCORE_NO_HEVC_BLOCK, &r5);
+                play(argv[c], REELCORE_NO_HEVC_BLOCK, &r5);
                 hb_period = 1 / fps;
                 hiccup_at = 1.0;
                 hb_latency = 0.06; conv_waited = 0; draw_mode = 2;
-                play(argv[3], 0, &r4);
+                play(argv[c], 0, &r4);
                 hb_latency = 0;
                 hb_period = 0;
                 hiccup_at = -1;
-                printf("  HEVC block only just keeping up, a 0.3 s stall: %u shown, %u late, %d dropped unconverted of %u, "
-                       "%u clock slips, from 3 s on shown up to %.3f s late, end %d\n", r4.shown, r4.late, vc_dropped,
-                       r5.decoded, r4.slips, r4.lag_late, r4.end);
-                CHECK(r4.end && r4.slips == 1 && !r4.back && r4.shown + 30 >= r5.decoded && r5.decoded > 100 &&
-                      r4.lag_late < 1.5 / fps,
-                      "only just keeping up: %u shown of %u, %u clock slips (want 1), %.3f s late (want under 1.5 "
-                      "pictures), end %d, back %d", r4.shown, r5.decoded, r4.slips, r4.lag_late, r4.end, r4.back);
+                printf("  HEVC block only just keeping up (%s), a 0.3 s stall: %u shown, %u late, %d dropped unconverted, "
+                       "%u not decoded, of %u; %u skip spells, %u clock slips, from 3 s on shown up to %.3f s late, end %d\n",
+                       c == 3 ? "B pictures" : "P only", r4.shown, r4.late, vc_dropped, r5.decoded - r4.decoded - vc_dropped,
+                       r5.decoded, r4.skip_spells, r4.slips, r4.lag_late, r4.end);
+                CHECK(r4.end && !r4.back && r5.decoded > 100 && r4.lag_late < 1.5 / fps &&
+                      (c == 3 ? !r4.slips && r4.skip_spells >= 1 && r4.decoded + vc_dropped < r5.decoded &&
+                                r4.shown + r4.late + vc_dropped + 30 >= r4.decoded + vc_dropped
+                              : r4.slips == 1 && r4.decoded + vc_dropped == r5.decoded && r4.shown + 30 >= r5.decoded),
+                      "only just keeping up (%s): %u shown, %u decoded of %u, %u skip spells, %u clock slips, %.3f s late "
+                      "(want under 1.5 pictures), end %d, back %d", c == 3 ? "B pictures" : "P only", r4.shown, r4.decoded,
+                      r5.decoded, r4.skip_spells, r4.slips, r4.lag_late, r4.end, r4.back);
                 asked_hb--;
             }
             draw_mode = 0;

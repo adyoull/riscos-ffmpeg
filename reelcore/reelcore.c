@@ -1591,6 +1591,11 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
         st->hb_cache_cleans = hs.cache_cleans;
         st->hb_cs_cache = hs.cs_cache;
     }
+    if (v->hb) {                               /* (hevc_hwdec's count, devkit 0.2.11: non-reference pictures skipped) */
+        int64_t n = 0;
+        if (av_opt_get_int(v->vdec, "skipped", AV_OPT_SEARCH_CHILDREN, &n) >= 0)
+            st->hb_skipped = (unsigned)n;
+    }
 #endif
     st->narrowed = v->narrowed;
     st->decode_time = v->t_decode / 1e6;
@@ -2650,7 +2655,8 @@ static void check_slow(ReelCore *v, double lag)
    would only be skipped as late (or that come before a seek's) are given
    back to it uncopied: h264_vchiq's drop_before. hevc_hwdec has the same
    (devkit 0.2.7): its block decodes 4K far faster than the ARM converts,
-   so skip_frame (which would leave it keyframes only) isn't used for it. */
+   so only skip_frame nonref is used for it (hb_skip), never nonkey (which
+   left it keyframes only). */
 static void vc_drop(ReelCore *v)
 {
     double before = -1;
@@ -2675,7 +2681,9 @@ static void vc_drop(ReelCore *v)
    with nothing in hand for SLIP_AFTER, the timer is moved back instead:
    nothing more is given back, and the next picture out is shown on time
    (a pause, as the sound-less pictures were held up anyway). With sound,
-   the decoder must skip (hevc_hwdec: not yet). */
+   the decoder must skip: hevc_hwdec (devkit 0.2.11) leaves the block the
+   non-reference pictures while behind (hb_skip), which catches up first
+   where a stream has them. */
 static void slip_check(ReelCore *v, double now)
 {
     int64_t t = av_gettime_relative();
@@ -2702,6 +2710,32 @@ static void slip_check(ReelCore *v, double now)
     }
 }
 
+/* The HEVC block decodes every picture it's given, so pictures given back
+   unconverted (drop_before) don't make up time, and one that only just
+   keeps up (4K 10-bit at 60 fps) stayed behind. hevc_hwdec passes
+   skip_frame on (devkit 0.2.11): at AVDISCARD_NONREF the pictures nothing
+   refers to never reach the block (a quarter to a third of most streams),
+   so it gets ahead. Set while the last picture decoded is due more than
+   two pictures ago, cleared once two pictures ahead again. NONKEY isn't
+   used: 4K was left keyframes only. */
+static void hb_skip(ReelCore *v)
+{
+    double gap = 2.0 / (v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
+    int want = 0;
+    if (!v->paused && v->cur && !v->need_first && v->seek_target < 0) {
+        double last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts, lag = clock_now(v) - last;
+        want = lag > gap ? 1 : lag < -gap ? 0 : v->skipping;
+    }
+    if (want == v->skipping)
+        return;
+    if (want)
+        v->skip_spells++;
+    v->skipping = want;
+    v->vdec->skip_frame = want ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+    av_log(NULL, AV_LOG_VERBOSE, "reelcore: the HEVC block %s\n",
+           want ? "behind: not given non-reference pictures" : "caught up: given every picture");
+}
+
 static void check_late(ReelCore *v, const AVPacket *p)
 {
     static const char *what[3] = { "decoding every frame", "skipping non-reference frames",
@@ -2710,6 +2744,8 @@ static void check_late(ReelCore *v, const AVPacket *p)
     int want;
     if (v->vc || v->hb) {
         vc_drop(v);                        /* (the hardware decodes every picture: late ones go unconverted) */
+        if (v->hb)
+            hb_skip(v);
         return;
     }
     if (v->paused || !v->cur || v->need_first) {

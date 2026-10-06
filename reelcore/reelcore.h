@@ -195,6 +195,7 @@ typedef struct ReelCoreStats {
     int hb_stats;                     /* the HEVC block's own (hevcdec_get_stats), so far: */
     unsigned hb_convert_waits, hb_cs_convert_wait;   /* conversions that waited for their picture, cs */
     unsigned hb_cache_cleans, hb_cs_cache;           /* frames cleaned and invalidated, cs */
+    unsigned hb_skipped;              /* non-reference pictures not given to the block, behind (skip_frame) */
 } ReelCoreStats;
 void reelcore_stats(const ReelCore *v, ReelCoreStats *st);
 

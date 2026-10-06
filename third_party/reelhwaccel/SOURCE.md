@@ -14,8 +14,8 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
-- Devkit 0.2.10, `riscos-reelhwaccel-devkit-0.2.10.tgz` (sha256
-  babece2b41f93290530302256b8f0c87a7412261588d51169af2bbb613989f56):
+- Devkit 0.2.11, `riscos-reelhwaccel-devkit-0.2.11.tgz` (sha256
+  8a570fb81588ab2577f9f8e19bffa602d8af2b7c9f3ac2e14607fc2d9e945ae1):
   vcdec 0.4.2 (H.264; its contiguous memory never includes the program's
   page at &8000) and hevcdec 0.1.11 (HEVC on the Pi 4's HEVC block, 8-bit
   and 10-bit, up to 4K; 0.1.10's audit fixes; a frame's cache cleaned
@@ -26,8 +26,12 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   straight into the overlay). `lib/libvcdec.a`, `lib/libhevcdec.a`,
   `include/vcdec.h`, `include/hwhevcdec.h`, `include/hevc_ctrls.h`. Patch
   0021 is its `ffmpeg/0001-avcodec-h264_vchiq.patch` and patch 0023 its
-  `ffmpeg/0002-avcodec-hevc_hwdec.patch`, both unchanged; patch 0022
-  (`drop_before` for h264_vchiq) is ours, after 0021. Before: devkit 0.2.8
+  `ffmpeg/0002-avcodec-hevc_hwdec.patch`, both unchanged (0.2.11's
+  hevc_hwdec passes the caller's `skip_frame` on, so `AVDISCARD_NONREF`
+  keeps the pictures nothing refers to from the block, and counts them:
+  the read-only option `skipped`); patch 0022
+  (`drop_before` for h264_vchiq) is ours, after 0021. Before: devkit
+  0.2.10 (babece2b…), 0.2.8
   (111f82b5…), 0.2.7
   (c65b8ac5…), 0.2.6 (80dbabab…), 0.2.4 (8876f366…), 0.2.1 (749197ad…),
   0.1 (7cfcea8c…).

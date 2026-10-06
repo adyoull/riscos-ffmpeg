@@ -82,8 +82,11 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcode
   -o "$O/vc_test" "$O/reelcore_hb.o" "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/vc_test.o" $LIBS 2>/dev/null
 echo "== vc_test (the VideoCore for H.264, the HEVC block for HEVC: input full, bursts, refused, switched off, failing part way)"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=6 -c:v libx265 -preset ultrafast \
-  -x265-params log-level=error "$O/hevc6s.mkv"
-"$TOP/tests/qemu/aligntrap.sh" "$O/vc_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/hevc_640_360.mkv" "$O/hevc6s.mkv" 2>&1 | grep -v "swscaler" || bad=1
+  -x265-params log-level=error "$O/hevc6s.mkv"                       # (half its pictures non-reference)
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=6 -c:v libx265 -preset ultrafast \
+  -x265-params log-level=error:bframes=0:temporal-layers=0 "$O/hevc6p.mkv"    # (P only: all reference)
+"$TOP/tests/qemu/aligntrap.sh" "$O/vc_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/hevc_640_360.mkv" "$O/hevc6s.mkv" \
+  "$O/hevc6p.mkv" 2>&1 | grep -v "swscaler" || bad=1
 
 # playback options: speed, fast decoding, sound tracks, picture modes
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/options_test.c" -o "$O/options_test.o"
