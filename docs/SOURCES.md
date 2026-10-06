@@ -43,11 +43,14 @@ devkit 0.2.8 (sha256 111f82b5…; also `hwhevcdec.h`, `hevc_ctrls.h` and
 the full sha256.
 Without it, FFmpeg is built without h264_vchiq.
 
-**UnixLib 5.0.3.1** from github.com/adyoull/riscos-unixlib (an unofficial
-fork of GCCSDK's UnixLib; release v5.0.3.1: `libunixlib.a` sha256
-fa98152f…0658 into `arm-riscos-gnueabihf/lib/`; its installed headers are
-5.0.2's, unchanged (5.0.3.1's sched.h differs by a comment, and is the same
-as rc8's). 5.0.3.1 is in riscos15 and Reel 0.1.22. 5.0.3.1-rc8's library, sha256
+**UnixLib 5.0.3.3** from github.com/adyoull/riscos-unixlib (an unofficial
+fork of GCCSDK's UnixLib; release v5.0.3.3: `libunixlib.a` sha256
+e24f16c3…f9765 into `arm-riscos-gnueabihf/lib/`, and its `limits.h`
+(LLONG_MIN a signed long long) and `sched.h` (a comment) into
+`arm-riscos-gnueabihf/include/`; FFmpeg was rebuilt from clean against
+them). 5.0.3.3 is in riscos20 and Reel 0.1.27. Before: 5.0.3.1 (sha256
+fa98152f…0658, with 5.0.2's headers) in riscos15 to riscos19 and Reel
+0.1.22 to 0.1.26. 5.0.3.1-rc8's library, sha256
 44cb5481…, was used for the ulrc8 test builds. 5.0.3's library, sha256 761305fa…,
 was used for the ul503 test builds. 5.0.2's library, sha256
 bcd01280…2254, was used for riscos13, riscos14 and Reel 0.1.20, 0.1.21), and

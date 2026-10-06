@@ -3,6 +3,27 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## 5.1.10-riscos20 (2026-10-06): UnixLib 5.0.3.3
+
+FFmpeg's own code is unchanged since riscos19; the programs are rebuilt
+with the latest UnixLib release.
+
+- **Relinked with UnixLib 5.0.3.3** (github.com/adyoull/riscos-unixlib
+  release v5.0.3.3, an unofficial fork of GCCSDK's UnixLib;
+  `libunixlib.a` sha256 e24f16c3…), its fixes since 5.0.3.1: threads
+  waiting inside `read()`, `write()` and stdio let the others run, `fork()`
+  with threads running, `getservbyname_r` and friends, `swprintf`'s `%ls`,
+  exit codes 128-255, the heap's areas, and `LLONG_MIN` (it was an
+  unsigned long long, so it compared as a large positive number:
+  libavutil's `av_sscanf` uses it). FFmpeg rebuilt from clean against its
+  `limits.h`. PThreadTicker stays 0.03 (the same module) and the pthread
+  block 640 bytes. `tools/check-unixlib.sh` checks for 5.0.3.3's library.
+
+## Reel 0.1.27 (2026-10-06): UnixLib 5.0.3.3
+
+- **Relinked with UnixLib 5.0.3.3**, as FFmpeg riscos20 (above). Reel's
+  own code is unchanged since 0.1.26.
+
 ## 5.1.10-riscos19 (2026-10-06): speed-ups
 
 From a survey of where the time goes on a Pi (docs:

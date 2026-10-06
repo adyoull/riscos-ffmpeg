@@ -1,5 +1,5 @@
 #!/bin/sh
-# check-unixlib.sh ELF... - the toolchain's library is UnixLib 5.0.3.1, and
+# check-unixlib.sh ELF... - the toolchain's library is UnixLib 5.0.3.3, and
 # each program was linked with UnixLib 5.0.1 or later (the thread timer that can run from the PThreadTicker module), and
 # a program with FFmpeg's file protocol with UnixLib 5.0.2's files over
 # 2GB: its libavformat built against 5.0.2's headers calls
@@ -15,16 +15,18 @@
 CROSS=${CROSS:-/root/gccsdk/env/bin/arm-riscos-gnueabihf-}
 EXPECTED=${EXPECTED:-640}
 bad=0
-# UnixLib 5.0.3.1 (heaps past 128MB, fork in EABI programs, _exit(n),
-# threads in programs that poll often, the fixes since 5.0.3) can't be told
-# from 5.0.2/5.0.3 by a program's symbols: check the library the programs
-# were just linked with is that release's (v5.0.3.1).
-UNIXLIB_SHA256=${UNIXLIB_SHA256:-fa98152f7e05313aa94d15004c5011d7e2cfec92623adc467d4d50a23368354e}
+# UnixLib 5.0.3.3 (5.0.3.1's heaps past 128MB, fork in EABI programs,
+# _exit(n) and threads in programs that poll often; 5.0.3.2's and 5.0.3.3's
+# fixes: threads waiting in read/write and stdio, fork with threads, eventfd,
+# getserv*_r, LLONG_MIN) can't be told from 5.0.3.1 by a program's symbols:
+# check the library the programs were just linked with is that release's
+# (v5.0.3.3; 5.0.3.1's was fa98152f...).
+UNIXLIB_SHA256=${UNIXLIB_SHA256:-e24f16c3f4612aae3871ceff521ab86b0d3ac4cc689d734e0e4085d02c774adf}
 LIB=$(${CROSS}gcc -print-file-name=libunixlib.a 2>/dev/null)
 if [ -f "$LIB" ] && [ "$(sha256sum "$LIB" | cut -d' ' -f1)" != "$UNIXLIB_SHA256" ]; then
-  echo "$LIB: not UnixLib 5.0.3.1's libunixlib.a (sha256 ${UNIXLIB_SHA256%${UNIXLIB_SHA256#????????}}...)" >&2; bad=1
+  echo "$LIB: not UnixLib 5.0.3.3's libunixlib.a (sha256 ${UNIXLIB_SHA256%${UNIXLIB_SHA256#????????}}...)" >&2; bad=1
 elif [ -f "$LIB" ]; then
-  echo "  the toolchain's libunixlib.a: UnixLib 5.0.3.1"
+  echo "  the toolchain's libunixlib.a: UnixLib 5.0.3.3"
 fi
 for f in "$@"; do
   if ! ${CROSS}nm "$f" 2>/dev/null | grep -q ' __pthread_call_every_code$'; then
@@ -37,9 +39,9 @@ for f in "$@"; do
     echo "$f: FFmpeg's file protocol without UnixLib 5.0.2's large files: rebuild libavformat against 5.0.2" >&2; bad=1; continue
   fi
   if [ "$size" = "$EXPECTED" ]; then
-    echo "  $(basename "$f"): UnixLib 5.0.3.1 (the $EXPECTED-byte pthread block$(echo "$syms" | grep -q ' __unixlib_fstat64$' && echo ', files over 2GB'))"
+    echo "  $(basename "$f"): UnixLib 5.0.3.x (the $EXPECTED-byte pthread block$(echo "$syms" | grep -q ' __unixlib_fstat64$' && echo ', files over 2GB'))"
   else
-    echo "$f: claims a ${size:-?}-byte pthread block, not $EXPECTED: relink with UnixLib 5.0.3.1" >&2; bad=1
+    echo "$f: claims a ${size:-?}-byte pthread block, not $EXPECTED: relink with UnixLib 5.0.3.3" >&2; bad=1
   fi
 done
 exit $bad
