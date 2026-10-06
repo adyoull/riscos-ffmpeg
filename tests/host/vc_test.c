@@ -117,6 +117,7 @@ int hevcdec_frame_to_i420(hevcdec *d, const hevcdec_frame *f, uint8_t *const pla
     const AVFrame *s = f->soft;
     (void)d;
     conv_wait(f);
+    fake_time += 1e-6;                       /* (a conversion takes a moment: the log's timings) */
     to_i420_calls++;
     conv_px += (long)w * h;
     if (planes[0] < draw_lo || planes[0] >= draw_hi) cached_px += (long)w * h;
@@ -135,6 +136,7 @@ int hevcdec_frame_to_i420_half(hevcdec *d, const hevcdec_frame *f, uint8_t *cons
     const AVFrame *s = f->soft;
     (void)d;
     conv_wait(f);
+    fake_time += 1e-6;
     to_half_calls++;
     conv_px += (long)w * h;
     if (planes[0] < draw_lo || planes[0] >= draw_hi) cached_px += (long)w * h;
@@ -329,7 +331,7 @@ static void log_line(int level, const char *line)
     }
 }
 
-typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells, crc, drawn, slips; int max_skip; double pos, last, lag_late; char info[4096]; } run_t;
+typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells, crc, drawn, slips, conv_busy, conv_idle; int max_skip; double pos, last, lag_late, rect_time; char info[4096]; } run_t;
 
 /* each picture shown, drawn (1: 1:1 YUV, as into an overlay; 2: halved, as
    4K into an HD overlay; 3: 32bpp, as into a sprite), its bytes summed */
@@ -446,6 +448,9 @@ static void play(const char *clip, int flags, run_t *out)
     out->late = st.late;
     out->skip_spells = st.skip_spells;
     out->slips = st.clock_slips;
+    out->conv_busy = st.hb_conv_busy;
+    out->conv_idle = st.hb_conv_idle;
+    out->rect_time = st.rect_time;
     out->decoder = st.decoder;
     out->pos = reelcore_position(v);
     if (fell_back)                            /* (media info after the switch) */
@@ -629,6 +634,8 @@ int main(int argc, char **argv)
                            k, how[draw_mode], r1.drawn, r2.drawn, r1.crc, r2.crc, r0.crc, to_i420_calls - c0,
                            to_half_calls - h0, drawn_px ? (double)conv_px / drawn_px : 0.0,
                            drawn_px ? (double)cached_px / drawn_px : 0.0);
+                    CHECK(r2.rect_time > 0 && r1.rect_time == 0, "the panel's rectangle timed: %.6f s (on the ARM: %.6f)",
+                          r2.rect_time, r1.rect_time);
                     CHECK(r2.drawn == r1.drawn && r2.drawn > 20 && r2.crc == r1.crc && r1.crc != r0.crc && !hw_live && !half_refused &&
                           conv_px == drawn_px && !conv_x_off && cached_px > 0 && cached_px * 10 < drawn_px * 9 &&
                           (draw_mode == 2 ? to_i420_calls == c0 && to_half_calls - h0 <= 5 * (int)r2.drawn
@@ -661,6 +668,11 @@ int main(int argc, char **argv)
                 hiccup_at = -1;
                 printf("  HEVC block, 0.06 s latency, a 0.3 s stall: %u drawn, %d conversions waited, end %d\n",
                        r3.drawn, w0, r3.end);
+                /* (and the log's figures: each conversion counted once, busy
+                   or idle, some with the block on the next one) */
+                printf("  ... converted %u with the block busy, %u idle\n", r3.conv_busy, r3.conv_idle);
+                CHECK(r3.conv_busy + r3.conv_idle == r3.drawn && r3.conv_busy > 0 && r3.conv_idle > 0,
+                      "conversions counted: %u busy + %u idle of %u drawn", r3.conv_busy, r3.conv_idle, r3.drawn);
                 CHECK(r3.drawn > 10 && w0 <= 1 && r3.end && !hw_live && !idle_long,
                       "HEVC block not done when due: %u drawn, %d conversions waited (want at most the first's), end %d, "
                       "%d held, %d sleeps of 10 ms or more while a picture was left", r3.drawn, w0, r3.end, hw_live, idle_long);

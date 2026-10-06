@@ -222,6 +222,11 @@ struct ReelCore {
     int soft_narrowed;                 /* cur_soft is that (not the block's) */
     unsigned hw_draws;                 /* pictures converted straight into the caller's planes */
     unsigned hb_not_done;              /* times a due picture was left: the HEVC block not done with it */
+    /* where the time goes behind (reelcore_stats): conversions with the
+       block busy on the next picture or idle, the layers' rectangle, and
+       the time the decoder took a packet in (send_packet) */
+    unsigned hb_conv_busy, hb_conv_idle;
+    int64_t t_conv_busy, t_conv_idle, t_rect, t_send;
     int hb_wait;                       /* one is being left now (reelcore_idle_time: look again soon) */
     int64_t behind_since;              /* slip_check: behind since (av_gettime_relative), 0 if not */
     int64_t slipped_at;                /* ... the last slip (0: none) */
@@ -1584,6 +1589,12 @@ void reelcore_stats(const ReelCore *v, ReelCoreStats *st)
     st->late_skips = v->late_skips;
     st->clock_slips = v->clock_slips;
     st->hb_not_done = v->hb_not_done;
+    st->hb_conv_busy = v->hb_conv_busy;
+    st->hb_conv_idle = v->hb_conv_idle;
+    st->hb_conv_busy_time = v->t_conv_busy / 1e6;
+    st->hb_conv_idle_time = v->t_conv_idle / 1e6;
+    st->rect_time = v->t_rect / 1e6;
+    st->send_time = v->t_send / 1e6;
 #ifdef REELCORE_HEVCDEC
     if (v->cur && hw_frame(v->cur)) {          /* the block's own: conversions that waited, cleans */
         hevcdec_stats hs;
@@ -2575,14 +2586,24 @@ static int decode_frames(ReelCore *v, AVCodecContext *dec, AVPacket *pkt, int vi
     int ret, r = 0;
     if (video && v->vmore && (r = receive_all(v, dec, video)) == 2)
         return 0;                          /* still full: nothing sent */
-    ret = r ? 0 : avcodec_send_packet(dec, pkt);
+    {
+        int64_t ts = av_gettime_relative();
+        ret = r ? 0 : avcodec_send_packet(dec, pkt);
+        if (video)
+            v->t_send += av_gettime_relative() - ts;
+    }
     /* A decoder whose input is full (the VideoCore's) refuses the packet
        for now: take its frames, then the packet again (the ARM's decoders
        always take it) */
     for (int tries = 0; !r && ret == AVERROR(EAGAIN) && tries < 16; tries++) {
         if ((r = receive_all(v, dec, video)) != 0)
             break;
-        ret = avcodec_send_packet(dec, pkt);
+        {
+            int64_t ts = av_gettime_relative();
+            ret = avcodec_send_packet(dec, pkt);
+            if (video)
+                v->t_send += av_gettime_relative() - ts;
+        }
     }
     if (r == 2 && ret == AVERROR(EAGAIN))
         return 0;                          /* kept for later: the queue is full */
@@ -4929,6 +4950,12 @@ static int hw_part(hevcdec *d, const hevcdec_frame *hf, uint8_t *const planes[3]
    which the block's own decoding shares). The overlay is only written.
    (hevcdec 0.1.11 cleans a frame's cache once however many calls.) -1 if
    the block refused or no memory (the caller draws it another way). */
+static void conv_note(ReelCore *v, int busy, int64_t t)
+{
+    if (busy) { v->hb_conv_busy++; v->t_conv_busy += t; }
+    else      { v->hb_conv_idle++; v->t_conv_idle += t; }
+}
+
 static int hw_bands(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *const planes[3], const int pitch[3],
                     int w, int h, int fx, int fy, int half, const Place *pl, int nl)
 {
@@ -4954,6 +4981,7 @@ static int hw_bands(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *c
     rw = x1 - x0; rh = y1 - y0;
     cw = (rw + 1) / 2; ch = (rh + 1) / 2;
     ts[0] = rw; ts[1] = ts[2] = cw;
+    int64_t tr = av_gettime_relative();
     if (rw > 0 && rh > 0) {                    /* the layers' rectangle: into cached memory first */
         av_fast_malloc(&v->rect_buf, &v->rect_size, (size_t)rw * rh + 2 * (size_t)cw * ch);
         if (!v->rect_buf)
@@ -4962,6 +4990,7 @@ static int hw_bands(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *c
         if (hw_part(d, hf, t, ts, fx, fy, half, x0, y0, rw, rh) != HEVCDEC_OK)
             return -1;                         /* (nothing written yet) */
     }
+    tr = av_gettime_relative() - tr;
     {   /* the rest straight in: above, below, left and right of it */
         const int part[4][4] = { { 0, 0, w, y0 }, { 0, y1, w, h - y1 }, { 0, y0, x0, rh }, { x1, y0, w - x1, rh } };
         for (int k = 0; k < 4; k++) {
@@ -4975,6 +5004,8 @@ static int hw_bands(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *c
                 return -1;                     /* (the caller draws all of it again) */
         }
     }
+    {
+    int64_t tb = av_gettime_relative();
     for (int p = 0; p < 3 && rw > 0 && rh > 0; p++) {   /* the rectangle: blended, then written once */
         int ox = p ? x0 / 2 : x0, oy = p ? y0 / 2 : y0, pw = p ? cw : rw, ph = p ? ch : rh;
         for (int y = 0; y < ph; y++) {
@@ -4984,6 +5015,8 @@ static int hw_bands(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *c
                     layer_blend_row(&pl[i], row - ox, p, oy + y, ox + pw);
             memcpy(planes[p] + (size_t)(oy + y) * pitch[p] + ox, row, pw);
         }
+    }
+    v->t_rect += tr + av_gettime_relative() - tb;
     }
     return 0;
 }
@@ -5027,13 +5060,19 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
            (4K into an HD-sized overlay) halved in the same pass */
         const hevcdec_frame *hf = (const hevcdec_frame *)f->data[3];
         hevcdec *d = hevcdec_frame_decoder(hf);
-        int fx, fy, fw, fh, done = 0;
+        int fx, fy, fw, fh, done = 0, busy = 0;
         frame_window(f, &fx, &fy, &fw, &fh);
+        if (v->qn && hw_frame(v->q[0])) {          /* (the block on the next picture meanwhile?) */
+            const hevcdec_frame *nf = (const hevcdec_frame *)v->q[0]->data[3];
+            busy = !hevcdec_frame_done(hevcdec_frame_decoder(nf), nf);
+        } else
+            busy = 1;                             /* (none in hand: it's on the next) */
         half = w * 2 <= fw && h * 2 <= fh;
         if (nl && ((!half && w <= fw && h <= fh) || (half && w * 4 > fw && h * 4 > fh && !(fx & 3) && !(fy & 1))) &&
             hw_bands(v, d, hf, planes, pitch, w, h, fx, fy, half, pl, nl) == 0) {
             v->hw_draws++;                        /* (with layers: one conversion call, then copied) */
             v->t_convert += av_gettime_relative() - t0;
+            conv_note(v, busy, av_gettime_relative() - t0);
             v->conv_w = w;
             v->conv_h = h;
             v->halvings = half;
@@ -5048,6 +5087,7 @@ int reelcore_draw_yuv420(ReelCore *v, uint8_t *const planes[3], const int pitch[
             if (nl)
                 hw_layers(v, d, hf, planes, pitch, w, h, fx, fy, half, pl, nl);   /* (blends in place itself if it must) */
             v->t_convert += av_gettime_relative() - t0;
+            conv_note(v, busy, av_gettime_relative() - t0);
             v->conv_w = w;
             v->conv_h = h;
             v->halvings = half;

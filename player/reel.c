@@ -4519,6 +4519,13 @@ static void tick(void)
                "%u frames cleaned (%u cs), %u non-reference pictures skipped (behind)", st.hb_not_done - p.hb_not_done,
                st.hb_convert_waits - p.hb_convert_waits, st.hb_cs_convert_wait - p.hb_cs_convert_wait,
                st.hb_cache_cleans - p.hb_cache_cleans, st.hb_cs_cache - p.hb_cs_cache, st.hb_skipped - p.hb_skipped);
+        if (st.hb_stats) {                /* where the time goes: converting with the block busy or idle, the panel, sending */
+            unsigned nb = st.hb_conv_busy - p.hb_conv_busy, ni = st.hb_conv_idle - p.hb_conv_idle;
+            lg("  HEVC block: converted %u with it busy (%.1f ms each), %u with it idle (%.1f ms); the panel's rectangle "
+               "%.1f ms a picture; %.0f ms giving it packets", nb, nb ? (st.hb_conv_busy_time - p.hb_conv_busy_time) * 1000 / nb : 0.0,
+               ni, ni ? (st.hb_conv_idle_time - p.hb_conv_idle_time) * 1000 / ni : 0.0,
+               nb + ni ? (st.rect_time - p.rect_time) * 1000 / (nb + ni) : 0.0, (st.send_time - p.send_time) * 1000);
+        }
         p_waited = S.ov_waited;
         p_replaced = S.ov_replaced;
         p = st;

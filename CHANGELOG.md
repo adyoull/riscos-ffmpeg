@@ -107,6 +107,13 @@ Reel and ReelEGL:
   vc_test: the block only just keeping up after a stall, with B pictures
   caught up by skipping, no slip; P only, one slip; and P only at 60 fps
   with a keyframe every 12, left under 0.1 s behind, one slip (opt9).
+- **The log says where the HEVC block's time goes** (opt11): once a
+  second, the pictures converted while the block was busy on the next
+  one and while it was idle (ms each), the stats panel's rectangle (ms a
+  picture), and the time spent giving the decoder packets. Behind, a 4K
+  10-bit conversion took 16-18 ms where it took 9.5 keeping up; these say
+  whether that's the block's memory traffic. vc_test: each conversion
+  counted once, the panel's rectangle timed.
 - **Devkit 0.2.11**: only its hevc_hwdec patch changed (patch 0023):
   `skip_frame` passed on, and the read-only option `skipped`.
 - **ReelEGL full screen with Vsync doesn't wait in the swap** with

@@ -196,6 +196,12 @@ typedef struct ReelCoreStats {
     unsigned hb_convert_waits, hb_cs_convert_wait;   /* conversions that waited for their picture, cs */
     unsigned hb_cache_cleans, hb_cs_cache;           /* frames cleaned and invalidated, cs */
     unsigned hb_skipped;              /* non-reference pictures not given to the block, behind (skip_frame) */
+    /* where the time goes (running totals, seconds): the block's pictures
+       converted while it was busy on the next one, or idle; the layers'
+       rectangle (cached memory, blended, copied); and video packets given
+       to the decoder (send_packet: the block's input full, it waits) */
+    unsigned hb_conv_busy, hb_conv_idle;
+    double hb_conv_busy_time, hb_conv_idle_time, rect_time, send_time;
 } ReelCoreStats;
 void reelcore_stats(const ReelCore *v, ReelCoreStats *st);
 
