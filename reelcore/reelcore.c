@@ -71,7 +71,8 @@ static void cur_changed(ReelCore *v);
 /* a hardware decoder, no sound: behind by more than two pictures (where
    drop_before gives them back) with nothing in hand, */
 #define SLIP_AFTER    0.5    /* for this long: the timer moved back to the next picture (slip_check), */
-#define SLIP_AHEAD    0.15   /* and this much more: time to decode some in hand again */
+#define SLIP_AHEAD    0.15   /* and this much more: time to decode some in hand again; */
+#define SLIP_AGAIN    5.0    /* not again for this long (a machine too slow for the video: dropped, not slowed) */
 /* Deblocking turned off by itself: when pictures take longer to decode
    than FAST_SLOW of the time between them (or they're LATE_FAST behind
    and take over FAST_BUSY: a hiccup on a video that decodes easily, going
@@ -223,6 +224,7 @@ struct ReelCore {
     unsigned hb_not_done;              /* times a due picture was left: the HEVC block not done with it */
     int hb_wait;                       /* one is being left now (reelcore_idle_time: look again soon) */
     int64_t behind_since;              /* slip_check: behind since (av_gettime_relative), 0 if not */
+    int64_t slipped_at;                /* ... the last slip (0: none) */
     int slip;                          /* ... long enough: the timer to be moved back to the next picture */
     unsigned clock_slips;              /* times it was */
     uint8_t *rect_buf;                 /* a layer's rectangle of the block's picture, blended in cached memory */
@@ -2688,28 +2690,34 @@ static void vc_drop(ReelCore *v)
 static void slip_check(ReelCore *v, double now)
 {
     int64_t t = av_gettime_relative();
-    double last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
-    /* (two pictures, as drop_before: 0.1 s was too many at 60 fps, where
-       4K 10-bit with the panel stayed 0.08-0.14 s behind, every picture
-       due more than two ago given back, 14 shown a second, never 0.1 s
-       behind for long enough) */
+    /* Behind: the picture on screen due more than two pictures ago (as
+       drop_before), and none in hand that isn't due yet. (Not the newest
+       picture decoded: the block hands each out as it starts on it, so on
+       the Pi the newest was hardly late while those shown were 0.07-0.1 s
+       late, given back unless only just in time, 15-20 a second shown even
+       with the stats panel off again. Nor 0.1 s: at 60 fps it stayed
+       0.08-0.14 s behind, never 0.1 for long enough.) */
     double late = 2.0 / (v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
+    int in_hand = v->qn && v->qpts[v->qn - 1] > now;
     if (!(v->vc || v->hb) || v->audio_clock || v->paused || v->need_first || v->seek_target >= 0 || v->bstep ||
-        !v->cur || now - last < late) {
+        !v->cur || in_hand || now - v->cur_pts < late) {
         v->behind_since = 0;
         v->slip = 0;
         return;
     }
     if (!v->behind_since)
         v->behind_since = t;
-    if (!v->slip && t - v->behind_since >= (int64_t)(SLIP_AFTER * 1e6)) {
+    if (!v->slip && t - v->behind_since >= (int64_t)(SLIP_AFTER * 1e6) &&
+        (!v->slipped_at || t - v->slipped_at >= (int64_t)(SLIP_AGAIN * 1e6))) {
         v->slip = 1;
         vc_drop(v);                        /* (nothing more given back) */
     }
     if (v->slip && v->qn) {
-        av_log(NULL, AV_LOG_VERBOSE, "reelcore: %.2f s behind with nothing in hand: the clock moved back\n", now - last);
+        av_log(NULL, AV_LOG_VERBOSE, "reelcore: %.2f s behind with nothing in hand: the clock moved back\n",
+               now - v->cur_pts);
         timer_set(v, v->qpts[0] - SLIP_AHEAD);
         v->clock_slips++;
+        v->slipped_at = t;
         v->slip = 0;
         v->behind_since = 0;
         vc_drop(v);

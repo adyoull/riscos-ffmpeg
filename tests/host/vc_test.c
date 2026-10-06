@@ -523,9 +523,14 @@ int main(int argc, char **argv)
           ref.decoded);
     burst = 0;
     play(argv[1], 0, &a);
-    printf("  slow: %u shown, %u late, %d dropped uncopied, end %d\n", a.shown, a.late, vc_dropped, a.end);
-    CHECK(a.end && !a.back && vc_dropped > 0 && a.shown + a.late + vc_dropped == ref.decoded && a.late < (unsigned)vc_dropped,
-          "slow: end %d, back %d, %u shown + %u late + %d dropped of %u", a.end, a.back, a.shown, a.late, vc_dropped, ref.decoded);
+    /* (no sound: the clock moved back now and then, a machine too slow
+       for the video slowed by no more than that, not every half second) */
+    printf("  slow: %u shown, %u late, %d dropped uncopied, %u clock slips, end %d\n", a.shown, a.late, vc_dropped, a.slips,
+           a.end);
+    CHECK(a.end && !a.back && vc_dropped > 0 && a.shown + a.late + vc_dropped == ref.decoded && a.late < (unsigned)vc_dropped &&
+          a.slips <= 2,
+          "slow: end %d, back %d, %u shown + %u late + %d dropped of %u, %u clock slips (at most 2: one every 5 s)", a.end,
+          a.back, a.shown, a.late, vc_dropped, ref.decoded, a.slips);
     slow = 0;
 
     /* refused at open */
@@ -675,33 +680,42 @@ int main(int argc, char **argv)
                  pictures, as the owner's 4K test clip (VideoToolbox): on
                  the Pi it stayed 0.08-0.14 s behind, every picture given
                  back, 14 a second shown, never the 0.1 s behind for long
-                 enough to slip; now two pictures behind is enough.
+                 enough to slip; now two pictures behind is enough;
+               - and with a shorter stall and a longer latency (0.1 s):
+                 behind is judged by the picture shown, not the newest out
+                 (on the Pi the newest was hardly late, those shown 0.07-0.1
+                 s late: 15-20 a second for good). (This fake doesn't
+                 reproduce that: judged by the newest, it slips here too.)
                Either way, from 3 s on every picture is shown on time.
                (6 s clips.) */
-            for (int c = 3; c < argc && c <= 5; c++) {
-                static const char *kind[6] = { "", "", "", "B pictures", "P only", "P only, 60 fps, a keyframe every 12" };
+            for (int k = 3; k <= 6; k++) {
+                static const char *kind[7] = { "", "", "", "B pictures", "P only", "P only, 60 fps, a keyframe every 12",
+                                               "the same, newest picture hardly late" };
+                static const double stall[7] = { 0, 0, 0, 0.3, 0.3, 0.2, 0.15 };
+                int c = k == 6 ? 5 : k;
                 run_t r4, r5;
                 double fps = c == 5 ? 60 : 25;
+                if (c >= argc) break;
                 play(argv[c], REELCORE_NO_HEVC_BLOCK, &r5);
                 hb_period = 1 / fps;
                 hiccup_at = 1.0;
-                hiccup_len = c == 5 ? 0.2 : 0.3;     /* (60 fps: left a little behind, under 0.1 s) */
-                hb_latency = 0.06; conv_waited = 0; draw_mode = 2;
+                hiccup_len = stall[k];               /* (60 fps: left a little behind, under 0.1 s) */
+                hb_latency = k == 6 ? 0.1 : 0.06; conv_waited = 0; draw_mode = 2;
                 play(argv[c], 0, &r4);
                 hb_latency = 0;
                 hb_period = 0;
                 hiccup_at = -1;
                 hiccup_len = 0.3;
-                printf("  HEVC block only just keeping up (%s), a %.1f s stall: %u shown, %u late, %d dropped unconverted, "
+                printf("  HEVC block only just keeping up (%s), a %.2f s stall: %u shown, %u late, %d dropped unconverted, "
                        "%u not decoded, of %u; %u skip spells, %u clock slips, from 3 s on shown up to %.3f s late, end %d\n",
-                       kind[c], c == 5 ? 0.2 : 0.3, r4.shown, r4.late, vc_dropped, r5.decoded - r4.decoded - vc_dropped,
+                       kind[k], stall[k], r4.shown, r4.late, vc_dropped, r5.decoded - r4.decoded - vc_dropped,
                        r5.decoded, r4.skip_spells, r4.slips, r4.lag_late, r4.end);
                 CHECK(r4.end && !r4.back && r5.decoded > 100 && r4.lag_late < 1.5 / fps &&
                       (c == 3 ? !r4.slips && r4.skip_spells >= 1 && r4.decoded + vc_dropped < r5.decoded &&
                                 r4.shown + r4.late + vc_dropped + 30 >= r4.decoded + vc_dropped
                               : r4.slips == 1 && r4.decoded + vc_dropped == r5.decoded && r4.shown + fps * 0.9 >= r5.decoded),
                       "only just keeping up (%s): %u shown, %u decoded of %u, %u skip spells, %u clock slips, %.3f s late "
-                      "(want under 1.5 pictures), end %d, back %d", kind[c], r4.shown, r4.decoded,
+                      "(want under 1.5 pictures), end %d, back %d", kind[k], r4.shown, r4.decoded,
                       r5.decoded, r4.skip_spells, r4.slips, r4.lag_late, r4.end, r4.back);
                 asked_hb--;
             }

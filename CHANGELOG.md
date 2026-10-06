@@ -80,7 +80,13 @@ Reel and ReelEGL:
   two pictures (where drop_before starts giving them back; 0.1 s, opt7,
   was too much at 60 fps: the owner's 4K test clip, P pictures only with
   a keyframe every 12, stayed 0.08-0.14 s behind, 14 shown a second)
-  with nothing in hand for 0.5 s, the clock is moved back to a
+  with nothing in hand for 0.5 s (behind judged by the picture on
+  screen, opt10: the newest picture out of the block, handed out as it
+  starts on it, was hardly late while those shown were 0.07-0.1 s late,
+  so opt9 never slipped and stayed at 15-20 a second, even with the
+  panel off again; and not again within 5 s, so a machine too slow for
+  the video drops pictures rather than slowing it down), the clock is
+  moved back to a
   little before the next picture, so some are decoded in hand again; the
   log counts these "clock slips". (With sound the clock can't move: the
   block would have to skip.) While a picture waits for the block, Reel
