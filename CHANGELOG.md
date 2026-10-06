@@ -107,6 +107,16 @@ Reel and ReelEGL:
   vc_test: the block only just keeping up after a stall, with B pictures
   caught up by skipping, no slip; P only, one slip; and P only at 60 fps
   with a keyframe every 12, left under 0.1 s behind, one slip (opt9).
+- **The HEVC block's pictures given back unconverted only when half a
+  second late** (opt12), not two pictures late: they cost nothing until
+  converted when shown, and one passed over in reelcore's queue costs
+  nothing either. Behind by the block's latency (0.08 s), nearly every
+  picture was given back but the odd one finished just in time: 16-18 a
+  second shown where the ARM converts about 30 at 4K 10-bit. The log's
+  convert time is now a picture drawn (one replaced before its refresh
+  isn't converted): it read 9.5 ms at 4K 10-bit, half the 18 ms each
+  conversion takes. vc_test: none given back a little late, every picture
+  shown after the slip.
 - **The log says where the HEVC block's time goes** (opt11): once a
   second, the pictures converted while the block was busy on the next
   one and while it was idle (ms each), the stats panel's rectangle (ms a

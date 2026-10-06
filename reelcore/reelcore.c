@@ -68,6 +68,7 @@ static void cur_changed(ReelCore *v);
 #define LATE_KEYS     1.5    /* this far: decode only keyframes, */
 #define LATE_OK       0.05   /* until this close again */
 #define HB_WAIT_MAX   0.25   /* the HEVC block's picture not done: left this long at most (reelcore_update) */
+#define HB_DROP_LATE  0.5    /* the HEVC block's pictures this late given back unconverted (vc_drop) */
 /* a hardware decoder, no sound: behind by more than two pictures (where
    drop_before gives them back) with nothing in hand, */
 #define SLIP_AFTER    0.5    /* for this long: the timer moved back to the next picture (slip_check), */
@@ -2688,8 +2689,19 @@ static void vc_drop(ReelCore *v)
     AVRational tb = v->vst->time_base;
     if (v->seek_target >= 0 && !v->bstep)
         before = v->seek_target - 0.001;     /* (queue_picture throws those away) */
-    else if (!v->paused && v->cur && !v->need_first && v->seek_target < 0 && !v->slip)
+    else if (!v->paused && v->cur && !v->need_first && v->seek_target < 0 && !v->slip) {
         before = clock_now(v) - 2.0 / (v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
+#ifdef REELCORE_HEVCDEC
+        /* The block's frames (output_hw) cost nothing until converted when
+           shown, and one passed over in reelcore's queue costs nothing
+           either; given back two pictures late, all but the odd one the
+           block finished just in time were, while 0.08 s behind (its
+           latency): 16-18 a second shown of the 30 or so the ARM can
+           convert at 4K. Only those hopelessly late, then. */
+        if (v->hb)
+            before = clock_now(v) - HB_DROP_LATE;
+#endif
+    }
     if (before > 0 && tb.num > 0)
         want = (int64_t)floor(before / av_q2d(tb));
     if (want != v->vc_drop && av_opt_set_int(v->vdec, "drop_before", want, AV_OPT_SEARCH_CHILDREN) >= 0)

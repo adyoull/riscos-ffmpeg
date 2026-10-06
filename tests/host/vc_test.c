@@ -577,19 +577,20 @@ int main(int argc, char **argv)
               "HEVC block: asked %d (h264_vchiq %d), end %d, %u of %u decoded, output_8bit %d, '%s', stats %d %d", asked_hb,
               asked - asked0, a.end, a.decoded, href.decoded, output_8bit, decoder_line(a.info), a.decoder_early, a.decoder);
         CHECK(!vc_dropped && !a.slips, "HEVC block, keeping up: %d dropped, %u clock slips", vc_dropped, a.slips);
-        /* a slow machine (60 ms a picture shown, at 25 fps): late pictures
-           dropped unconverted (drop_before, devkit 0.2.7), and while behind
-           the non-reference ones not decoded at all (skip_frame nonref,
-           devkit 0.2.11); never keyframes only (skip_frame nonkey left 4K
-           on the Pi keyframes only) */
+        /* a slow machine (60 ms a picture shown, at 25 fps): while behind
+           the non-reference pictures not decoded at all (skip_frame nonref,
+           devkit 0.2.11), never keyframes only (skip_frame nonkey left 4K
+           on the Pi keyframes only); late ones passed over in reelcore's
+           queue (unconverted: output_hw), given back by the decoder
+           (drop_before) only when half a second late */
         slow = 0.06;
         play(argv[2], 0, &a);
         slow = 0;
         printf("  HEVC block, slow: %u shown, %u late, %d dropped unconverted, %u not decoded, %u skip spells "
                "(at most level %d), end %d\n", a.shown, a.late, vc_dropped, href.decoded - a.decoded - vc_dropped,
                a.skip_spells, a.max_skip, a.end);
-        CHECK(a.end && !a.back && vc_dropped > 0 && a.max_skip <= 1 && !a.slips && a.shown + a.late == a.decoded &&
-              a.decoded + vc_dropped <= href.decoded,
+        CHECK(a.end && !a.back && a.max_skip == 1 && !a.slips && a.shown + a.late == a.decoded &&
+              a.decoded + vc_dropped < href.decoded,
               "HEVC block, slow: end %d, back %d, %u shown + %u late of %u decoded + %d dropped of %u, skip level %d, "
               "%u slips", a.end, a.back, a.shown, a.late, a.decoded, vc_dropped, href.decoded, a.max_skip, a.slips);
 #ifdef REELCORE_HEVCDEC
@@ -684,7 +685,7 @@ int main(int argc, char **argv)
                Pi, 9 a second from then on; here 55 of 150 shown).
                - argv[3], half its pictures non-reference (B): those aren't
                  given to the block while behind (skip_frame nonref, devkit
-                 0.2.11), so it gets ahead again by itself, no clock slip;
+                 0.2.11), so it gets ahead again (a clock slip at most);
                - argv[4], P pictures only (nothing to skip): the clock is
                  moved back instead, once, to a little before the next
                  picture (moved to it, it was soon behind again: 7 times);
@@ -698,7 +699,11 @@ int main(int argc, char **argv)
                  (on the Pi the newest was hardly late, those shown 0.07-0.1
                  s late: 15-20 a second for good). (This fake doesn't
                  reproduce that: judged by the newest, it slips here too.)
-               Either way, from 3 s on every picture is shown on time.
+               Either way, from 3 s on every picture is shown on time, and
+               none given back unconverted by the decoder (a little late,
+               passed over in reelcore's queue instead, at no cost: given
+               back two pictures late, the Pi showed 16-18 a second where
+               it could convert 30).
                (6 s clips.) */
             for (int k = 3; k <= 6; k++) {
                 static const char *kind[7] = { "", "", "", "B pictures", "P only", "P only, 60 fps, a keyframe every 12",
@@ -723,9 +728,9 @@ int main(int argc, char **argv)
                        kind[k], stall[k], r4.shown, r4.late, vc_dropped, r5.decoded - r4.decoded - vc_dropped,
                        r5.decoded, r4.skip_spells, r4.slips, r4.lag_late, r4.end);
                 CHECK(r4.end && !r4.back && r5.decoded > 100 && r4.lag_late < 1.5 / fps &&
-                      (c == 3 ? !r4.slips && r4.skip_spells >= 1 && r4.decoded + vc_dropped < r5.decoded &&
+                      (c == 3 ? r4.slips <= 1 && r4.skip_spells >= 1 && r4.decoded + vc_dropped < r5.decoded &&
                                 r4.shown + r4.late + vc_dropped + 30 >= r4.decoded + vc_dropped
-                              : r4.slips == 1 && r4.decoded + vc_dropped == r5.decoded && r4.shown + fps * 0.9 >= r5.decoded),
+                              : r4.slips == 1 && !vc_dropped && r4.decoded == r5.decoded && r4.shown + fps * 0.9 >= r5.decoded),
                       "only just keeping up (%s): %u shown, %u decoded of %u, %u skip spells, %u clock slips, %.3f s late "
                       "(want under 1.5 pictures), end %d, back %d", kind[k], r4.shown, r4.decoded,
                       r5.decoded, r4.skip_spells, r4.slips, r4.lag_late, r4.end, r4.back);
