@@ -3,28 +3,11 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next Reel): *Reel <web address>, Reel$UserAgent
+## 5.1.10-riscos19 (2026-10-06): speed-ups
 
-- **\*Reel <address>** (and \*ReelEGL): !Boot and !Run set
-  `Alias$Reel` (`/<Reel$Dir> %*0`), so another program can hand Reel a
-  stream as it would mplayer or ffplay (StreamerGUI; asked for on the
-  ROOL forum). A web address given as the file on the command line is
-  played as an address (it was taken for a file name: "can't read it").
-  With Reel already running, the new copy passes it on in a DataLoad; an
-  address too long for the message goes in a file of addresses,
-  `<Wimp$ScrapDir>.ReelAddress`. reel_test: a short and a long address
-  from a second copy, and one opened by the running copy.
-- **Reel$UserAgent** (ReelEGL$UserAgent): the user agent sent for
-  addresses that don't come with one (yt-dlp's -j gives one), for sites
-  that refuse FFmpeg's own ("Lavf/59...") with 403. run.sh checks it
-  reaches the server.
-
-## Unreleased (next FFmpeg and Reel): speed-ups (opt1)
-
-From a survey of where the time goes on a Pi (docs: optimisation-survey);
-each change peer reviewed, each with a host test that fails without it.
-
-FFmpeg:
+From a survey of where the time goes on a Pi (docs:
+optimisation-survey), and the owner's 4K tests on a Pi 4; each change
+peer reviewed, each with a host test that fails without it.
 
 - **HEVC with all-default weight tables** (patch 0024): x265 and others
   send a weight table on most P/B slices even when every weight is
@@ -48,8 +31,37 @@ FFmpeg:
   refer to are skipped, both skip to the next keyframe whatever
   skip_frame becomes, rather than decode spoilt pictures. skipcheck.py,
   skip_switch_test.
+- **Devkit 0.2.11**: only its hevc_hwdec patch changed (patch 0023):
+  `skip_frame` passed on, and the read-only option `skipped`.
+- **Devkit 0.2.10** (hevcdec 0.1.11, with 0.1.10's audit fixes): a
+  use-after-free and a DPB overrun in hevc_hwdec, size changes part way,
+  the brightest pixels of halved 10-bit no longer black, each frame's
+  cache cleaned once; patch 0023 is its new hevc_hwdec patch.
+- **riscos-mesa 20.3.5-12** (the tagged release, replacing 7pre12) for
+  ReelEGL, ffplay, ffmpeg's EGL output and the EGL examples: EGL fixes
+  from riscos-mesa's code audit (a context drawing into a freed buffer
+  after a resize short of memory, work area surfaces over 4096 pixels,
+  eglMakeCurrent flushing), overlay fixes, faster shaders. The host
+  EGLImage test runs on its libraries.
+- The devkit's reelcore (and the EGL examples) has Reel 0.1.26's changes.
 
-Reel and ReelEGL:
+## Reel 0.1.26 (2026-10-06): speed-ups, \*Reel <web address>
+
+- **\*Reel <address>** (and \*ReelEGL): !Boot and !Run set
+  `Alias$Reel` (`/<Reel$Dir> %*0`), so another program can hand Reel a
+  stream as it would mplayer or ffplay (StreamerGUI; asked for on the
+  ROOL forum). A web address given as the file on the command line is
+  played as an address (it was taken for a file name: "can't read it").
+  With Reel already running, the new copy passes it on in a DataLoad; an
+  address too long for the message goes in a file of addresses,
+  `<Wimp$ScrapDir>.ReelAddress`. reel_test: a short and a long address
+  from a second copy, and one opened by the running copy.
+- **Reel$UserAgent** (ReelEGL$UserAgent): the user agent sent for
+  addresses that don't come with one (yt-dlp's -j gives one), for sites
+  that refuse FFmpeg's own ("Lavf/59...") with 403. run.sh checks it
+  reaches the server.
+
+Speed-ups (as FFmpeg riscos19, above, for HEVC, VP9 and AV1 on the ARM):
 
 - **10-bit video narrowed to 8 bits in NEON** (HEVC Main 10 without the
   HEVC block, VP9 profile 2, AV1 10-bit): swscale did it in C, 8-13 ms a
@@ -67,11 +79,25 @@ Reel and ReelEGL:
   before). reel_test.
 - **Reel: the bars beside a picture drawn and plotted once**, not with
   every picture. reel_test.
+- **The stats panel over the HEVC block's pictures: one conversion call
+  a picture** (opt3): converted into cached memory, the panel blended
+  there, then written to the overlay. hevcdec cleans and invalidates the
+  cache over the whole frame on every call, so converting the panel's
+  area again cost a whole frame's cache maintenance: 4K 10-bit with the
+  panel on took 45-50 ms a picture. vc_test: one call a picture.
 - **The stats panel over the HEVC block's pictures: only the panel's
   rectangle goes through cached memory** (opt6); the rest is converted
   straight into the overlay, every part from one of the block's columns.
   All of it through cached memory (opt3) took 4K 10-bit from 9.5 to
   18 ms a picture. vc_test.
+- **The HEVC block falling behind no longer locks into a slow crawl**
+  (opt4, devkit 0.2.10): a due picture the block hasn't finished is left
+  a moment (`hevcdec_frame_done`) rather than converted, which waited
+  for it with nothing else given to the block: 4K 10-bit at 60 fps with
+  the stats panel dropped to 14 pictures a second and stayed there. The
+  log has the block's own figures once a second (pictures left,
+  conversions that waited, cache cleans). vc_test: a stall with the
+  block's latency, no conversion waits.
 - **A hardware decoder that only just keeps up, with no sound, catches
   up again** (opt7): the HEVC block decodes every picture, so skipping
   can't make up time, and 4K 10-bit at 60 fps once behind (turning the
@@ -124,41 +150,22 @@ Reel and ReelEGL:
   10-bit conversion took 16-18 ms where it took 9.5 keeping up; these say
   whether that's the block's memory traffic. vc_test: each conversion
   counted once, the panel's rectangle timed.
-- **Devkit 0.2.11**: only its hevc_hwdec patch changed (patch 0023):
-  `skip_frame` passed on, and the read-only option `skipped`.
 - **ReelEGL full screen with Vsync doesn't wait in the swap** with
   riscos-mesa 20.3.5-13 (`eglSwapWouldWaitRISCOS` now answers for the
   full screen sprite plot): the picture is converted, then swapped once
   the vsync is under 3 ms away, as Reel's sprite. 20.3.5-12 always says
   the swap wouldn't wait, so nothing changes until then. reel_test.
-- **The HEVC block falling behind no longer locks into a slow crawl**
-  (opt4, devkit 0.2.10): a due picture the block hasn't finished is left
-  a moment (`hevcdec_frame_done`) rather than converted, which waited
-  for it with nothing else given to the block: 4K 10-bit at 60 fps with
-  the stats panel dropped to 14 pictures a second and stayed there. The
-  log has the block's own figures once a second (pictures left,
-  conversions that waited, cache cleans). vc_test: a stall with the
-  block's latency, no conversion waits.
-- **riscos-mesa 20.3.5-12** (the tagged release, replacing 7pre12) for
-  ReelEGL, ffplay, ffmpeg's EGL output and the EGL examples: EGL fixes
-  from riscos-mesa's code audit (a context drawing into a freed buffer
-  after a resize short of memory, work area surfaces over 4096 pixels,
-  eglMakeCurrent flushing), overlay fixes, faster shaders. The host
-  EGLImage test runs on its libraries.
-- **Devkit 0.2.10** (hevcdec 0.1.11, with 0.1.10's audit fixes): a
-  use-after-free and a DPB overrun in hevc_hwdec, size changes part way,
-  the brightest pixels of halved 10-bit no longer black, each frame's
-  cache cleaned once; patch 0023 is its new hevc_hwdec patch.
-- **The stats panel over the HEVC block's pictures: one conversion call
-  a picture** (opt3): converted into cached memory, the panel blended
-  there, then written to the overlay. hevcdec cleans and invalidates the
-  cache over the whole frame on every call, so converting the panel's
-  area again cost a whole frame's cache maintenance: 4K 10-bit with the
-  panel on took 45-50 ms a picture. vc_test: one call a picture.
 - **The log** (Reel$Log): FFmpeg's warnings (a damaged stream gives
   several a picture) written out once a second rather than flushed line
   by line; errors and Reel's own lines at once, and the log flushed on a
   crash. reel_test.
+- **Fixes from a review of the above:** after a fall back from the HEVC
+  block to the ARM, the ARM decoder skips as reelcore says it does (it
+  was left thinking it was skipping, so a 4K file falling back never
+  caught up: vc_test); Reel no longer polls flat out after a seek or a
+  clock slip when no picture is due; ReelEGL no longer converts and swaps
+  a picture again after a redraw; the stats panel's last column at an odd
+  width; the log's figures start again for each file.
 
 ## 5.1.10-riscos18 (2026-10-05): fixes from a code audit
 

@@ -229,8 +229,20 @@ int __wrap_avcodec_open2(AVCodecContext *c, const AVCodec *codec, AVDictionary *
 }
 
 int __real_avcodec_send_packet(AVCodecContext *c, const AVPacket *p);
+/* the ARM decoder told it's skipping non-reference pictures when the
+   stats say so (after a fall back from the block: reelcore had hb_skip's
+   "skipping" left over, and the ARM decoder never skipped) */
+static ReelCore *play_v;
+static int skip_checks, skip_wrong;
 int __wrap_avcodec_send_packet(AVCodecContext *c, const AVPacket *p)
 {
+    if (play_v && c != vc_ctx && p && c->codec_type == AVMEDIA_TYPE_VIDEO) {
+        ReelCoreStats st;
+        reelcore_stats(play_v, &st);
+        skip_checks++;
+        if (st.skip_level >= 1 && c->skip_frame < AVDISCARD_NONREF)
+            skip_wrong++;
+    }
     if (c == vc_ctx && failed && fail_in_send)
         return fail_err;
     if (c == vc_ctx && burst && releasing)
@@ -396,6 +408,7 @@ static void play(const char *clip, int flags, run_t *out)
     vc_ctx = NULL; vc_frames = 0; failed = 0; refused = 0; fell_back = 0; pushed_out = 0; stash_max = 0;
     drop_before = INT64_MIN; vc_dropped = 0; drop_sets = 0; hb_next = 0;
     v = reelcore_open(clip, flags | REELCORE_NO_AUDIO);
+    play_v = v;
     CHECK(v != NULL, "open %s", clip);
     if (!v) return;
     reelcore_media_info(v, out->info, sizeof out->info);
@@ -455,6 +468,7 @@ static void play(const char *clip, int flags, run_t *out)
     out->pos = reelcore_position(v);
     if (fell_back)                            /* (media info after the switch) */
         reelcore_media_info(v, out->info, sizeof out->info);
+    play_v = NULL;
     reelcore_close(v);
 }
 
@@ -786,6 +800,24 @@ int main(int argc, char **argv)
         fail_after = -1;
         fail_in_send = 0;
         failed = 0;
+        /* behind (a slow machine), skipping in the block (hb_skip), then
+           the block failing: the ARM decoder takes over skipping nothing
+           but what reelcore says it skips */
+        if (argc > 3) {
+            slow = 0.06;
+            fail_after = 30;
+            skip_checks = skip_wrong = 0;
+            play(argv[3], 0, &a);
+            printf("  HEVC block failed while behind and skipping: fell back %d, %d packets on the ARM checked, %d sent "
+                   "while said to be skipping but not, end %d\n", fell_back, skip_checks, skip_wrong, a.end);
+            CHECK(fell_back == 1 && a.end && skip_checks > 20 && !skip_wrong,
+                  "fell back while skipping: fell back %d, %d of %d packets not skipped as said", fell_back, skip_wrong,
+                  skip_checks);
+            slow = 0;
+            fail_after = -1;
+            failed = 0;
+            asked_hb--;
+        }
     }
 
     /* the VideoCore failing part way, its error from send_packet */

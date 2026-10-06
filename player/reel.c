@@ -829,6 +829,7 @@ static void pic_refresh(void)
     if (ffegl_draw_surface(S.v, S.dpy, S.surf, 0, 0, 0, 0, pic_flags_of[S.pic_mode]) == 0) {
         eglSwapBuffers(S.dpy, S.surf);
         S.have_frame = 1;
+        S.ov_pending = 0;               /* (a picture left for the refresh: shown now, not swapped again) */
     }
 #else
     sprite_draw_frame();
@@ -4496,11 +4497,16 @@ static void tick(void)
         static ReelCoreStats p;
         static unsigned p_draw_n, p_draw_cs, p_waited, p_replaced;
         ReelCoreStats st;
-        unsigned dec, shown, draws;
+        unsigned dec, shown, draws, conv;
         reelcore_stats(S.v, &st);
-        if (st.decoded < p.decoded)       /* a new file */
+        static const ReelCore *pv;
+        if (st.decoded < p.decoded || pv != S.v)   /* a new file */
             memset(&p, 0, sizeof(p));
+        pv = S.v;
         dec = st.decoded - p.decoded;
+        conv = st.hb_conv_busy + st.hb_conv_idle - p.hb_conv_busy - p.hb_conv_idle;   /* (conversions counted: the block's) */
+        if (!conv)
+            conv = S.draw_n - p_draw_n;
         shown = st.shown - p.shown;
         draws = S.draw_n - p_draw_n;
         reelcore_debug(S.v, d, sizeof(d));
@@ -4508,7 +4514,7 @@ static void tick(void)
            "draw %.1f, deinterlace %.1f; overlay: %u waited for a refresh, %u replaced", d, S.log_nulls, S.log_frames, (t - S.log_cs) / 100.0,
            (unsigned)((S.slept_cs - S.log_slept) * 100 / (t - S.log_cs)),
            dec ? (st.decode_time - p.decode_time) * 1000 / dec : 0.0, decoder_name(st.decoder, 0),
-           draws ? (st.convert_time - p.convert_time) * 1000 / draws : 0.0, st.convert_w, st.convert_h,   /* (a picture drawn:
+           conv ? (st.convert_time - p.convert_time) * 1000 / conv : 0.0, st.convert_w, st.convert_h,   /* (a picture drawn:
                                    one replaced before its refresh isn't converted; by those shown it read 9.5 ms at
                                    4K 10-bit, half the 18 each conversion took) */
            draws ? (S.draw_cs - p_draw_cs) * 10.0 / draws : 0.0,

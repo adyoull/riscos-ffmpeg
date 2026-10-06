@@ -2993,6 +2993,9 @@ static void hw_fallback(ReelCore *v)
     v->vdec = c;
     v->vmore = 0;
     v->vc = v->hb = 0;
+    v->skipping = v->seek_skip = 0;        /* (hb_skip's: the new decoder skips nothing yet) */
+    v->hb_wait = v->slip = 0;
+    v->behind_since = 0;
     set_deblock(v);                        /* (the fast setting, for the new decoder) */
     av_log(NULL, AV_LOG_INFO, "reelcore: %s on the ARM from %.2f s\n", c->codec ? c->codec->name : "?", at);
     reelcore_seek(v, at);
@@ -3071,9 +3074,10 @@ int reelcore_update(ReelCore *v)
            the other: 17 ms and more at 4K 10-bit), with nothing else given
            to the block meanwhile. Behind, that's every picture, and it
            never caught up (4K 10-bit with the stats panel: 14 a second).
-           So leave it, keep feeding the block (fill), and look again: the
-           one on screen stays a moment; if it's too late, the next one
-           due takes its place (above). At most HB_WAIT_MAX, then wait. */
+           So leave it and look again: the one on screen stays a moment; if
+           it's too late, the next one due takes its place (above). At most
+           HB_WAIT_MAX, then wait. (fill doesn't decode more while one is
+           due: the block goes on with what it has.) */
         if (v->hb && hw_frame(v->q[0]) && now - v->qpts[0] < HB_WAIT_MAX) {
             const hevcdec_frame *hf = (const hevcdec_frame *)v->q[0]->data[3];
             if (!hevcdec_frame_done(hevcdec_frame_decoder(hf), hf)) {
@@ -3134,8 +3138,8 @@ static double reelcore_idle_time_play(ReelCore *v)
        once. Reel's sleeps are whole centiseconds, and while it's asleep
        nothing is given to the block: 10 ms each time took 4K 10-bit with
        the stats panel from 12-18 pictures a second to 9 (0.1.25-opt6) */
-    if (v->hb_wait && v->qn)
-        return 0;
+    if (v->hb_wait && v->qn && v->qpts[0] <= clock_now(v))
+        return 0;                          /* (not after a slip, a seek, a pause: none due then) */
     /* pictures still to decode */
     if (v->qn < pics_wanted(v) && (v->vpk_n || !v->eof_demux || !v->vflushed || v->vmore))
         return 0;
@@ -4987,7 +4991,8 @@ static int hw_bands(ReelCore *v, hevcdec *d, const hevcdec_frame *hf, uint8_t *c
         x0 = y0 = x1 = y1 = 0;                 /* (all off the picture) */
     x0 = x0 / col * col;                       /* (the block's columns: whole ones are its quick path) */
     x1 = FFMIN(w, (x1 + col - 1) / col * col);
-    x1 = x0 + ((x1 - x0) & ~1);
+    if ((x1 - x0) & 1)                         /* (even widths: up if there's room, so the layers' last column is in) */
+        x1 += x1 < w ? 1 : -1;
     y0 &= ~1;
     y1 = FFMIN(h, (y1 + 1) & ~1);
     rw = x1 - x0; rh = y1 - y0;
