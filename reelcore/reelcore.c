@@ -68,7 +68,8 @@ static void cur_changed(ReelCore *v);
 #define LATE_KEYS     1.5    /* this far: decode only keyframes, */
 #define LATE_OK       0.05   /* until this close again */
 #define HB_WAIT_MAX   0.25   /* the HEVC block's picture not done: left this long at most (reelcore_update) */
-#define SLIP_LATE     0.1    /* a hardware decoder, no sound: this far behind with nothing in hand, */
+/* a hardware decoder, no sound: behind by more than two pictures (where
+   drop_before gives them back) with nothing in hand, */
 #define SLIP_AFTER    0.5    /* for this long: the timer moved back to the next picture (slip_check), */
 #define SLIP_AHEAD    0.15   /* and this much more: time to decode some in hand again */
 /* Deblocking turned off by itself: when pictures take longer to decode
@@ -2677,7 +2678,7 @@ static void vc_drop(ReelCore *v)
    with 4K 10-bit at 60 fps) never caught up once behind. Pictures came out
    a few tenths late, nearly all given back unconverted (drop_before) and
    the rest shown: 4K 10-bit with the stats panel, 9 a second for good
-   after a moment's hold-up. With no sound to keep to, behind by SLIP_LATE
+   after a moment's hold-up. With no sound to keep to, behind by two pictures
    with nothing in hand for SLIP_AFTER, the timer is moved back instead:
    nothing more is given back, and the next picture out is shown on time
    (a pause, as the sound-less pictures were held up anyway). With sound,
@@ -2688,8 +2689,13 @@ static void slip_check(ReelCore *v, double now)
 {
     int64_t t = av_gettime_relative();
     double last = v->qn ? v->qpts[v->qn - 1] : v->cur_pts;
+    /* (two pictures, as drop_before: 0.1 s was too many at 60 fps, where
+       4K 10-bit with the panel stayed 0.08-0.14 s behind, every picture
+       due more than two ago given back, 14 shown a second, never 0.1 s
+       behind for long enough) */
+    double late = 2.0 / (v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
     if (!(v->vc || v->hb) || v->audio_clock || v->paused || v->need_first || v->seek_target >= 0 || v->bstep ||
-        !v->cur || now - last < SLIP_LATE) {
+        !v->cur || now - last < late) {
         v->behind_since = 0;
         v->slip = 0;
         return;

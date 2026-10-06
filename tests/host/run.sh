@@ -85,8 +85,10 @@ ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=6 -c:v lib
   -x265-params log-level=error "$O/hevc6s.mkv"                       # (half its pictures non-reference)
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=6 -c:v libx265 -preset ultrafast \
   -x265-params log-level=error:bframes=0:temporal-layers=0 "$O/hevc6p.mkv"    # (P only: all reference)
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=60:duration=6 -c:v libx265 -preset ultrafast \
+  -x265-params log-level=error:bframes=0:temporal-layers=0:keyint=12:min-keyint=12 "$O/hevc6p60.mkv"   # (as VideoToolbox's)
 "$TOP/tests/qemu/aligntrap.sh" "$O/vc_test" "$SAMPLES/long_h264_aac_322_184.mp4" "$SAMPLES/hevc_640_360.mkv" "$O/hevc6s.mkv" \
-  "$O/hevc6p.mkv" 2>&1 | grep -v "swscaler" || bad=1
+  "$O/hevc6p.mkv" "$O/hevc6p60.mkv" 2>&1 | grep -v "swscaler" || bad=1
 
 # playback options: speed, fast decoding, sound tracks, picture modes
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/options_test.c" -o "$O/options_test.o"

@@ -381,6 +381,7 @@ static void set_panel(ReelCore *v)
 static double seek_at = -1, seek_to, slow;   /* slow: the time each picture shown takes */
 
 static double hiccup_at = -1;               /* the desktop busy 0.3 s this far in: the queue empties */
+static double hiccup_len = 0.3;
 static int idle_long;                        /* a picture left for the block, and reelcore_idle_time 10 ms or more */
 static void play(const char *clip, int flags, run_t *out)
 {
@@ -400,7 +401,7 @@ static void play(const char *clip, int flags, run_t *out)
         set_panel(v);
     for (int i = 0; i < 40000 && r != REELCORE_END && fake_time - t0 < 30; i++) {
         if (hiccup_at >= 0 && !hiccuped && fake_time - t0 > hiccup_at) {
-            fake_time += 0.3;
+            fake_time += hiccup_len;
             hiccuped = 1;
         }
         r = reelcore_update(v);
@@ -669,30 +670,38 @@ int main(int argc, char **argv)
                  0.2.11), so it gets ahead again by itself, no clock slip;
                - argv[4], P pictures only (nothing to skip): the clock is
                  moved back instead, once, to a little before the next
-                 picture (moved to it, it was soon behind again: 7 times).
+                 picture (moved to it, it was soon behind again: 7 times);
+               - argv[5], the same at 60 fps with a keyframe every 12
+                 pictures, as the owner's 4K test clip (VideoToolbox): on
+                 the Pi it stayed 0.08-0.14 s behind, every picture given
+                 back, 14 a second shown, never the 0.1 s behind for long
+                 enough to slip; now two pictures behind is enough.
                Either way, from 3 s on every picture is shown on time.
                (6 s clips.) */
-            for (int c = 3; c < argc && c <= 4; c++) {
+            for (int c = 3; c < argc && c <= 5; c++) {
+                static const char *kind[6] = { "", "", "", "B pictures", "P only", "P only, 60 fps, a keyframe every 12" };
                 run_t r4, r5;
-                double fps = 25;
+                double fps = c == 5 ? 60 : 25;
                 play(argv[c], REELCORE_NO_HEVC_BLOCK, &r5);
                 hb_period = 1 / fps;
                 hiccup_at = 1.0;
+                hiccup_len = c == 5 ? 0.2 : 0.3;     /* (60 fps: left a little behind, under 0.1 s) */
                 hb_latency = 0.06; conv_waited = 0; draw_mode = 2;
                 play(argv[c], 0, &r4);
                 hb_latency = 0;
                 hb_period = 0;
                 hiccup_at = -1;
-                printf("  HEVC block only just keeping up (%s), a 0.3 s stall: %u shown, %u late, %d dropped unconverted, "
+                hiccup_len = 0.3;
+                printf("  HEVC block only just keeping up (%s), a %.1f s stall: %u shown, %u late, %d dropped unconverted, "
                        "%u not decoded, of %u; %u skip spells, %u clock slips, from 3 s on shown up to %.3f s late, end %d\n",
-                       c == 3 ? "B pictures" : "P only", r4.shown, r4.late, vc_dropped, r5.decoded - r4.decoded - vc_dropped,
+                       kind[c], c == 5 ? 0.2 : 0.3, r4.shown, r4.late, vc_dropped, r5.decoded - r4.decoded - vc_dropped,
                        r5.decoded, r4.skip_spells, r4.slips, r4.lag_late, r4.end);
                 CHECK(r4.end && !r4.back && r5.decoded > 100 && r4.lag_late < 1.5 / fps &&
                       (c == 3 ? !r4.slips && r4.skip_spells >= 1 && r4.decoded + vc_dropped < r5.decoded &&
                                 r4.shown + r4.late + vc_dropped + 30 >= r4.decoded + vc_dropped
-                              : r4.slips == 1 && r4.decoded + vc_dropped == r5.decoded && r4.shown + 30 >= r5.decoded),
+                              : r4.slips == 1 && r4.decoded + vc_dropped == r5.decoded && r4.shown + fps * 0.9 >= r5.decoded),
                       "only just keeping up (%s): %u shown, %u decoded of %u, %u skip spells, %u clock slips, %.3f s late "
-                      "(want under 1.5 pictures), end %d, back %d", c == 3 ? "B pictures" : "P only", r4.shown, r4.decoded,
+                      "(want under 1.5 pictures), end %d, back %d", kind[c], r4.shown, r4.decoded,
                       r5.decoded, r4.skip_spells, r4.slips, r4.lag_late, r4.end, r4.back);
                 asked_hb--;
             }

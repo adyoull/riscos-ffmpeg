@@ -77,7 +77,10 @@ Reel and ReelEGL:
   can't make up time, and 4K 10-bit at 60 fps once behind (turning the
   stats panel on was enough) stayed a few tenths behind for good, nearly
   every picture given back unconverted: 9 shown a second. Behind by
-  0.1 s with nothing in hand for 0.5 s, the clock is moved back to a
+  two pictures (where drop_before starts giving them back; 0.1 s, opt7,
+  was too much at 60 fps: the owner's 4K test clip, P pictures only with
+  a keyframe every 12, stayed 0.08-0.14 s behind, 14 shown a second)
+  with nothing in hand for 0.5 s, the clock is moved back to a
   little before the next picture, so some are decoded in hand again; the
   log counts these "clock slips". (With sound the clock can't move: the
   block would have to skip.) While a picture waits for the block, Reel
@@ -96,7 +99,8 @@ Reel and ReelEGL:
   slip. On the way to a seek's picture, the non-reference pictures more
   than half a second before it now aren't given to the block either.
   vc_test: the block only just keeping up after a stall, with B pictures
-  caught up by skipping, no slip; P only, one slip.
+  caught up by skipping, no slip; P only, one slip; and P only at 60 fps
+  with a keyframe every 12, left under 0.1 s behind, one slip (opt9).
 - **Devkit 0.2.11**: only its hevc_hwdec patch changed (patch 0023):
   `skip_frame` passed on, and the read-only option `skipped`.
 - **ReelEGL full screen with Vsync doesn't wait in the swap** with
