@@ -3,6 +3,19 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next Reel): from André Timmermans on the ROOL forum
+
+- **Loop takes effect at once**: turned on while a file plays, Reel goes
+  round again at its end (it was only from the next file opened).
+  `reelcore_set_loop`. vc_test: on part way through, round once; off
+  again, it ends.
+- **+ and - change the volume** (in 5% steps of the bar; = and _ too),
+  shown on the picture for a moment, so it can be changed full screen.
+  reel_test.
+- **Full screen at start** (the icon bar menu, kept in Choices): a video
+  opened with no Reel window open goes full screen at once. reel_test:
+  saved, and the video playing isn't changed.
+
 ## 5.1.10-riscos20 (2026-10-06): UnixLib 5.0.3.3
 
 FFmpeg's own code is unchanged since riscos19; the programs are rebuilt

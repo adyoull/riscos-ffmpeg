@@ -218,6 +218,8 @@ static struct {
                                            (-1 = just above the icon bar) */
     int fullscreen;                     /* showing full screen */
     int loop;
+    int full_start;                     /* a video opens full screen (Choices) */
+    int vol_osd_cs;                     /* the volume shown on the picture since (keys; 0: not) */
     ReelCore *v;
     ReelCore *opening;                  /* an address being opened (the old video plays on) */
     source_t opening_src;
@@ -1819,8 +1821,8 @@ static void choices_save(void)
     if (!f)
         return;
     fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_width %d\nmini_right %d\nmini_bottom %d\ndeinterlace %s\n"
-            "hardware_acceleration %d\n",
-            APP, S.vol, S.ontop, S.mini_w, S.mini_right, S.mini_bottom, deint_names[S.deint_i], S.hw_accel);
+            "hardware_acceleration %d\nfull_screen_at_start %d\n",
+            APP, S.vol, S.ontop, S.mini_w, S.mini_right, S.mini_bottom, deint_names[S.deint_i], S.hw_accel, S.full_start);
     if (ftype_n >= 0) {                 /* double-clicks: when, and which types */
         fprintf(f, "open_mode %s\nopen_data %d\nopen_types", open_names[open_mode], open_data);
         for (int i = 0; i < ftype_n; i++)
@@ -1853,6 +1855,8 @@ static void choices_load(void)
                 S.vol = vol;
             else if (sscanf(line, "hardware_acceleration %d", &n) == 1)
                 S.hw_accel = n != 0;
+            else if (sscanf(line, "full_screen_at_start %d", &n) == 1)
+                S.full_start = n != 0;
             else if (sscanf(line, "keep_on_top %d", &n) == 1)
                 S.ontop = n != 0;
             else if (sscanf(line, "mini_width %d", &n) == 1 && n >= MINI_MIN_W && n <= 4096)
@@ -2372,6 +2376,17 @@ static void opened(ReelCore *v, const source_t *src)
     force_redraw(S.win, 0, -8192, 8192, 0);
     update_controls(1);
     set_caret(S.win);
+    if (S.full_start && !was_open)      /* Full screen at start (the icon bar menu) */
+        set_fullscreen(1);
+}
+
+/* Loop: from now on for a single file (reelcore goes round again itself);
+   a playlist goes round at its end (tick) */
+static void loop_apply(void)
+{
+    lg("loop %s", S.loop ? "on" : "off");
+    if (S.v)
+        reelcore_set_loop(S.v, S.loop && S.list_n <= 1);
 }
 
 /* ---- Open address: a window to type or paste an address in ----------------
@@ -3833,6 +3848,7 @@ static void menu_open(int bar, int x, int y)
             menu_add(&menu, 0, &n, "File types", 0, &m_types, 0);
         }
         menu_add(&menu, 0, &n, "Loop", S.loop, NULL, 0);
+        menu_add(&menu, 0, &n, "Full screen at start", S.full_start, NULL, 0);
         menu_add(&menu, 0, &n, "Log", 0, NULL, 0);
         menu_add(&menu, 0, &n, "Quit", 0, NULL, 0);
         y = 96 + n * 44;
@@ -3961,6 +3977,59 @@ static void set_volume(double vol)
     choices_save();
     if (S.win && !S.fullscreen)
         layout(S.vis_w, S.vis_h), force_redraw(S.win, 0, -S.vis_h, S.vis_w, -S.vis_h + CH);
+}
+
+/* + and -: the volume a step up or down, shown on the picture for a
+   moment (full screen hides the volume bar; André Timmermans asked) */
+static void volume_key(double step)
+{
+    static char val[16];
+    int w = S.fullscreen ? S.full : S.win;
+    set_volume(S.vol + step);
+    if (!S.v)
+        return;
+    if (P.on)
+        panel_update(0);                /* (the stats show the volume) */
+    else {
+        static ReelCorePanel pp;        /* (static: reel_test reads it) */
+        memset(&pp, 0, sizeof(pp));
+        snprintf(val, sizeof(val), "%.0f%%", S.vol * 100);
+        pp.rows = 1;
+        pp.label[0] = "Volume";
+        pp.value[0] = val;
+        {
+            int fw = 0, fh = 0;             /* (as panel_update: the overlay's scaling undone) */
+            reelcore_frame_size(S.v, &fw, &fh);
+            pp.yuv_scale = ov.shown && ov.placed[1] > 0 && fw > 0 ? (double)fw / ov.placed[1] : 1;
+        }
+        reelcore_set_panel(S.v, &pp);
+        S.vol_osd_cs = now_cs() | 1;
+#ifdef REEL_TEST
+        panel_last = &pp;
+#endif
+    }
+    if ((reelcore_paused(S.v) || S.ended || !ov.shown) && w) {
+        box_t pic = ov_pic_box(w);
+        pic_refresh();
+        force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);
+    }
+}
+
+/* the volume shown by volume_key: gone after 1.5 s */
+static void volume_osd_tick(void)
+{
+    int w = S.fullscreen ? S.full : S.win;
+    if (!S.vol_osd_cs || now_cs() - S.vol_osd_cs < 150)
+        return;
+    S.vol_osd_cs = 0;
+    if (P.on || !S.v)
+        return;
+    reelcore_set_panel(S.v, NULL);
+    if ((reelcore_paused(S.v) || S.ended || !ov.shown) && w) {
+        box_t pic = ov_pic_box(w);
+        pic_refresh();
+        force_redraw(w, pic.x0, pic.y0, pic.x1, pic.y1);
+    }
 }
 
 static void set_pic_mode(int mode)
@@ -4219,9 +4288,11 @@ static void menu_select(const int *sel)
         case 0: break;                  /* Info: its window is the submenu */
         case 1: url_open(); break;
         case 2: ftype_select(sel[1]); break;
-        case 3: S.loop = !S.loop; break;
-        case 4: log_show(); break;
-        case 5: quit();
+        case 3: S.loop = !S.loop; loop_apply(); break;
+        case 4: S.full_start = !S.full_start; lg("full screen at start %s", S.full_start ? "on" : "off");
+                choices_save(); break;
+        case 5: log_show(); break;
+        case 6: quit();
         }
     } else {
         switch (sel[0]) {
@@ -4263,7 +4334,7 @@ static void menu_select(const int *sel)
             }
             break;
         case WM_AB: ab_press(); break;
-        case WM_LOOP: S.loop = !S.loop; break;          /* a single file: from the next one */
+        case WM_LOOP: S.loop = !S.loop; loop_apply(); break;
         case WM_FAST: set_fast(!S.fast); break;
         case WM_VSYNC: set_vsync(!S.vsync); break;
         case WM_HWACCEL:
@@ -4408,6 +4479,8 @@ static void key(int *b)
     case 'm': case 'M': set_mini(!mini); return;
     case 'd': case 'D': set_deint_i((S.deint_i + 1) % 3); return;
     case 'a': case 'A': ab_press(); return;
+    case '+': case '=': volume_key(0.05); return;   /* (= is + unshifted) */
+    case '-': case '_': volume_key(-0.05); return;
     case 'n': case 'N': if (S.list_i + 1 < S.list_n) list_play(S.list_i + 1); return;
     case 'p': case 'P': if (S.list_i > 0) list_play(S.list_i - 1); return;
     }
@@ -4446,6 +4519,7 @@ static void tick(void)
             spw.now = 0;
         }
     }
+    volume_osd_tick();
     r2 = reelcore_update(S.v);
     S.log_nulls++;
     S.st_nulls++;
@@ -5030,7 +5104,7 @@ const char *reel_test_panel(void)
     static char t[2048];
     size_t n = 0;
     t[0] = 0;
-    for (int i = 0; P.on && i < panel_rows_made(); i++)
+    for (int i = 0; (P.on || S.vol_osd_cs) && i < panel_rows_made(); i++)
         n += snprintf(t + n, n < sizeof(t) ? sizeof(t) - n : 0, "%s=%s|", panel_row_label(i), panel_row_value(i));
     return t;
 }

@@ -68,6 +68,7 @@ static char fvar_name[8][48], fvar_val[8][300];
 static int fvar_n;
 static int fvar_find(const char *n) { for (int i = 0; i < fvar_n; i++) if (!strcmp(fvar_name[i], n)) return i; return -1; }
 static int fails, step;
+static double vol_before_keys;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL: " __VA_ARGS__); printf("\n"); } } while (0)
 
 #define WIN 0x100
@@ -215,7 +216,7 @@ enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT
        P_FULLWAIT, P_LOGFLUSH, P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
        P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_SUBDROP, P_SUBHIDE, P_SUBSHOW, P_SUBNEXT, P_STEP, P_STEPPLAY, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
-       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_ARGURL, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_QUIT };
+       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_ARGURL, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_VOLKEYS, P_FULLSTART, P_QUIT };
 static int phase = -1, phase_step;
 /* the phases that play (deliver nulls) */
 static int next_is_null(void)
@@ -299,6 +300,50 @@ static int next_event(int *b)
             CHECK(icon_box[8][2] - icon_box[7][0] == 4 + (icon_box[7][2] - icon_box[7][0] - 8) / 4,
                   "volume fill to %d (bar %d-%d)", icon_box[8][2], icon_box[7][0], icon_box[7][2]);
             CHECK(choices_has("volume 0.250"), "the volume wasn't saved in Choices");
+            break;
+        case P_VOLKEYS:                                               /* + + -: the volume in steps, shown a moment */
+            if (!v)
+                break;                                                /* (a run with no video open by now) */
+            if (phase_step == 0) vol_before_keys = sqrt(reelcore_volume(v));
+            if (phase_step == 0 || phase_step == 1) { phase_step++; key_event(b, WIN, '+'); return 8; }
+            if (phase_step == 2) {
+                phase_step++;
+                CHECK(fabs(reelcore_volume(v) - (vol_before_keys + 0.1) * (vol_before_keys + 0.1)) < 0.01,
+                      "+ twice: volume %.3f (want %.2f squared)", reelcore_volume(v), vol_before_keys + 0.1);
+                {
+                    char want[32];
+                    snprintf(want, sizeof(want), "Volume=%.0f%%", (vol_before_keys + 0.1) * 100);
+                    CHECK(strstr(reel_test_panel(), want) != NULL, "+: the volume not shown ('%s', want %s)", reel_test_panel(), want);
+                }
+                key_event(b, WIN, '-');
+                return 8;
+            }
+            if (phase_step == 3) {
+                phase_step++;
+                CHECK(fabs(reelcore_volume(v) - (vol_before_keys + 0.05) * (vol_before_keys + 0.05)) < 0.01,
+                      "-: volume %.3f (want %.2f squared)", reelcore_volume(v), vol_before_keys + 0.05);
+                {
+                    char want[32];
+                    snprintf(want, sizeof(want), "volume %.3f", vol_before_keys + 0.05);
+                    CHECK(choices_has(want), "the volume from the keys wasn't saved (%s)", want);
+                }
+            }
+            if (phase_step < 90) { phase_step++; fake_time += 0.02; return 0; }   /* 1.7 s */
+            CHECK(reel_test_panel()[0] == 0, "the volume still shown after 1.7 s ('%s')", reel_test_panel());
+            printf("  + and -: the volume in 5%% steps, shown on the picture for a moment\n");
+            break;
+        case P_FULLSTART:                                             /* the icon bar menu's Full screen at start */
+            if (phase_step == 0) { phase_step++; click(b, 1000, 40, 2, -2, 1); return 6; }
+            if (phase_step == 1) { phase_step++; b[0] = 4; b[1] = -1; return 9; }
+            if (phase_step == 2) {
+                phase_step++;
+                CHECK(choices_has("full_screen_at_start 1"), "Full screen at start: not saved in Choices");
+                CHECK(!reel_test_fullscreen(), "Full screen at start: the playing video went full screen");
+                click(b, 1000, 40, 2, -2, 1);
+                return 6;
+            }
+            if (phase_step == 3) { phase_step++; b[0] = 4; b[1] = -1; return 9; }
+            CHECK(choices_has("full_screen_at_start 0"), "Full screen at start: not turned off again");
             break;
         case P_SPEED:
             MENU_PICK(WIN, M_SPEED, 5);                               /* 2x */

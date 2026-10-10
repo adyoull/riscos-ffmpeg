@@ -496,6 +496,40 @@ int main(int argc, char **argv)
     CHECK(ref.end && ref.decoded > 50 && strstr(decoder_line(ref.info), "h264, 1 thread"), "ARM only: end %d, %u decoded, '%s'",
           ref.end, ref.decoded, decoder_line(ref.info));
 
+    /* Loop turned on while playing (reelcore_set_loop): round again at
+       the end of this file, not only the next one (André Timmermans on
+       the ROOL forum: it took effect only after another file) */
+    {
+        ReelCore *v = reelcore_open(argv[1], REELCORE_NO_VIDEOCORE | REELCORE_NO_AUDIO);
+        double t0 = fake_time, d = v ? reelcore_duration(v) : 0, last = 0;
+        int r = 0, ends = 0, rounds = 0;
+        CHECK(v != NULL, "open for loop");
+        for (int i = 0; v && i < 40000 && fake_time - t0 < d * 1.6; i++) {
+            r = reelcore_update(v);
+            if (r == REELCORE_NEW_FRAME) {
+                double at = reelcore_position(v);
+                if (at < last - 1)
+                    rounds++;
+                last = at;
+                if (at > 1.0)
+                    reelcore_set_loop(v, 1);
+            }
+            if (r == REELCORE_END) { ends++; break; }
+            fake_time += 0.002;
+        }
+        printf("  loop turned on while playing: %d times round, ended %d\n", rounds, ends);
+        CHECK(!ends && rounds == 1, "loop on while playing: %d rounds (want 1), ended %d", rounds, ends);
+        if (v) {
+            reelcore_set_loop(v, 0);        /* and off again: it ends */
+            for (int i = 0; i < 40000 && r != REELCORE_END && fake_time - t0 < d * 3; i++) {
+                r = reelcore_update(v);
+                fake_time += 0.002;
+            }
+            CHECK(r == REELCORE_END, "loop turned off: didn't end");
+            reelcore_close(v);
+        }
+    }
+
     /* the VideoCore, its input full before every packet */
     refuse_send = 1;
     play(argv[1], 0, &a);

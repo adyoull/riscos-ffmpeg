@@ -239,6 +239,8 @@ int reelcore_paused(const ReelCore *v);
 /* Seeks to a time in seconds (to the key frame at or before it). */
 int reelcore_seek(ReelCore *v, double seconds);
 /* Sound volume, 0.0 to 1.0. */
+/* Starts again at the end (REELCORE_LOOP), or stops there, from now on */
+void reelcore_set_loop(ReelCore *v, int on);
 void reelcore_set_volume(ReelCore *v, double volume);
 double reelcore_volume(const ReelCore *v);
 

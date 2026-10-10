@@ -1887,6 +1887,14 @@ double reelcore_position(const ReelCore *v)
 }
 int reelcore_paused(const ReelCore *v)       { return v->paused; }
 
+void reelcore_set_loop(ReelCore *v, int on)
+{
+    if (on)
+        v->flags |= REELCORE_LOOP;
+    else
+        v->flags &= ~REELCORE_LOOP;
+}
+
 void reelcore_set_volume(ReelCore *v, double volume)
 {
     v->vol = av_clipd(volume, 0, 1);
