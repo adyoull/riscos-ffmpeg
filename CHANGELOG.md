@@ -5,6 +5,16 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Unreleased (next Reel): from André Timmermans on the ROOL forum
 
+- **riscos-mesa 20.3.5-16** (replacing 20.3.5-12) for ReelEGL, ffplay,
+  ffmpeg's EGL output and the EGL examples. ReelEGL full screen with
+  Vsync now gets 20.3.5-13's non-blocking swap
+  (`eglSwapWouldWaitRISCOS`): the picture converted, then swapped once
+  the vsync is under 3 ms away, rather than waiting in the swap with
+  nothing else running. 20.3.5-14 and -15's NEON drawing, shader
+  compiler and depth code speed up `videocube` and ffplay's GL output.
+  20.3.5-16's window scale for EX0 EY0 desktops isn't used: ReelEGL,
+  ffplay -f egl and videowin show video pixel for pixel there, as
+  before; videocube (freeglut) gets it.
 - **Loop takes effect at once**: turned on while a file plays, Reel goes
   round again at its end (it was only from the next file opened).
   `reelcore_set_loop`. vc_test: on part way through, round once; off
