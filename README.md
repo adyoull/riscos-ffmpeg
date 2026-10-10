@@ -40,7 +40,9 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
     speed 0.5x–2x, picture sizes, sound tracks, A-B repeat, carry on
     where you stopped, vsync full screen, fast decoding, deinterlacing.
   - **Subtitles** (the file's own tracks, and .srt/.ass/.vtt files dropped
-    on the window or found beside the video), **chapters** (a menu, Page
+    on the window or found beside the video or in Subs; Greek, Cyrillic,
+    Turkish and Western "ANSI" files read in their character set),
+    **chapters** (a menu, Page
     Up/Down), **frame steps** (`.` and `,`), and videos turned as the file
     says; stats "for nerds" drawn on the picture (S).
   - **Web addresses** (http, https through AcornSSL, HLS): Open address…

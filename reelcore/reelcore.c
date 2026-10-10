@@ -323,6 +323,7 @@ struct ReelCore {
     uint64_t sub_key;                  /* ... made for this (sub_mix of the size and events; 0: none) */
     int sub_shown, sub_bitmap;         /* ... shown?, a picture? */
     int sub_bx, sub_by, sub_cw, sub_ch;    /* a picture: where, on what canvas */
+    int sub_cs, sub_cs_used;           /* files' character set (REELCORE_CS_*), what the one read was */
     void (*attach_release)(void *);
 };
 
@@ -3871,9 +3872,31 @@ static int layers_place(ReelCore *v, Place *pl, int w, int h, double k)
 
 #include "sub_font.h"
 
-/* UTF-8 (as FFmpeg's text subtitle decoders give) to Latin-1, with ASS's
-   override blocks ({\i1} ...) dropped and \N, \n, \h made plain */
-static void sub_plain(char *out, size_t size, const char *in)
+static int sub_has_glyph(unsigned u);
+
+/* u as UTF-8 at o (u < 0x10000): how many bytes */
+static int put_utf8(char *o, unsigned u)
+{
+    if (u < 0x80) {
+        o[0] = (char)u;
+        return 1;
+    }
+    if (u < 0x800) {
+        o[0] = (char)(0xC0 | u >> 6);
+        o[1] = (char)(0x80 | (u & 0x3F));
+        return 2;
+    }
+    o[0] = (char)(0xE0 | u >> 12);
+    o[1] = (char)(0x80 | (u >> 6 & 0x3F));
+    o[2] = (char)(0x80 | (u & 0x3F));
+    return 3;
+}
+
+/* UTF-8 (as FFmpeg's text subtitle decoders give) made plain: ASS's
+   override blocks ({\i1} ...) dropped and \N, \n, \h made plain. utf8:
+   kept as UTF-8, characters the subtitle font hasn't got as near ones or
+   '?'; else Latin-1 (menus), the same for what isn't in it. */
+static void sub_plain_cs(char *out, size_t size, const char *in, int utf8)
 {
     size_t n = 0;
     while (*in && n + 4 < size) {
@@ -3913,7 +3936,9 @@ static void sub_plain(char *out, size_t size, const char *in)
                 u = u << 6 | (in[i] & 0x3F);
             }
             in += len;
-            if (u >= 0xA0 && u <= 0xFF)
+            if (utf8 && u >= 0xA0 && sub_has_glyph(u))
+                n += put_utf8(out + n, u);
+            else if (u >= 0xA0 && u <= 0xFF)
                 out[n++] = (char)u;
             else if (u == 0x2018 || u == 0x2019 || u == 0x2032)
                 out[n++] = '\'';
@@ -3933,6 +3958,8 @@ static void sub_plain(char *out, size_t size, const char *in)
     while (n && (out[n - 1] == '\n' || out[n - 1] == ' '))
         out[--n] = 0;
 }
+
+static void sub_plain(char *out, size_t size, const char *in) { sub_plain_cs(out, size, in, 1); }
 
 static void sub_event_free(SubEvent *e)
 {
@@ -4114,27 +4141,68 @@ static double sub_end(const ReelCore *v, int i)
     return e->start + 10;
 }
 
-/* The glyph for Latin-1 character c */
-static const SubGlyph *sub_glyph(const SubFont *f, unsigned c)
+/* Unicode u's place in the font, or -1 */
+static int sub_glyph_index(unsigned u)
 {
-    int i = c >= 32 && c < 127 ? (int)c - 32 : c >= 160 ? (int)c - 160 + 95 : '?' - 32;
-    return &f->g[i];
+    int lo = 0, hi = SUB_GLYPHS - 1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (sub_cps[m] == u)
+            return m;
+        if (sub_cps[m] < u)
+            lo = m + 1;
+        else
+            hi = m - 1;
+    }
+    return -1;
 }
 
-static int sub_textw(const SubFont *f, const char *t, int n)
+static int sub_has_glyph(unsigned u) { return sub_glyph_index(u) >= 0; }
+
+/* The glyph for Unicode u ('?' for one the font hasn't got) */
+static const SubGlyph *sub_glyph(const SubFont *f, unsigned u)
+{
+    int i = sub_glyph_index(u);
+    return &f->g[i >= 0 ? i : '?' - 32];
+}
+
+static int sub_textw(const SubFont *f, const unsigned *t, int n)
 {
     int w = 0;
     for (int i = 0; i < n; i++)
-        w += sub_glyph(f, (unsigned char)t[i])->adv;
+        w += sub_glyph(f, t[i])->adv;
     return w;
+}
+
+/* UTF-8 to Unicode (a bad byte as itself); returns how many */
+static int sub_decode(unsigned *out, int max, const char *in)
+{
+    int n = 0;
+    while (*in && n < max) {
+        unsigned c = (unsigned char)*in, u;
+        int len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+        u = len == 1 ? c : c & (0x3F >> (len - 1));
+        for (int i = 1; i < len; i++) {
+            if ((in[i] & 0xC0) != 0x80) {
+                len = 1;
+                u = c;
+                break;
+            }
+            u = u << 6 | (in[i] & 0x3F);
+        }
+        out[n++] = u;
+        in += len;
+    }
+    return n;
 }
 
 /* Text into the subtitle layer: white with a black outline, each line
    centred, long lines wrapped at spaces to fit dw */
-static void sub_render_text(ReelCore *v, const char *text, int dw, int dh)
+static void sub_render_text(ReelCore *v, const char *utext, int dw, int dh)
 {
     const SubFont *f = &sub_fonts[0];
-    int maxw, lines = 0, starts[64], lens[64], widest = 0, b, w, h, r;
+    int maxw, lines = 0, starts[64], lens[64], widest = 0, b, w, h, r, tn;
+    unsigned text[2048];
     uint8_t *cov, *dil;
     double want = dh * 0.052;                 /* about 5% of the picture's height */
     for (unsigned i = 0; i < sizeof(sub_fonts) / sizeof(sub_fonts[0]); i++)
@@ -4143,15 +4211,19 @@ static void sub_render_text(ReelCore *v, const char *text, int dw, int dh)
     r = FFMAX(2, f->size / 12);                /* the outline */
     b = r + 1;
     maxw = FFMAX(dw * 92 / 100 - 2 * b, f->size * 4);
-    for (const char *p = text; *p && lines < 64;) {  /* lines, wrapped */
-        const char *nl = strchr(p, '\n');
-        int n = nl ? (int)(nl - p) : (int)strlen(p);
+    tn = sub_decode(text, 2048, utext);
+    for (const unsigned *p = text, *end = text + tn; p < end && lines < 64;) {  /* lines, wrapped */
+        const unsigned *nl = p;
+        int n;
+        while (nl < end && *nl != '\n')
+            nl++;
+        n = (int)(nl - p);
         while (n > 0 && lines < 64) {
             int take = n;
             if (sub_textw(f, p, n) > maxw) {
                 int sp = -1, w0 = 0;
                 for (int i = 0; i < n; i++) {
-                    w0 += sub_glyph(f, (unsigned char)p[i])->adv;
+                    w0 += sub_glyph(f, p[i])->adv;
                     if (w0 > maxw)
                         break;
                     if (p[i] == ' ')
@@ -4170,7 +4242,7 @@ static void sub_render_text(ReelCore *v, const char *text, int dw, int dh)
                 n--;
             }
         }
-        p = nl ? nl + 1 : p + strlen(p);
+        p = nl < end ? nl + 1 : end;
     }
     if (!lines || !widest) {
         layer_free(&v->sub_layer);
@@ -4187,10 +4259,10 @@ static void sub_render_text(ReelCore *v, const char *text, int dw, int dh)
         return;
     }
     for (int l = 0; l < lines; l++) {
-        const char *t = text + starts[l];
+        const unsigned *t = text + starts[l];
         int x = b + (widest - sub_textw(f, t, lens[l])) / 2, y = b + l * f->line;
         for (int i = 0; i < lens[l]; i++) {
-            const SubGlyph *g = sub_glyph(f, (unsigned char)t[i]);
+            const SubGlyph *g = sub_glyph(f, t[i]);
             const unsigned char *d = f->data + g->off;
             for (int j = 0; j < g->h; j++)
                 for (int k = 0; k < g->w; k++) {
@@ -4344,6 +4416,182 @@ static void sub_file_feed(ReelCore *v, double pos)
 }
 
 /* Reads a whole subtitle file into events (a picture one: its packets) */
+/* ---- subtitle files' character sets ---- */
+
+#include "sub_charsets.h"
+
+static const char *const cs_names[REELCORE_CS_N] = {
+    "Automatic", "UTF-8", "Western (Windows-1252)", "Central European (Windows-1250)",
+    "Cyrillic (Windows-1251)", "Greek (Windows-1253)", "Turkish (Windows-1254)"
+};
+
+const char *reelcore_charset_name(int cs) { return cs >= 0 && cs < REELCORE_CS_N ? cs_names[cs] : ""; }
+
+/* The length of the good UTF-8 sequence at p (n bytes left), or 0 */
+static int utf8_len(const uint8_t *p, size_t n)
+{
+    unsigned c = p[0];
+    int len = c < 0x80 ? 1 : c >= 0xC2 && c <= 0xDF ? 2 : c >= 0xE0 && c <= 0xEF ? 3 : c >= 0xF0 && c <= 0xF4 ? 4 : 0;
+    if (!len || (size_t)len > n)
+        return 0;
+    for (int k = 1; k < len; k++)
+        if ((p[k] & 0xC0) != 0x80)
+            return 0;
+    if ((c == 0xE0 && p[1] < 0xA0) || (c == 0xED && p[1] >= 0xA0) ||    /* (too long; UTF-16's halves) */
+        (c == 0xF0 && p[1] < 0x90) || (c == 0xF4 && p[1] >= 0x90))
+        return 0;
+    return len;
+}
+
+static int utf8_ok(const uint8_t *p, size_t n)
+{
+    for (size_t i = 0; i < n;) {
+        int len = utf8_len(p + i, n - i);
+        if (!len)
+            return 0;
+        i += len;
+    }
+    return 1;
+}
+
+/* Not UTF-8: which code page? More letters past ASCII than in it: Greek
+   or Cyrillic, by the bytes that are common letters in one and rare in
+   the other (Greek α ι τ, the accented vowels; Cyrillic о а и в я ы, and
+   Т, which isn't Greek at all), capitals too; else
+   Turkish if its own letters (ğ ı ş ...) are most of the few, else
+   Western. (Central European isn't guessed: its letters are Western's.) */
+static int cs_guess(const uint8_t *p, size_t n)
+{
+    size_t ascii = 0, high = 0, greek = 0, cyr = 0, turk = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned c = p[i];
+        if ((c | 0x20) >= 'a' && (c | 0x20) <= 'z')
+            ascii++;
+        else if (c >= 0xC0) {
+            high++;
+            cyr += c == 0xD2;                  /* (Т: nothing in Greek) */
+            c |= c < 0xDC ? 0x20 : 0;          /* (capitals as small letters: the same in both) */
+            greek += c == 0xE1 || c == 0xE9 || c == 0xF4 || (c >= 0xDC && c <= 0xDF) || c >= 0xFC;
+            cyr += c == 0xEE || c == 0xE0 || c == 0xE8 || c == 0xE2 || c == 0xFF || c == 0xFB;
+            turk += c == 0xD0 || c == 0xDD || c == 0xDE || c == 0xF0 || c == 0xFD || c == 0xFE;
+        }
+    }
+    if (high > ascii)
+        return greek > cyr ? REELCORE_CS_1253 : REELCORE_CS_1251;
+    if (turk >= 3 && turk * 3 > high)
+        return REELCORE_CS_1254;
+    return REELCORE_CS_1252;
+}
+
+/* The file's bytes as UTF-8, in code page cs (UTF-8: bad bytes as '?') */
+static uint8_t *cs_to_utf8(const uint8_t *p, size_t n, int cs, size_t *outn)
+{
+    static const signed char table[REELCORE_CS_N] = { -1, -1, 0, 1, 2, 3, 4 };
+    uint8_t *o = av_malloc(n * 3 + 1), *q = o;
+    if (!o)
+        return NULL;
+    for (size_t i = 0; i < n;) {
+        unsigned c = p[i], u;
+        if (cs == REELCORE_CS_UTF8) {
+            int len = utf8_len(p + i, n - i);
+            if (len) {
+                memcpy(q, p + i, len);
+                q += len;
+                i += len;
+            } else {
+                *q++ = '?';
+                i++;
+            }
+            continue;
+        }
+        u = c < 0x80 ? c : sub_cp_high[table[cs]][c - 0x80];
+        q += put_utf8((char *)q, u == 0xFFFD ? '?' : u);
+        i++;
+    }
+    *q = 0;
+    *outn = (size_t)(q - o);
+    return o;
+}
+
+/* The whole file (up to max), or NULL */
+static uint8_t *file_slurp(const char *path, size_t max, size_t *outn)
+{
+    FILE *f = fopen(path, "rb");
+    uint8_t *b = NULL;
+    size_t n = 0, cap = 0;
+    if (!f)
+        return NULL;
+    for (;;) {
+        size_t got;
+        if (n == cap) {
+            uint8_t *nb;
+            if (cap >= max || !(nb = av_realloc(b, cap = cap ? cap * 2 : 65536))) {
+                av_free(b);
+                fclose(f);
+                return NULL;
+            }
+            b = nb;
+        }
+        if (!(got = fread(b + n, 1, cap - n, f)))
+            break;
+        n += got;
+    }
+    fclose(f);
+    *outn = n;
+    return b;
+}
+
+typedef struct { const uint8_t *p; size_t n, pos; } MemIn;
+
+static int mem_read(void *o, uint8_t *buf, int size)
+{
+    MemIn *m = o;
+    size_t k = FFMIN((size_t)size, m->n - m->pos);
+    if (!k)
+        return AVERROR_EOF;
+    memcpy(buf, m->p + m->pos, k);
+    m->pos += k;
+    return (int)k;
+}
+
+static int64_t mem_seek(void *o, int64_t off, int whence)
+{
+    MemIn *m = o;
+    int64_t to;
+    if (whence == AVSEEK_SIZE)
+        return (int64_t)m->n;
+    whence &= ~AVSEEK_FORCE;
+    to = whence == SEEK_SET ? off : whence == SEEK_CUR ? (int64_t)m->pos + off : whence == SEEK_END ? (int64_t)m->n + off : -1;
+    if (to < 0 || to > (int64_t)m->n)
+        return AVERROR(EINVAL);
+    m->pos = (size_t)to;
+    return to;
+}
+
+#define SUB_FILE_MAX (16 << 20)
+
+static int sub_read_file(ReelCore *v, const char *path);
+
+int reelcore_set_subtitle_charset(ReelCore *v, int cs)
+{
+    int t = v->sub_track;
+    if (cs < 0 || cs >= REELCORE_CS_N)
+        return AVERROR(EINVAL);
+    if (cs == v->sub_cs)
+        return 0;
+    v->sub_cs = cs;
+    if (!v->ready || t < 0 || !v->sub_tracks[t].path)
+        return 0;
+    sub_close_track(v);                         /* the file shown: read again */
+    v->sub_track = t;
+    return sub_read_file(v, v->sub_tracks[t].path);
+}
+
+int reelcore_subtitle_charset_used(const ReelCore *v)
+{
+    return v->ready && v->sub_track >= 0 && v->sub_tracks[v->sub_track].path ? v->sub_cs_used : -1;
+}
+
 static int sub_read_file(ReelCore *v, const char *path)
 {
     AVFormatContext *fc = NULL;
@@ -4351,15 +4599,56 @@ static int sub_read_file(ReelCore *v, const char *path)
     AVPacket *pkt = av_packet_alloc();
     double offset = v->fmt && v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time / (double)AV_TIME_BASE : 0;
     int s, ret, n = 0;
-    if (!pkt)
+    size_t rn = 0, cn = 0;
+    uint8_t *raw = file_slurp(path, SUB_FILE_MAX, &rn), *conv = NULL;
+    AVIOContext *pb = NULL;
+    MemIn mi;
+    if (!pkt) {
+        av_free(raw);
         return AVERROR(ENOMEM);
+    }
+    v->sub_cs_used = REELCORE_CS_UTF8;
+    /* text that isn't UTF-8 (FFmpeg would drop every line): made UTF-8
+       here. Not UTF-16 with its mark (FFmpeg reads that), nor anything
+       with a nul in it (pictures: .sup ...) */
+    if (raw && rn && !(rn >= 2 && ((raw[0] == 0xFF && raw[1] == 0xFE) || (raw[0] == 0xFE && raw[1] == 0xFF))) &&
+        !memchr(raw, 0, rn) && (v->sub_cs != REELCORE_CS_AUTO || !utf8_ok(raw, rn))) {
+        int cs = v->sub_cs == REELCORE_CS_AUTO ? cs_guess(raw, rn) : v->sub_cs;
+        if (!(cs == REELCORE_CS_UTF8 && utf8_ok(raw, rn)) && (conv = cs_to_utf8(raw, rn, cs, &cn))) {
+            uint8_t *iob = av_malloc(4096);
+            mi = (MemIn){ conv, cn, 0 };
+            if (!iob || !(pb = avio_alloc_context(iob, 4096, 0, &mi, mem_read, NULL, mem_seek)) ||
+                !(fc = avformat_alloc_context())) {
+                if (pb) {
+                    av_freep(&pb->buffer);
+                    avio_context_free(&pb);
+                } else
+                    av_free(iob);
+                av_freep(&conv);
+                pb = NULL;
+            } else {
+                fc->pb = pb;
+                fc->flags |= AVFMT_FLAG_CUSTOM_IO;
+            }
+        }
+        if (conv)
+            v->sub_cs_used = cs;
+        av_log(NULL, AV_LOG_INFO, "reelcore: %s read as %s\n", path, cs_names[cs]);
+    }
+    av_freep(&raw);
     if ((ret = avformat_open_input(&fc, path, NULL, NULL)) < 0 ||
         (ret = avformat_find_stream_info(fc, NULL)) < 0 ||
         (ret = s = av_find_best_stream(fc, AVMEDIA_TYPE_SUBTITLE, -1, -1, NULL, 0)) < 0 ||
         !(dec = open_decoder(fc->streams[s]))) {
-        av_log(NULL, AV_LOG_WARNING, "reelcore: can't read subtitles from %s\n", path);
+        av_log(NULL, AV_LOG_WARNING, "reelcore: can't read subtitles from %s (%s)\n", path,
+               ret < 0 ? av_err2str(ret) : "no decoder");
         av_packet_free(&pkt);
         avformat_close_input(&fc);
+        if (pb) {
+            av_freep(&pb->buffer);
+            avio_context_free(&pb);
+        }
+        av_free(conv);
         return ret < 0 ? ret : AVERROR_DECODER_NOT_FOUND;
     }
     if (dec->codec_descriptor && (dec->codec_descriptor->props & AV_CODEC_PROP_BITMAP_SUB)) {
@@ -4392,6 +4681,11 @@ static int sub_read_file(ReelCore *v, const char *path)
         av_log(NULL, AV_LOG_VERBOSE, "reelcore: %d picture subtitle packets from %s\n", v->sfn, path);
         av_packet_free(&pkt);
         avformat_close_input(&fc);
+        if (pb) {
+            av_freep(&pb->buffer);
+            avio_context_free(&pb);
+        }
+        av_free(conv);
         v->sfdec = dec;                        /* decoded as the picture comes to them (sub_file_feed) */
         v->sfoff = offset;
         v->sfnext = -1;
@@ -4413,6 +4707,11 @@ static int sub_read_file(ReelCore *v, const char *path)
     av_packet_free(&pkt);
     avcodec_free_context(&dec);
     avformat_close_input(&fc);
+    if (pb) {
+        av_freep(&pb->buffer);
+        avio_context_free(&pb);
+    }
+    av_free(conv);
     return 0;
 }
 
@@ -4557,7 +4856,7 @@ int reelcore_chapter_title(const ReelCore *v, int i, char *buf, int size)
     t = av_dict_get(v->fmt->chapters[i]->metadata, "title", NULL, 0);
     if (t) {
         char plain[256];
-        sub_plain(plain, sizeof(plain), t->value);   /* (UTF-8 to Latin-1) */
+        sub_plain_cs(plain, sizeof(plain), t->value, 0);   /* (UTF-8 to Latin-1) */
         return snprintf(buf, size, "%s", plain);
     }
     return snprintf(buf, size, "Chapter %d", i + 1);

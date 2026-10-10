@@ -3,7 +3,36 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next Reel): from André Timmermans on the ROOL forum
+## Unreleased (next Reel): from George Tsaousis and André Timmermans on the ROOL forum
+
+- **Subtitle files in Windows' code pages are shown** (George's Greek
+  .srt showed nothing at all): FFmpeg drops every line of a text
+  subtitle that isn't UTF-8, so reelcore now reads the file itself and,
+  if it isn't UTF-8 (nor UTF-16 with its mark, nor binary), turns it
+  into UTF-8 from a code page: guessed (Greek Windows-1253, Cyrillic
+  1251, Turkish 1254, else Western 1252) or chosen from the new
+  Subtitles > Character set menu (also UTF-8, Central European 1250),
+  kept in Choices (`subtitle_charset`); choosing one reads the file
+  shown again. `reelcore_set_subtitle_charset`,
+  `reelcore_subtitle_charset_used`, `reelcore_charset_name`;
+  tools/mkcharsets.py makes the tables.
+- **Greek, Cyrillic and more letters drawn**: subtitle text stays UTF-8
+  (`reelcore_subtitle_text` now gives UTF-8) and the subtitle font
+  (tools/mksubfont.py, DejaVu Sans Bold) adds Latin Extended-A,
+  Romanian's comma letters, Greek, Cyrillic, curly quotes, dashes, the
+  ellipsis, the euro and notes (506 characters; about 1.4 MB more in
+  the program).
+- **Subtitle files found as VLC finds them**: beside the video with its
+  name and more (film/el/srt, film_English/srt), and in a Subs or
+  Subtitles directory beside it (or Subs.film). The exact name is shown
+  first; files in Subs not named for the video are listed on the menu,
+  not shown. The log says what was found, or where Reel looked. The
+  Subtitles menu is there whenever a video is open (with the count).
+- sub_test: Greek, Cyrillic, Western and Turkish files guessed and
+  shown, drawn; chosen as another set read again; Greek as UTF-8 shows
+  '?'s. reel_test: Film.el.srt (Greek) shown, Subs' Film.en.srt and
+  Other.srt listed, Film2.srt not; Character set > Cyrillic and back,
+  saved in Choices. Mutation-checked.
 
 - **ReelEGL on a 180 dpi desktop** (EX0 EY0): the picture is the
   size it is at 90 dpi, matching the desktop's text and icons, using

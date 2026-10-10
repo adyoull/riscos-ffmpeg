@@ -365,7 +365,7 @@ void reelcore_set_yuv_scale(ReelCore *v, double k);
    One marked default or forced in the file is shown at the start, as mpv
    does; else none. */
 int reelcore_subtitle_tracks(const ReelCore *v);
-/* The subtitle on screen now as text (Latin-1, lines apart by \n; a
+/* The subtitle on screen now as text (UTF-8, lines apart by \n; a
    picture subtitle: "[picture]"), "" for none. Returns its length. */
 int reelcore_subtitle_text(const ReelCore *v, char *buf, int size);
 /* Its name, e.g. "English (subrip)" or "File: film/srt". */
@@ -383,6 +383,18 @@ int reelcore_set_subtitle_track(ReelCore *v, int i);
    FFmpeg can open) as a track and shows it. Its times are from the
    start of the video. Returns the track, or a negative AVERROR. */
 int reelcore_add_subtitle_file(ReelCore *v, const char *path);
+/* A subtitle file that isn't UTF-8 (nor UTF-16 with its mark, which is
+   always read as such) is read in this character set: REELCORE_CS_AUTO
+   (default) guesses between Western, Greek, Cyrillic and Turkish; UTF-8
+   shows bytes that aren't as '?'. A file shown now is read again. The
+   text is drawn with Latin-1, Latin Extended-A, Greek and Cyrillic. */
+enum { REELCORE_CS_AUTO, REELCORE_CS_UTF8, REELCORE_CS_1252, REELCORE_CS_1250, REELCORE_CS_1251,
+       REELCORE_CS_1253, REELCORE_CS_1254, REELCORE_CS_N };
+int reelcore_set_subtitle_charset(ReelCore *v, int cs);
+/* What the file shown was read as (Automatic: its guess); -1: no file */
+int reelcore_subtitle_charset_used(const ReelCore *v);
+/* A character set's name, e.g. "Greek (Windows-1253)" */
+const char *reelcore_charset_name(int cs);
 
 /* Chapters (MKV, MP4 ...): how many, where each starts (seconds, as
    reelcore_position), its title (Latin-1; "Chapter N" if it has none),

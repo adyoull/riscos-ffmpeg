@@ -117,7 +117,8 @@ Menu on the window:
   Speed >             0.5x to 2x; the sound keeps its pitch
   Sound track >       for files with more than one (e.g. languages)
   Subtitles >         None, or a track: the file's own, and subtitle
-                      files (below)
+                      files (below); Character set > for subtitle
+                      files that aren't UTF-8 (below)
   Chapters >          the file's chapters, with where each starts:
                       choose one to go there
   Playlist >          jump to a file; Clear the rest
@@ -318,14 +319,27 @@ picture itself, so they show with hardware acceleration too.
     text, WebVTT, DVD, Blu-ray PGS, DVB): a track the file marks as the
     default (or forced) is shown at the start, as mpv does; others are
     on the Subtitles menu, or J.
-  - Subtitle files: a file with the video's name and srt, ass, ssa or vtt
-    after the "/" (film/mkv: film/srt) is found and shown when the video
-    opens. Or drop a subtitle file on the window while the video plays.
+  - Subtitle files (srt, ass, ssa or vtt after the "/") are found and
+    shown when the video opens, as VLC finds them:
+      - beside the video, with its name (film/mp4: film/srt), or its
+        name and more (film/el/srt, film_English/srt);
+      - in a directory called Subs or Subtitles beside the video, with
+        its name, or in Subs.film. Others in Subs are put on the
+        Subtitles menu but not shown.
+    The one with exactly the video's name is shown first. Or drop a
+    subtitle file on the window while the video plays. The log (icon
+    bar menu, Log) says which files were found, or where Reel looked.
   - V hides them and shows them again.
+Subtitle files that aren't UTF-8 (Windows' "ANSI" files) are read in a
+character set Reel guesses: Greek (Windows-1253), Cyrillic
+(Windows-1251), Turkish (Windows-1254), else Western (Windows-1252).
+If it guesses wrong (or for Central European, Windows-1250), choose
+the right one from Subtitles > Character set: the file is read again,
+and the choice is kept for files after. UTF-16 files are read too.
+The text is drawn with Latin-1, Central European and other Latin
+letters, Greek and Cyrillic; other characters show as "?".
 ASS/SSA styling (fonts, colours, positions, effects) isn't followed:
-their text is shown plainly, one line under another. Characters outside
-Latin-1 show as "?", except curly quotes, dashes and "..." which are
-shown plainly.
+their text is shown plainly, one line under another.
 
 Chapters, frame steps, turned videos
 ------------------------------------

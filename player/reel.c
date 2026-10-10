@@ -57,6 +57,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dirent.h>
+#include <strings.h>
 #include <kernel.h>
 #include "reelcore.h"
 #include "sources.h"                   /* files, and web addresses given in text */
@@ -219,6 +221,7 @@ static struct {
     int fullscreen;                     /* showing full screen */
     int loop;
     int full_start;                     /* a video opens full screen (Choices) */
+    int sub_cs;                         /* subtitle files' character set, REELCORE_CS_* (Choices) */
     int vol_osd_cs;                     /* the volume shown on the picture since (keys; 0: not) */
     ReelCore *v;
     ReelCore *opening;                  /* an address being opened (the old video plays on) */
@@ -1864,14 +1867,20 @@ static FILE *choices_open(const char *leafname, int write)
     return fopen(path, write ? "w" : "r");
 }
 
+/* subtitle character sets in Choices (REELCORE_CS_*) */
+static const char *const cs_keys[REELCORE_CS_N] = {
+    "auto", "utf-8", "windows-1252", "windows-1250", "windows-1251", "windows-1253", "windows-1254"
+};
+
 static void choices_save(void)
 {
     FILE *f = choices_open("Choices", 1);
     if (!f)
         return;
     fprintf(f, "# %s choices\nvolume %.3f\nkeep_on_top %d\nmini_width %d\nmini_right %d\nmini_bottom %d\ndeinterlace %s\n"
-            "hardware_acceleration %d\nfull_screen_at_start %d\n",
-            APP, S.vol, S.ontop, S.mini_w, S.mini_right, S.mini_bottom, deint_names[S.deint_i], S.hw_accel, S.full_start);
+            "hardware_acceleration %d\nfull_screen_at_start %d\nsubtitle_charset %s\n",
+            APP, S.vol, S.ontop, S.mini_w, S.mini_right, S.mini_bottom, deint_names[S.deint_i], S.hw_accel, S.full_start,
+            cs_keys[S.sub_cs]);
     if (ftype_n >= 0) {                 /* double-clicks: when, and which types */
         fprintf(f, "open_mode %s\nopen_data %d\nopen_types", open_names[open_mode], open_data);
         for (int i = 0; i < ftype_n; i++)
@@ -1906,6 +1915,12 @@ static void choices_load(void)
                 S.hw_accel = n != 0;
             else if (sscanf(line, "full_screen_at_start %d", &n) == 1)
                 S.full_start = n != 0;
+            else if (!strncmp(line, "subtitle_charset ", 17)) {
+                for (int i = 0; i < REELCORE_CS_N; i++)
+                    if (!strncmp(line + 17, cs_keys[i], strlen(cs_keys[i])) && (line[17 + strlen(cs_keys[i])] == '\n' ||
+                                                                              !line[17 + strlen(cs_keys[i])]))
+                        S.sub_cs = i;
+            }
             else if (sscanf(line, "keep_on_top %d", &n) == 1)
                 S.ontop = n != 0;
             else if (sscanf(line, "mini_width %d", &n) == 1 && n >= MINI_MIN_W && n <= 4096)
@@ -2104,22 +2119,154 @@ static void subs_changed(void);
 static void chapter_seek(int c);
 static void toggle_pause(void);
 
-/* A file playing: its subtitle files, as mpv finds them (film/mkv:
-   film/srt, film/ass ...; Unix names film.srt); the first found is shown */
+/* A directory's leafnames, each given to fn: RISC OS names read with
+   OS_GBPB 9, Unix ones (the host test) with readdir. "": the current one. */
+static void dir_names(const char *dir, int riscos, void (*fn)(const char *, const char *, void *), void *o)
+{
+    if (!riscos) {
+        DIR *d = opendir(*dir ? dir : ".");
+        struct dirent *e;
+        if (!d)
+            return;
+        while ((e = readdir(d)))
+            if (e->d_name[0] != '.')
+                fn(dir, e->d_name, o);
+        closedir(d);
+        return;
+    }
+    {
+        static char buf[2048];
+        _kernel_swi_regs r;
+        int off = 0;
+        for (int guard = 0; off != -1 && guard < 4096; guard++) {
+            r.r[0] = 9;                         /* OS_GBPB 9: names */
+            r.r[1] = (int)(intptr_t)(*dir ? dir : "@");
+            r.r[2] = (int)(intptr_t)buf;
+            r.r[3] = 64;
+            r.r[4] = off;
+            r.r[5] = sizeof(buf);
+            r.r[6] = 0;
+            if (_kernel_swi(0x0C, &r, &r))
+                return;                         /* (no such directory) */
+            for (int i = 0, at = 0; i < r.r[3] && at < (int)sizeof(buf); i++) {
+                fn(dir, buf + at, o);
+                at += (int)strlen(buf + at) + 1;
+            }
+            off = r.r[4];
+        }
+    }
+}
+
+#define SUBS_FOUND 16
+
+typedef struct {
+    const char *base;                   /* the video's name without its extension */
+    char xsep, dsep;                    /* extension and directory separators */
+    int rank;                           /* -1: only names for the video; else this for all */
+    int n;
+    struct { char path[512]; int rank; } f[SUBS_FOUND];
+} SubScan;
+
+/* Is name a subtitle file for the video (base): base, or base and more
+   (film/el/srt, film_English.srt ...)? 0: base exactly, 1: base and more */
+static int sub_name_rank(const char *name, const char *base, char xsep)
+{
+    const char *e = strrchr(name, xsep);
+    size_t stem, bl = strlen(base);
+    if (!e)
+        return -1;
+    stem = (size_t)(e - name);
+    if (stem < bl || strncasecmp(name, base, bl))
+        return -1;
+    if (stem == bl)
+        return 0;
+    return strchr("./_- ([\xA0", name[bl]) ? 1 : -1;
+}
+
+static void sub_scan_one(const char *dir, const char *name, void *o)
+{
+    SubScan *s = o;
+    char full[512];
+    const char *e = strrchr(name, s->xsep);
+    int rank, i;
+    if (!e || s->n == SUBS_FOUND)
+        return;
+    for (i = 0; i < (int)(sizeof(sub_exts) / sizeof(sub_exts[0])); i++)
+        if (!strcasecmp(e + 1, sub_exts[i]))
+            break;
+    if (i == (int)(sizeof(sub_exts) / sizeof(sub_exts[0])))
+        return;
+    rank = sub_name_rank(name, s->base, s->xsep);
+    if (s->rank >= 0)
+        rank = rank >= 0 ? rank : s->rank;
+    if (rank < 0)
+        return;
+    if (snprintf(full, sizeof(full), "%s%s%s", dir, *dir ? (s->dsep == '.' ? "." : "/") : "", name) >= (int)sizeof(full))
+        return;
+    for (i = s->n; i > 0 && (s->f[i - 1].rank > rank ||          /* in order: rank, then name */
+                             (s->f[i - 1].rank == rank && strcasecmp(s->f[i - 1].path, full) > 0)); i--)
+        s->f[i] = s->f[i - 1];
+    snprintf(s->f[i].path, sizeof(s->f[i].path), "%s", full);
+    s->f[i].rank = rank;
+    s->n++;
+}
+
+/* A file playing: its subtitle files, as VLC and mpv find them: beside it
+   named for it (film/mp4: film/srt, film/el/srt ...; Unix names film.srt,
+   film.el.srt), and in a Subs or Subtitles directory beside it, or one in
+   that named for the film. One named for it is shown (the exact name
+   first); others in Subs are only listed in the Subtitles menu. */
 static void subs_beside(const char *path)
 {
-    char cand[512];
-    const char *l = leaf(path), *e = strrchr(l, path[0] == '/' ? '.' : '/');
-    size_t base = e ? (size_t)(e - path) : strlen(path);
-    for (unsigned i = 0; i < sizeof(sub_exts) / sizeof(sub_exts[0]); i++) {
-        FILE *f;
-        snprintf(cand, sizeof(cand), "%.*s%c%s", (int)base, path, path[0] == '/' ? '.' : '/', sub_exts[i]);
-        if (!(f = fopen(cand, "rb")))
-            continue;
-        fclose(f);
-        if (reelcore_add_subtitle_file(S.v, cand) >= 0)
-            lg("subtitles: %s", cand);
+    static const char *const folders[] = { "Subs", "Subtitles", "subs", "subtitles" };
+    static SubScan s;
+    int riscos = path[0] != '/', before = reelcore_subtitle_track(S.v), first = -1;
+    const char *l = leaf(path), *e;
+    char dir[512], base[256], sub[600];
+    memset(&s, 0, sizeof(s));
+    s.xsep = riscos ? '/' : '.';
+    s.dsep = riscos ? '.' : '/';
+    e = strrchr(l, s.xsep);
+    snprintf(dir, sizeof(dir), "%.*s", l > path ? (int)(l - path - 1) : 0, path);
+    snprintf(base, sizeof(base), "%.*s", e ? (int)(e - l) : (int)strlen(l), l);
+    s.base = base;
+    s.rank = -1;
+    dir_names(dir, riscos, sub_scan_one, &s);
+    for (int i = 0; i < (riscos ? 2 : 4); i++) {   /* (RISC OS's names: any case) */
+        snprintf(sub, sizeof(sub), "%s%s%s", dir, *dir ? (riscos ? "." : "/") : "", folders[i]);
+        s.rank = 2;                                /* Subs: all, but named for it first */
+        dir_names(sub, riscos, sub_scan_one, &s);
+        if (strlen(sub) + strlen(base) + 2 < sizeof(sub)) {
+            strcat(sub, riscos ? "." : "/");
+            strcat(sub, base);
+            s.rank = 1;                            /* Subs.film: all are for it */
+            dir_names(sub, riscos, sub_scan_one, &s);
+        }
     }
+    if (!s.n) {
+        lg("subtitles: none beside %s (named %s%c..., or in Subs)", l, base, s.xsep);
+        return;
+    }
+    for (int i = 0; i < s.n; i++) {
+        int k = reelcore_add_subtitle_file(S.v, s.f[i].path);
+        if (k < 0) {
+            lg("subtitles: can't read %s", s.f[i].path);
+            continue;
+        }
+        lg("subtitles: %s%s", s.f[i].path, s.f[i].rank < 2 ? "" : " (listed, not shown)");
+        if (first < 0 && s.f[i].rank < 2)
+            first = k;
+    }
+    if (first >= 0) {
+        reelcore_set_subtitle_track(S.v, first);
+        reelcore_show_subtitles(S.v, 1);
+        {
+            int cs = reelcore_subtitle_charset_used(S.v);
+            if (cs >= 0)
+                lg("subtitles shown: track %d, read as %s", first + 1, reelcore_charset_name(cs));
+        }
+    } else
+        reelcore_set_subtitle_track(S.v, before);  /* (none named for it: as before) */
 }
 
 /* A subtitle file dropped on Reel: shown with what's playing */
@@ -2366,6 +2513,7 @@ static void opened(ReelCore *v, const source_t *src)
     source_name(src, S.name, sizeof(S.name));
     source_key(src, S.file, sizeof(S.file));
     options_apply();
+    reelcore_set_subtitle_charset(v, S.sub_cs);
     if (src->url && !src->audio_url && !reelcore_is_network(src->url))
         subs_beside(src->url);
     S.sub_last = reelcore_subtitle_track(v) >= 0 ? reelcore_subtitle_track(v) : 0;
@@ -3497,6 +3645,24 @@ static void subs_set(int track)
     subs_changed();
 }
 
+/* The Subtitles menu's Character set: for files that aren't UTF-8; the
+   one shown is read again in it */
+static void subs_charset(int cs)
+{
+    S.sub_cs = cs;
+    choices_save();
+    lg("subtitle character set: %s", reelcore_charset_name(cs));
+    if (!S.v)
+        return;
+    if (reelcore_set_subtitle_charset(S.v, cs) < 0) {
+        report("Can't read the subtitles again.");
+        return;
+    }
+    if (reelcore_subtitle_charset_used(S.v) >= 0)
+        lg("subtitles read as %s", reelcore_charset_name(reelcore_subtitle_charset_used(S.v)));
+    subs_changed();
+}
+
 /* V: subtitles hidden, or shown again (the track stays chosen, as mpv's V) */
 static void subs_toggle(void)
 {
@@ -3589,8 +3755,9 @@ typedef struct {
     int width, height, gap;
     item_t item[MENU_MAX];
 } menu_t;
-static menu_t menu, m_pic, m_speed, m_track, m_list, m_deint, m_size, m_subs, m_chap, m_types;
-static char menu_text[9][MENU_MAX][72];
+static menu_t menu, m_pic, m_speed, m_track, m_list, m_deint, m_size, m_subs, m_chap, m_types, m_cs;
+static char menu_text[10][MENU_MAX][72];
+static int subs_cs_item = -1;           /* the Subtitles menu's Character set */
 static int menu_is_bar;                 /* the open menu: 1 icon bar, 0 window */
 static int menu_x, menu_y;
 
@@ -3935,18 +4102,33 @@ static void menu_open(int bar, int x, int y)
             menu_add(&m_track, 3, &k, t, reelcore_audio_track(S.v) == i, NULL, 0);
         }
         menu_end(&m_track, k);
+        menu_start(&m_cs, "Character set");
+        k = 0;
+        for (int i = 0; i < REELCORE_CS_N; i++) {
+            int used = S.v ? reelcore_subtitle_charset_used(S.v) : -1;
+            if (i == REELCORE_CS_AUTO && S.sub_cs == REELCORE_CS_AUTO && used >= 0)
+                snprintf(t, sizeof(t), "Automatic: %s", reelcore_charset_name(used));
+            else
+                snprintf(t, sizeof(t), "%s", reelcore_charset_name(i));
+            menu_add(&m_cs, 9, &k, t, S.sub_cs == i, NULL, 0);
+        }
+        m_cs.item[0].flags |= 2;                    /* a dotted line after Automatic */
+        menu_end(&m_cs, k);
         menu_start(&m_subs, "Subtitles");
         k = 0;
         {
             int st = S.v ? reelcore_subtitle_tracks(S.v) : 0;
             menu_add(&m_subs, 7, &k, "None", !S.v || !reelcore_subtitles_shown(S.v), NULL, 0);
-            for (int i = 0; i < st && k < MENU_MAX; i++) {
+            for (int i = 0; i < st && k < MENU_MAX - 1; i++) {
                 char name[64];
                 reelcore_subtitle_track_name(S.v, i, name, sizeof(name));
                 snprintf(t, sizeof(t), "%d: %s", i + 1, name);
                 menu_add(&m_subs, 7, &k, t, reelcore_subtitles_shown(S.v) && reelcore_subtitle_track(S.v) == i, NULL, 0);
             }
         }
+        m_subs.item[k - 1].flags |= 2;              /* a dotted line, then the character set */
+        subs_cs_item = k;
+        menu_add(&m_subs, 7, &k, "Character set", 0, &m_cs, 0);
         menu_end(&m_subs, k);
         menu_start(&m_chap, "Chapters");
         k = 0;
@@ -3988,7 +4170,8 @@ static void menu_open(int bar, int x, int y)
         menu_add(&menu, 0, &n, "Sound track", 0, tracks > 1 ? &m_track : NULL, tracks < 2);
         {
             int st = S.v ? reelcore_subtitle_tracks(S.v) : 0, nc = S.v ? reelcore_chapters(S.v) : 0;
-            menu_add(&menu, 0, &n, "Subtitles", 0, st ? &m_subs : NULL, !st);
+            snprintf(t, sizeof(t), "Subtitles (%d)", st);
+            menu_add(&menu, 0, &n, st ? t : "Subtitles", 0, S.v ? &m_subs : NULL, !S.v);
             snprintf(t, sizeof(t), "Chapters (%d)", nc);
             menu_add(&menu, 0, &n, nc ? t : "Chapters", 0, nc ? &m_chap : NULL, !nc);
         }
@@ -4366,7 +4549,10 @@ static void menu_select(const int *sel)
                 lg("sound track %d", sel[1] + 1);
             break;
         case WM_SUBS:
-            if (sel[1] >= 0 && S.v)
+            if (sel[1] == subs_cs_item) {
+                if (sel[2] >= 0 && sel[2] < REELCORE_CS_N)
+                    subs_charset(sel[2]);
+            } else if (sel[1] >= 0 && S.v)
                 subs_set(sel[1] - 1);       /* (0: None) */
             break;
         case WM_CHAP:

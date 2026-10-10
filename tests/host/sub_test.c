@@ -2,7 +2,7 @@
  * Subtitles, chapters, turned pictures and frame steps (reelcore):
  *   - an MKV with a SubRip track marked default: shown from the start; the
  *     text at 1.5 s ("Hello there": ASS italics dropped) and 3.5 s (UTF-8
- *     quotes, dash and accents in Latin-1, two lines); none at 2.7 s;
+ *     quotes, dash and accents as UTF-8, two lines); none at 2.7 s;
  *     drawn into the picture near the bottom (white text, black outline),
  *     nothing else changed; the same in YV12 at 1x and 2x; off again: the
  *     picture as without;
@@ -17,7 +17,14 @@
  *   - an ASS file: override blocks ({\b1}) dropped, \N a new line, \h a space,
  *     commas in the text kept.
  *
- *   sub_test SUBS.mkv PLAIN.mp4 SUBS.srt ROT.mp4 SUBS.ass
+ *   - SubRip files that aren't UTF-8 (FFmpeg drops every line of those):
+ *     Greek (Windows-1253), Cyrillic (1251), Western (1252) and Turkish
+ *     (1254) guessed and shown as they should be (so the font has them),
+ *     drawn; a set chosen reads the file again in it; a UTF-8 file is
+ *     read as UTF-8; Greek read as UTF-8 shows '?'s.
+ *
+ *   sub_test SUBS.mkv PLAIN.mp4 SUBS.srt ROT.mp4 SUBS.ass GOP.mp4 LONG.mp4 PICS.sup
+ *            GREEK.srt CYR.srt WEST.srt TURK.srt
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -132,7 +139,7 @@ int main(int argc, char **argv)
     CHECK(!t[0], "at 2.7 s: '%s' (want none)", t);
     compare(v, "2.7 s", 0);
     text_at(v, 3.5, t, sizeof(t));
-    CHECK(!strcmp(t, "\"Quoted\" - it's caf\xe9\nsecond line"), "at 3.5 s: '%s'", t);
+    CHECK(!strcmp(t, "\xe2\x80\x9cQuoted\xe2\x80\x9d \xe2\x80\x94 it\xe2\x80\x99s caf\xc3\xa9\nsecond line"), "at 3.5 s: '%s'", t);
     compare(v, "3.5 s, two lines", 1);
     {   /* text drawn at the frame's own size however big it's shown (it was
            drawn for the screen and scaled a pixel at a time: unreadable) */
@@ -163,7 +170,7 @@ int main(int argc, char **argv)
         reelcore_set_subtitle_track(v, 0);
         seeked(v);
         text_at(v, 3.6, t, sizeof(t));
-        CHECK(!strncmp(t, "\"Quoted\"", 8), "track chosen again at 3.3 s, at 3.6 s: '%s'", t);
+        CHECK(!strncmp(t, "\xe2\x80\x9cQuoted", 9), "track chosen again at 3.3 s, at 3.6 s: '%s'", t);
     }
     reelcore_close(v);
 
@@ -305,6 +312,49 @@ int main(int argc, char **argv)
         }
         free(px);
         reelcore_close(v);
+    }
+    if (argc > 12) {   /* code pages */
+        static const struct { int arg, cs; const char *a, *b; } want[] = {
+            { 9, REELCORE_CS_1253, "Καλημέρα, τι κάνεις;", "Πολύ καλά, ευχαριστώ!" },
+            { 10, REELCORE_CS_1251, "Привет, как дела?", "Хорошо, спасибо!" },
+            { 11, REELCORE_CS_1252, "Ça va? Très bien — café", "À bientôt!" },
+            { 12, REELCORE_CS_1254, "Günaydın, nasılsın?", "Şimdi iyiyim, teşekkürler." },
+        };
+        for (unsigned i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
+            v = reelcore_open(argv[2], 0);
+            if (!v)
+                break;
+            CHECK(reelcore_add_subtitle_file(v, argv[want[i].arg]) == 0, "adding %s", argv[want[i].arg]);
+            text_at(v, 1.5, t, sizeof(t));
+            printf("  %s: read as %s: '%s'\n", argv[want[i].arg], reelcore_charset_name(reelcore_subtitle_charset_used(v)), t);
+            CHECK(reelcore_subtitle_charset_used(v) == want[i].cs && !strcmp(t, want[i].a),
+                  "%s: read as %d (want %d), '%s' (want '%s')", argv[want[i].arg], reelcore_subtitle_charset_used(v),
+                  want[i].cs, t, want[i].a);
+            text_at(v, 3.5, t, sizeof(t));
+            CHECK(!strcmp(t, want[i].b), "%s at 3.5 s: '%s' (want '%s')", argv[want[i].arg], t, want[i].b);
+            compare(v, "code page, 3.5 s", 1);
+            if (i == 0) {   /* Greek: chosen as Cyrillic, as UTF-8, then Automatic again */
+                reelcore_set_subtitle_charset(v, REELCORE_CS_1251);
+                reelcore_subtitle_text(v, t, sizeof(t));
+                CHECK(reelcore_subtitle_charset_used(v) == REELCORE_CS_1251 && t[0] && strcmp(t, want[i].b),
+                      "Greek chosen as Cyrillic: read as %d, '%s'", reelcore_subtitle_charset_used(v), t);
+                reelcore_set_subtitle_charset(v, REELCORE_CS_UTF8);
+                reelcore_subtitle_text(v, t, sizeof(t));
+                printf("  Greek read as UTF-8: '%s'\n", t);
+                CHECK(!strcmp(t, "???? ????, ????????\?!"), "Greek read as UTF-8: '%s'", t);
+                reelcore_set_subtitle_charset(v, REELCORE_CS_AUTO);
+                reelcore_subtitle_text(v, t, sizeof(t));
+                CHECK(reelcore_subtitle_charset_used(v) == REELCORE_CS_1253 && !strcmp(t, want[i].b),
+                      "Greek, Automatic again: '%s'", t);
+            }
+            reelcore_close(v);
+        }
+        v = reelcore_open(argv[2], 0);   /* UTF-8: as it is */
+        if (v) {
+            reelcore_add_subtitle_file(v, argv[3]);
+            CHECK(reelcore_subtitle_charset_used(v) == REELCORE_CS_UTF8, "UTF-8 file read as %d", reelcore_subtitle_charset_used(v));
+            reelcore_close(v);
+        }
     }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;

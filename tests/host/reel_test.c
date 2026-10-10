@@ -164,7 +164,7 @@ static int vsync_now(void) { return vsync_held >= 0 ? vsync_held : (fake_vsync +
 /* Choices: what Reel saved */
 static int choices_has(const char *want)
 {
-    char path[128], buf[512];
+    char path[128], buf[2048];
     size_t n;
     FILE *f;
     snprintf(path, sizeof(path), "%s/Choices", choices_dir);
@@ -216,7 +216,8 @@ enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT
        P_FULLWAIT, P_LOGFLUSH, P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_SIZE180, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
        P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_SUBDROP, P_SUBHIDE, P_SUBSHOW, P_SUBNEXT, P_STEP, P_STEPPLAY, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
-       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_ARGURL, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_VOLKEYS, P_FULLSTART, P_QUIT };
+       P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_ARGURL, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_VOLKEYS, P_FULLSTART,
+       P_SUBSBESIDE, P_SUBCS, P_SUBCSAUTO, P_QUIT };
 static int phase = -1, phase_step;
 /* the phases that play (deliver nulls) */
 static int next_is_null(void)
@@ -1489,6 +1490,78 @@ static int next_event(int *b)
                    "  Data's given back), Never (not claimed); a second copy's file taken\n", var, want);
             break;
         }
+        /* ---- subtitles found for a video: beside it named for it, and in Subs ---- */
+        case P_SUBSBESIDE: {
+            char txt[200], name[100];
+            if (!v)
+                break;
+            if (phase_step == 0) {
+                static const struct { const char *name, *text; } files[] = {
+                    { "Film.el.srt", "\xca\xe1\xeb\xe7\xec\xdd\xf1\xe1" },   /* Greek, Windows-1253 */
+                    { "Film2.srt", "Another film's" },                          /* not this one's */
+                    { "Film.txt", "Not subtitles" },
+                    { "Subs/Film.en.srt", "Good morning" },
+                    { "Subs/Other.srt", "Listed, not shown" },
+                };
+                mkdir("/tmp/reel_test_sb", 0777);
+                mkdir("/tmp/reel_test_sb/Subs", 0777);
+                unlink("/tmp/reel_test_sb/Film.mp4");
+                CHECK(symlink(clip1, "/tmp/reel_test_sb/Film.mp4") == 0, "can't make /tmp/reel_test_sb/Film.mp4");
+                for (unsigned i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+                    char path[160];
+                    FILE *f;
+                    snprintf(path, sizeof(path), "/tmp/reel_test_sb/%s", files[i].name);
+                    if ((f = fopen(path, "w"))) {
+                        fprintf(f, "1\r\n00:00:00,000 --> 00:10:00,000\r\n%s\r\n\r\n", files[i].text);
+                        fclose(f);
+                    }
+                }
+                phase_step++;
+                message(b, 3, WIN, 1, 0xBF8, "/tmp/reel_test_sb/Film.mp4");   /* DataLoad */
+                return 18;
+            }
+            if (phase_step++ < 30) { fake_time += 0.02; return 0; }
+            reelcore_subtitle_text(v, txt, sizeof(txt));
+            reelcore_subtitle_track_name(v, reelcore_subtitle_track(v), name, sizeof(name));
+            printf("  subtitles found: %d tracks, showing %s (read as %s): '%s'\n", reelcore_subtitle_tracks(v), name,
+                   reelcore_charset_name(reelcore_subtitle_charset_used(v)), txt);
+            CHECK(reelcore_subtitle_tracks(v) == 3, "subtitles found: %d tracks (want Film.el.srt, Subs' two)",
+                  reelcore_subtitle_tracks(v));
+            CHECK(!strcmp(name, "File: Film.el.srt") && !strcmp(txt, "Καλημέρα") &&
+                  reelcore_subtitle_charset_used(v) == REELCORE_CS_1253 && reelcore_subtitles_shown(v),
+                  "subtitles found: showing '%s' '%s' as %d (want Film.el.srt, Greek)", name, txt,
+                  reelcore_subtitle_charset_used(v));
+            reelcore_subtitle_track_name(v, 1, name, sizeof(name));
+            CHECK(!strcmp(name, "File: Film.en.srt"), "subtitles found: the 2nd '%s' (want Subs' Film.en.srt)", name);
+            reelcore_subtitle_track_name(v, 2, name, sizeof(name));
+            CHECK(!strcmp(name, "File: Other.srt"), "subtitles found: the 3rd '%s' (want Subs' Other.srt)", name);
+            break;
+        }
+        case P_SUBCS:                                                 /* Subtitles > Character set > Cyrillic */
+        case P_SUBCSAUTO:                                             /* ... > Automatic */
+            if (!v)
+                break;
+            if (phase_step == 0) { phase_step++; click(b, sx(WIN, 100), st(WIN)[2] + 100, 2, WIN, -1); return 6; }
+            if (phase_step == 1) {
+                phase_step++;
+                b[0] = M_SUBS; b[1] = 1 + reelcore_subtitle_tracks(v);   /* (None, the tracks, Character set) */
+                b[2] = phase == P_SUBCS ? REELCORE_CS_1251 : REELCORE_CS_AUTO; b[3] = -1;
+                return 9;
+            }
+            {
+                char txt[200];
+                reelcore_subtitle_text(v, txt, sizeof(txt));
+                if (phase == P_SUBCS) {
+                    CHECK(reelcore_subtitle_charset_used(v) == REELCORE_CS_1251 && !strcmp(txt, "КблзмЭсб") &&
+                          choices_has("subtitle_charset windows-1251"),
+                          "Character set Cyrillic: read as %d, '%s'", reelcore_subtitle_charset_used(v), txt);
+                    printf("  Subtitles > Character set > Cyrillic: read again, '%s'\n", txt);
+                } else
+                    CHECK(reelcore_subtitle_charset_used(v) == REELCORE_CS_1253 && !strcmp(txt, "Καλημέρα") &&
+                          choices_has("subtitle_charset auto"),
+                          "Character set Automatic: read as %d, '%s'", reelcore_subtitle_charset_used(v), txt);
+            }
+            break;
         case P_QUIT:
             memset(b, 0, 24); b[4] = 0;
             return 17;                                                /* Message_Quit: exits */
