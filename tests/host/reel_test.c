@@ -213,7 +213,7 @@ static int script(int *b)
 /* the phases after the first drop */
 enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT, P_DEINT, P_FAST, P_AB, P_ABPLAY, P_ABOFF,
        P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PANEL, P_PANELOFF, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL, P_PTRHIDE,
-       P_FULLWAIT, P_LOGFLUSH, P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
+       P_FULLWAIT, P_LOGFLUSH, P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_SIZE180, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
        P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_SUBDROP, P_SUBHIDE, P_SUBSHOW, P_SUBNEXT, P_STEP, P_STEPPLAY, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
        P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
        P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_ARGURL, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_VOLKEYS, P_FULLSTART, P_QUIT };
@@ -786,6 +786,29 @@ static int next_event(int *b)
             MENU_PICK(WIN, M_SIZE, 1);
             CHECK(opened_w == 1132 && opened_h == 368 + 64, "actual size: %dx%d (want 1132x432)", opened_w, opened_h);
             check_picture("actual size");
+            break;
+        case P_SIZE180:
+#ifdef REEL_EGL
+            /* ReelEGL on a 180 dpi (EX0 EY0) desktop: EGL's window scale 2,
+               so Actual size is twice the video's pixels in OS units (the
+               size it is at 90 dpi), the surface the video's own size, each
+               pixel shown 2x2; then 90 dpi again */
+            if (phase_step == 0) { fake_window_scale = 2; phase_step++; click(b, sx(WIN, 100), st(WIN)[2] + 100, 2, WIN, -1); return 6; }
+            if (phase_step == 1) { phase_step++; b[0] = M_SIZE; b[1] = 1; b[2] = -1; return 9; }
+            if (phase_step == 2) {
+                int w, h, full;
+                reel_test_surface(&w, &h, &full);
+                CHECK(opened_w == (322 * 2) << 1 && opened_h == ((184 * 2) << 1) + 64,
+                      "180 dpi, actual size: %dx%d (want %dx%d)", opened_w, opened_h, (322 * 2) << 1, ((184 * 2) << 1) + 64);
+                CHECK(fake_surf_scale == 2 && w == 322 && h == 184 && !full,
+                      "180 dpi: surface %dx%d, scale %d (want 322x184, 2)", w, h, fake_surf_scale);
+                printf("  ReelEGL at 180 dpi: Actual size %dx%d OS units, surface %dx%d shown 2x2\n", opened_w, opened_h, w, h);
+                fake_window_scale = 1;
+                phase_step++; click(b, sx(WIN, 100), st(WIN)[2] + 100, 2, WIN, -1); return 6;
+            }
+            if (phase_step == 3) { phase_step++; b[0] = M_SIZE; b[1] = 1; b[2] = -1; return 9; }
+            CHECK(fake_surf_scale == 1 && opened_w == 1132, "back at 90 dpi: scale %d, window %d wide", fake_surf_scale, opened_w);
+#endif
             break;
         case P_SOUNDKEY:                                              /* # : the next sound track, round */
             if (!clip3)

@@ -9,4 +9,5 @@ extern unsigned char *fake_shown;
 extern int fake_surf_w, fake_surf_h, fake_surf_pitch;
 extern int fake_scr_w, fake_scr_h, fake_wa[4], fake_plots, fake_surfaces;
 extern int fake_swap_would_wait, fake_would_wait_asks;
+extern int fake_window_scale, fake_surf_scale;
 #endif

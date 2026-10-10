@@ -257,8 +257,11 @@ static struct {
     EGLDisplay dpy;
     EGLConfig cfg;
     EGLSurface surf;                    /* work area surface, or the whole screen */
-    int surf_w, surf_h, surf_full;
+    int surf_w, surf_h, surf_full, surf_scale;
 #endif
+    int wscale;                         /* ReelEGL on a 180 dpi (EX0 EY0) desktop: each video pixel 2x2
+                                           (EGL's window scale), so the picture is the size the desktop's
+                                           text and icons are; 1 otherwise (and in Reel) */
     int fill_x1;                        /* current right edge of the position fill */
     /* playback options */
     double vol;                         /* the volume bar, 0..1 (the sound is vol squared) */
@@ -578,6 +581,41 @@ static void read_screen(void)
     }
 }
 
+#ifdef REEL_EGL
+static int egl_init(void);
+#endif
+/* ReelEGL: the window scale for a video of w x h pixels (EGL decides: 2
+   on a 180 dpi, EX0 EY0, desktop if twice the size fits; EGL$WindowScale
+   1-4 chooses): the window is opened that many times the video's size,
+   as at 90 dpi, the controls and text being the desktop's size. 1 in
+   Reel, and when EGL can't say. */
+static int wscale_for(int w, int h)
+{
+#ifdef REEL_EGL
+    int sc;
+    if (w < 1 || h < 1 || egl_init() < 0)
+        return 1;
+    sc = eglWindowScaleRISCOS(S.dpy, w, h);
+    return sc >= 1 && sc <= 4 ? sc : 1;
+#else
+    (void)w; (void)h;
+    return 1;
+#endif
+}
+
+/* Subtitles, the stats and the volume drawn into a picture shown through
+   the overlay: this much bigger (2 at 180 dpi in ReelEGL, window or full
+   screen, so the text is the desktop's size; without the overlay the
+   window scale enlarges them with the picture) */
+static double text_scale(void)
+{
+#ifdef REEL_EGL
+    if (S.xeig == 0 && S.yeig == 0)
+        return S.wscale > 1 ? S.wscale : 2;
+#endif
+    return 1;
+}
+
 static __attribute__((unused)) void vdu_clip(int x0, int y0, int x1, int y1)    /* inclusive, OS units */
 {
     unsigned char b[9] = { 24, x0 & 255, (x0 >> 8) & 255, y0 & 255, (y0 >> 8) & 255,
@@ -762,10 +800,16 @@ static void surf_free(void)
 
 static void surf_make(int w, int h, int full)
 {
-    EGLint attr[12], *a = attr;
+    EGLint attr[14], *a = attr;
+    int sc = full ? 1 : S.wscale > 1 ? S.wscale : 1;
+    /* (the window scale: a surface 1/scale the picture area's size, shown
+       scale x scale by EGL's plot or the overlay: converting costs no
+       more than at 90 dpi. Not full screen: EGL doesn't scale that.) */
+    w /= sc;
+    h /= sc;
     if (w < 1) w = 1;
     if (h < 1) h = 1;
-    if (S.surf != EGL_NO_SURFACE && S.surf_w == w && S.surf_h == h && S.surf_full == full)
+    if (S.surf != EGL_NO_SURFACE && S.surf_w == w && S.surf_h == h && S.surf_full == full && S.surf_scale == sc)
         return;
     surf_free();
     if (egl_init() < 0)
@@ -779,6 +823,9 @@ static void surf_make(int w, int h, int full)
         *a++ = EGL_WORK_AREA_Y_RISCOS; *a++ = 0;
         *a++ = EGL_WORK_AREA_WIDTH_RISCOS; *a++ = w;
         *a++ = EGL_WORK_AREA_HEIGHT_RISCOS; *a++ = h;
+        if (sc > 1) {
+            *a++ = EGL_WINDOW_SCALE_RISCOS; *a++ = sc;
+        }
     }
     *a = EGL_NONE;
     S.surf = eglCreateWindowSurface(S.dpy, S.cfg,
@@ -791,10 +838,12 @@ static void surf_make(int w, int h, int full)
     }
     if (full)
         eglSwapInterval(S.dpy, S.vsync ? 1 : 0);
-    lg("EGL surface %dx%d, %s", w, h, !full ? "work area" : !S.vsync ? "screen, direct (single buffer)" : "screen, vsync");
+    lg("EGL surface %dx%d, %s%s", w, h, !full ? "work area" : !S.vsync ? "screen, direct (single buffer)" : "screen, vsync",
+       sc > 1 ? ", each pixel shown 2x2 (180 dpi desktop)" : "");
     S.surf_w = w;
     S.surf_h = h;
     S.surf_full = full;
+    S.surf_scale = sc;
 }
 #endif
 
@@ -1396,7 +1445,7 @@ static int ov_place(int w)
     x = pic.x0 + (((bw - rw) / 2) << S.xeig);           /* top left: can be outside (Fill, Original) */
     y = pic.y1 - (((bh - rh) / 2) << S.yeig);
     if (ov.fw > 0)                     /* subtitles and the stats: drawn into the frame this much bigger */
-        reelcore_set_yuv_scale(S.v, (double)ov.fw / rw);   /* (the overlay's size: halved for 4K) */
+        reelcore_set_yuv_scale(S.v, (double)ov.fw / rw * text_scale());   /* (the overlay's size: halved for 4K) */
     want[0] = w; want[1] = rw; want[2] = rh; want[3] = x; want[4] = y;
     want[5] = pic.x0; want[6] = pic.y0; want[7] = pic.x1; want[8] = pic.y1;
     if (!memcmp(want, ov.placed, sizeof(want)))
@@ -2341,9 +2390,11 @@ static void opened(ReelCore *v, const source_t *src)
         report("Can't create the window.");
         return;
     }
-    /* size: the video's own (pixels -> OS units), at most 3/4 of the screen */
-    w = reelcore_width(v) << S.xeig;
-    h = reelcore_height(v) << S.yeig;
+    /* size: the video's own (pixels -> OS units; ReelEGL at 180 dpi, twice
+       that: the window scale), at most 3/4 of the screen */
+    S.wscale = wscale_for(reelcore_width(v), reelcore_height(v));
+    w = (reelcore_width(v) * S.wscale) << S.xeig;
+    h = (reelcore_height(v) * S.wscale) << S.yeig;
     maxw = S.scr_w * 3 / 4;
     maxh = S.scr_h * 3 / 4 - CH;
     if (w > maxw) { h = (int)((long long)h * maxw / w); w = maxw; }
@@ -3331,7 +3382,7 @@ static void panel_update(int sample)
 
     pp.rows = i;
     pp.graph_n = PANEL_N;
-    pp.yuv_scale = ov.shown && ov.placed[1] > 0 && fw > 0 ? (double)fw / ov.placed[1] : 1;
+    pp.yuv_scale = (ov.shown && ov.placed[1] > 0 && fw > 0 ? (double)fw / ov.placed[1] : 1) * text_scale();
     reelcore_set_panel(S.v, &pp);
 #ifdef REEL_TEST
     panel_last = &pp;
@@ -4000,7 +4051,7 @@ static void volume_key(double step)
         {
             int fw = 0, fh = 0;             /* (as panel_update: the overlay's scaling undone) */
             reelcore_frame_size(S.v, &fw, &fh);
-            pp.yuv_scale = ov.shown && ov.placed[1] > 0 && fw > 0 ? (double)fw / ov.placed[1] : 1;
+            pp.yuv_scale = (ov.shown && ov.placed[1] > 0 && fw > 0 ? (double)fw / ov.placed[1] : 1) * text_scale();
         }
         reelcore_set_panel(S.v, &pp);
         S.vol_osd_cs = now_cs() | 1;
@@ -4146,8 +4197,9 @@ static void set_size(int k)
     read_screen();
     ibar = iconbar_top();
     top = S.scr_h - 44;                 /* below the title bar */
-    pw = reelcore_width(S.v) << S.xeig;
-    ph = reelcore_height(S.v) << S.yeig;
+    S.wscale = wscale_for(reelcore_width(S.v), reelcore_height(S.v));   /* (Actual size: as the desktop's dpi) */
+    pw = (reelcore_width(S.v) * S.wscale) << S.xeig;
+    ph = (reelcore_height(S.v) * S.wscale) << S.yeig;
     if (pw <= 0 || ph <= 0)
         return;
     f = k == SIZE_HALF ? 0.5 : k == SIZE_DOUBLE ? 2 : 1;

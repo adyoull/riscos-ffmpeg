@@ -5,6 +5,16 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Unreleased (next Reel): from André Timmermans on the ROOL forum
 
+- **ReelEGL on a 180 dpi desktop** (EX0 EY0): the picture is the
+  size it is at 90 dpi, matching the desktop's text and icons, using
+  riscos-mesa 20.3.5-16's window scale: EGL chooses it
+  (`eglWindowScaleRISCOS`: 2 when twice the size fits;
+  `*Set EGL$WindowScale 1` keeps pixel for pixel) and shows each pixel
+  2x2, so converting costs no more than at 90 dpi. Window size's Actual
+  size is the video at the desktop's dpi. Subtitles, the stats and the
+  volume through the overlay are drawn twice as big there too. Full
+  screen is unchanged. reel_test: Actual size twice the OS units, the
+  surface the video's own size shown 2x2.
 - **riscos-mesa 20.3.5-16** (replacing 20.3.5-12) for ReelEGL, ffplay,
   ffmpeg's EGL output and the EGL examples. ReelEGL full screen with
   Vsync now gets 20.3.5-13's non-blocking swap
@@ -12,9 +22,8 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   the vsync is under 3 ms away, rather than waiting in the swap with
   nothing else running. 20.3.5-14 and -15's NEON drawing, shader
   compiler and depth code speed up `videocube` and ffplay's GL output.
-  20.3.5-16's window scale for EX0 EY0 desktops isn't used: ReelEGL,
-  ffplay -f egl and videowin show video pixel for pixel there, as
-  before; videocube (freeglut) gets it.
+  ffplay -f egl and videowin show video pixel for pixel on EX0 EY0
+  desktops, as before; videocube (freeglut) gets the window scale.
 - **Loop takes effect at once**: turned on while a file plays, Reel goes
   round again at its end (it was only from the next file opened).
   `reelcore_set_loop`. vc_test: on part way through, round once; off

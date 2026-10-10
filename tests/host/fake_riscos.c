@@ -100,14 +100,20 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay d, EGLConfig c, EGLint attr, EGLint *v)
     *v = attr == EGL_NATIVE_VISUAL_ID ? fake_visual : 0;
     return EGL_TRUE;
 }
+/* riscos-mesa 20.3.5-16: the window scale EGL would choose (2 on a 180
+   dpi desktop), and the one the last surface was made with */
+int fake_window_scale = 1, fake_surf_scale = 1;
+EGLint eglWindowScaleRISCOS(EGLDisplay d, EGLint w, EGLint h) { return fake_window_scale; }
 EGLSurface eglCreateWindowSurface(EGLDisplay d, EGLConfig c, EGLNativeWindowType w, const EGLint *a)
 {
     fake_render_buffer = 0;
+    fake_surf_scale = 1;
     fake_wa[0] = fake_wa[1] = fake_wa[2] = fake_wa[3] = -1;
     for (; a && *a != EGL_NONE; a += 2) {
         if (a[0] == EGL_RENDER_BUFFER) fake_render_buffer = a[1];
         if (a[0] >= EGL_WORK_AREA_X_RISCOS && a[0] <= EGL_WORK_AREA_HEIGHT_RISCOS)
             fake_wa[a[0] - EGL_WORK_AREA_X_RISCOS] = a[1];
+        if (a[0] == EGL_WINDOW_SCALE_RISCOS) fake_surf_scale = a[1];
     }
     if (mem) return EGL_NO_SURFACE;                   /* the fake keeps one surface */
     fake_surfaces++;

@@ -48,6 +48,11 @@ How it draws
 - The mini player (M) is a second window; its picture is a work area
   surface of its own, made when it opens (only one surface exists at a
   time, so switching makes the other window's surface again).
+- On a 180 dpi desktop (EX0 EY0 screen modes), the picture is the size
+  it would be at 90 dpi, matching the desktop's text and icons: EGL
+  shows each pixel 2x2 (its window scale), so it costs no more. To have
+  pixel for pixel instead, *Set EGL$WindowScale 1 (or use Window size >
+  Half). Full screen is unchanged.
 
 Needs
 -----
