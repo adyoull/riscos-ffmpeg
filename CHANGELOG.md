@@ -3,8 +3,37 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next Reel): from George Tsaousis and André Timmermans on the ROOL forum
+## 5.1.10-riscos20 (2026-10-11): UnixLib 5.0.3.3, riscos-mesa 20.3.5-16
 
+FFmpeg's own code is unchanged since riscos19; the programs are rebuilt
+with the latest UnixLib release and riscos-mesa devkit.
+
+- **Relinked with UnixLib 5.0.3.3** (github.com/adyoull/riscos-unixlib
+  release v5.0.3.3, an unofficial fork of GCCSDK's UnixLib;
+  `libunixlib.a` sha256 e24f16c3…), its fixes since 5.0.3.1: threads
+  waiting inside `read()`, `write()` and stdio let the others run, `fork()`
+  with threads running, `getservbyname_r` and friends, `swprintf`'s `%ls`,
+  exit codes 128-255, the heap's areas, and `LLONG_MIN` (it was an
+  unsigned long long, so it compared as a large positive number:
+  libavutil's `av_sscanf` uses it). FFmpeg rebuilt from clean against its
+  `limits.h`. PThreadTicker stays 0.03 (the same module) and the pthread
+  block 640 bytes. `tools/check-unixlib.sh` checks for 5.0.3.3's library.
+- **riscos-mesa 20.3.5-16** (replacing 20.3.5-12) for ReelEGL, ffplay,
+  ffmpeg's EGL output and the EGL examples. ReelEGL full screen with
+  Vsync now gets 20.3.5-13's non-blocking swap
+  (`eglSwapWouldWaitRISCOS`): the picture converted, then swapped once
+  the vsync is under 3 ms away, rather than waiting in the swap with
+  nothing else running. 20.3.5-14 and -15's NEON drawing, shader
+  compiler and depth code speed up `videocube` and ffplay's GL output.
+  ffplay -f egl and videowin show video pixel for pixel on EX0 EY0
+  desktops, as before; videocube (freeglut) gets the window scale.
+
+## Reel 0.1.27 (2026-10-11): subtitles in Greek, Cyrillic and more, found in Subs; volume keys
+
+From George Tsaousis and André Timmermans on the ROOL forum.
+
+- **Relinked with UnixLib 5.0.3.3 and riscos-mesa 20.3.5-16**, as
+  FFmpeg riscos20 (above).
 - **Subtitle files in Windows' code pages are shown** (George's Greek
   .srt showed nothing at all): FFmpeg drops every line of a text
   subtitle that isn't UTF-8, so reelcore now reads the file itself and,
@@ -33,7 +62,6 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   '?'s. reel_test: Film.el.srt (Greek) shown, Subs' Film.en.srt and
   Other.srt listed, Film2.srt not; Character set > Cyrillic and back,
   saved in Choices. Mutation-checked.
-
 - **ReelEGL on a 180 dpi desktop** (EX0 EY0): the picture is the
   size it is at 90 dpi, matching the desktop's text and icons, using
   riscos-mesa 20.3.5-16's window scale: EGL chooses it
@@ -44,15 +72,6 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   volume through the overlay are drawn twice as big there too. Full
   screen is unchanged. reel_test: Actual size twice the OS units, the
   surface the video's own size shown 2x2.
-- **riscos-mesa 20.3.5-16** (replacing 20.3.5-12) for ReelEGL, ffplay,
-  ffmpeg's EGL output and the EGL examples. ReelEGL full screen with
-  Vsync now gets 20.3.5-13's non-blocking swap
-  (`eglSwapWouldWaitRISCOS`): the picture converted, then swapped once
-  the vsync is under 3 ms away, rather than waiting in the swap with
-  nothing else running. 20.3.5-14 and -15's NEON drawing, shader
-  compiler and depth code speed up `videocube` and ffplay's GL output.
-  ffplay -f egl and videowin show video pixel for pixel on EX0 EY0
-  desktops, as before; videocube (freeglut) gets the window scale.
 - **Loop takes effect at once**: turned on while a file plays, Reel goes
   round again at its end (it was only from the next file opened).
   `reelcore_set_loop`. vc_test: on part way through, round once; off
@@ -63,27 +82,6 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 - **Full screen at start** (the icon bar menu, kept in Choices): a video
   opened with no Reel window open goes full screen at once. reel_test:
   saved, and the video playing isn't changed.
-
-## 5.1.10-riscos20 (2026-10-06): UnixLib 5.0.3.3
-
-FFmpeg's own code is unchanged since riscos19; the programs are rebuilt
-with the latest UnixLib release.
-
-- **Relinked with UnixLib 5.0.3.3** (github.com/adyoull/riscos-unixlib
-  release v5.0.3.3, an unofficial fork of GCCSDK's UnixLib;
-  `libunixlib.a` sha256 e24f16c3…), its fixes since 5.0.3.1: threads
-  waiting inside `read()`, `write()` and stdio let the others run, `fork()`
-  with threads running, `getservbyname_r` and friends, `swprintf`'s `%ls`,
-  exit codes 128-255, the heap's areas, and `LLONG_MIN` (it was an
-  unsigned long long, so it compared as a large positive number:
-  libavutil's `av_sscanf` uses it). FFmpeg rebuilt from clean against its
-  `limits.h`. PThreadTicker stays 0.03 (the same module) and the pthread
-  block 640 bytes. `tools/check-unixlib.sh` checks for 5.0.3.3's library.
-
-## Reel 0.1.27 (2026-10-06): UnixLib 5.0.3.3
-
-- **Relinked with UnixLib 5.0.3.3**, as FFmpeg riscos20 (above). Reel's
-  own code is unchanged since 0.1.26.
 
 ## 5.1.10-riscos19 (2026-10-06): speed-ups
 
