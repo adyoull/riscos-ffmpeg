@@ -5,9 +5,10 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Unreleased (next FFmpeg): H.264 encoding on the VideoCore
 
-- **`h264_vchiq` encoder** (riscos-reelhwaccel devkit 0.2.13, its patch
-  0003 as our 0027): H.264 encoded by the Raspberry Pi's VideoCore, e.g.
-  `ffmpeg -i in.mp4 -c:v h264_vchiq -b:v 5M -c:a copy out.mp4`. Never
+- **`h264_encvchiq` encoder** (riscos-reelhwaccel devkit 0.2.13, its patch
+  0003 as our 0027, with the encoder renamed from its `h264_vchiq`, the
+  decoder's name, so each can be asked for and told apart in messages): H.264 encoded by the Raspberry Pi's VideoCore, e.g.
+  `ffmpeg -i in.mp4 -c:v h264_encvchiq -b:v 5M -c:a copy out.mp4`. Never
   the default: ask for it by name. YUV420P in (the ffmpeg command
   converts), even sizes up to 1920x1088 (1080p needs gpu_mem=128); Annex
   B out, no B frames; the SPS and PPS as extradata for MP4 and Matroska.
@@ -24,7 +25,7 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   riscos-reelhwaccel on a fake encoder that behaves as the Pi's; here,
   built and linked (`ffmpeg -encoders` lists it).
 - **Hardware acceleration in the Convert window** (!FFmpeg): an option
-  that encodes the picture with `h264_vchiq`; Speed then offers Fast,
+  that encodes the picture with `h264_encvchiq`; Speed then offers Fast,
   Normal and High quality, which set the bit rate from the picture's
   size and frame rate (0.07, 0.10 and 0.15 bits a pixel, 300k to 20M)
   and the profile (main, high, high; Quick to decode makes it

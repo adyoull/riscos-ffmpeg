@@ -265,7 +265,7 @@ static int script(int *b)
     case 45:   /* the H.264 source decoded by the VideoCore too: an input option */
         read_obey(started[(nstarted - 1) & 15]);
         CHECK(nstarted == hw_starts + 1 && strstr(obey, " -c:v h264_vchiq -i SDFS::Pi.$.Films.trailer/mkv ") &&
-              strstr(obey, " -c:v h264_vchiq -b:v "), "hardware both ways: %s", obey);
+              strstr(obey, " -c:v h264_encvchiq -b:v "), "hardware both ways: %s", obey);
         msg(b, 0x808C2, 0x992, 24); b[5] = 0x434F4E56; return 17;
     case 46:   /* the decoder refuses the stream */
         tw_output(b, 0x992, "[h264_vchiq @ 0x5678] the VideoCore can't decode this stream (High 10)\n"
@@ -276,7 +276,7 @@ static int script(int *b)
         read_obey(started[(nstarted - 1) & 15]);
         CHECK(nstarted == hw_starts + 2 && deleted == 4 && conv_test_state() == CONV_RUNNING &&
               strstr(conv_test_text(1), "converting again") && !strstr(obey, "-c:v h264_vchiq -i") &&
-              strstr(obey, " -c:v h264_vchiq -b:v "), "retry: started %d, deleted %d, state %d, '%s', %s",
+              strstr(obey, " -c:v h264_encvchiq -b:v "), "retry: started %d, deleted %d, state %d, '%s', %s",
               nstarted - hw_starts, deleted, conv_test_state(), conv_test_text(1), obey);
         msg(b, 0x808C2, 0x991, 24); b[5] = 0x434F4E56; return 17;
     case 49: tw_output(b, 0x991, "out_time_us=90000000\ntotal_size=1048576\nprogress=end\nffmpeg-exit=0\n"); return 17;
@@ -459,25 +459,25 @@ int main(void)
           !strcmp(a, "-nostdin -hide_banner -v error -y -i in -map 0:v:0 -map 0:a:0 -c:v libx264 -preset veryfast -crf 23 "
                      "-tune fastdecode -pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart -progress pipe:1 -nostats out"),
           "720p source, preset 0: %s", a);
-    {   /* Hardware acceleration: h264_vchiq, the bit rate from the size and rate, the profile as a number */
+    {   /* Hardware acceleration: h264_encvchiq, the bit rate from the size and rate, the profile as a number */
         s.hw = 1; s.hw_mode = 1;
         CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) == 0 &&
-              !strcmp(a, "-nostdin -hide_banner -v error -y -c:v h264_vchiq -i in -map 0:v:0 -map 0:a:0 -c:v h264_vchiq -b:v 2300k -profile:v 66 "
+              !strcmp(a, "-nostdin -hide_banner -v error -y -c:v h264_vchiq -i in -map 0:v:0 -map 0:a:0 -c:v h264_encvchiq -b:v 2300k -profile:v 66 "
                          "-pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart -progress pipe:1 -nostats out"),
               "hardware, Normal, quick to decode (baseline): %s", a);
         s.easy = 0; s.hw_mode = 2;
         conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
-        CHECK(strstr(a, " -c:v h264_vchiq -b:v 3450k -profile:v 100 -pix_fmt yuv420p ") != NULL, "hardware, High quality: %s", a);
+        CHECK(strstr(a, " -c:v h264_encvchiq -b:v 3450k -profile:v 100 -pix_fmt yuv420p ") != NULL, "hardware, High quality: %s", a);
         s.hw_mode = 0;
         conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
-        CHECK(strstr(a, " -c:v h264_vchiq -b:v 1600k -profile:v 77 ") != NULL && !strstr(a, "libx264") && !strstr(a, "-crf"),
+        CHECK(strstr(a, " -c:v h264_encvchiq -b:v 1600k -profile:v 77 ") != NULL && !strstr(a, "libx264") && !strstr(a, "-crf"),
               "hardware, Fast: %s", a);
         in.width = 3840; in.height = 2160; s.size = 0;                           /* 4K: too big for the VideoCore */
         CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) < 0 && strstr(e, "at most 1920x1088") &&
               strstr(e, "3840x2160"), "hardware, 4K at its own size: %s", e);
         s.size = 1;                                                              /* made 1080 lines: fine */
         CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) == 0 &&
-              strstr(a, " -vf scale=-2:1080 -c:v h264_vchiq -b:v 3650k -profile:v 77 "), "hardware, 4K made 1080p: %s", a);
+              strstr(a, " -vf scale=-2:1080 -c:v h264_encvchiq -b:v 3650k -profile:v 77 "), "hardware, 4K made 1080p: %s", a);
         in.width = 2560; in.height = 1080; s.size = 0;                           /* too wide */
         CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) < 0 && strstr(e, "2560x1080"),
               "hardware, too wide: %s", e);
@@ -494,7 +494,7 @@ int main(void)
         s.from[0] = 0;
         s.no_hw_decode = 1;
         conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
-        CHECK(strstr(a, "-y -i in ") != NULL && strstr(a, " -c:v h264_vchiq -b:v "), "the second try: %s", a);
+        CHECK(strstr(a, "-y -i in ") != NULL && strstr(a, " -c:v h264_encvchiq -b:v "), "the second try: %s", a);
         s.no_hw_decode = 0;
         strcpy(in.vcodec, "hevc");
         conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
@@ -504,7 +504,7 @@ int main(void)
         CHECK(strstr(a, "-y -i in ") != NULL, "MPEG-4 Part 2: the ARM decodes it: %s", a);
         strcpy(in.vcodec, "h264"); in.width = 2560; in.height = 1440; s.size = 1;   /* bigger than the decoder takes */
         conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
-        CHECK(strstr(a, "-y -i in ") != NULL && strstr(a, " -c:v h264_vchiq -b:v "), "1440p H.264: the ARM decodes it: %s", a);
+        CHECK(strstr(a, "-y -i in ") != NULL && strstr(a, " -c:v h264_encvchiq -b:v "), "1440p H.264: the ARM decodes it: %s", a);
         in.width = 1280; in.height = 720;
         conv_apply_preset(&s, 3);                                                /* MP3: no decoder chosen */
         CHECK(!conv_hw_decoder(&s, &in), "sound only: no video decoder");
@@ -514,6 +514,8 @@ int main(void)
             memset(&p, 0, sizeof(p));
             conv_parse_progress(&p, "[h264 @ 0x1] no frame!");
             CHECK(!p.hw_decode_failed, "the ARM decoder's message isn't the hardware's");
+            conv_parse_progress(&p, "[h264_encvchiq @ 0x3] 1080p needs gpu_mem=128");
+            CHECK(!p.hw_decode_failed, "the encoder's message isn't the decoder's (no second try)");
             conv_parse_progress(&p, "[hevc_hwdec @ 0x2] the HEVC block isn't there");
             CHECK(p.hw_decode_failed, "the HEVC block's refusal");
         }

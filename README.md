@@ -215,8 +215,8 @@ version 2. It started
 here; its test tools and the HEVCHW module moved there with their
 history.
 
-**H.264 encoding on the VideoCore:** FFmpeg has an `h264_vchiq` encoder
-(patch 0027, from riscos-reelhwaccel devkit 0.2.13, `-c:v h264_vchiq`
+**H.264 encoding on the VideoCore:** FFmpeg has an `h264_encvchiq` encoder
+(patch 0027, from riscos-reelhwaccel devkit 0.2.13, `-c:v h264_encvchiq`
 after the input): YUV420P up to 1920x1088, about 72 frames a second at
 1080p30 on a Pi 4. Never the default; constant bit rate isn't available
 on the Pi 4's firmware (variable is used).

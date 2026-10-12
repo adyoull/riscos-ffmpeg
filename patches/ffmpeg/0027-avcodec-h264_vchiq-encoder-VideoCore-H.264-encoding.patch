@@ -1,7 +1,7 @@
 From 6f1266fd0a555d07cd71718e94d66692e0723e1d Mon Sep 17 00:00:00 2001
 From: Andrew Youll <andrewyoull86@gmail.com>
 Date: Mon, 12 Oct 2026 10:48:23 +0100
-Subject: [PATCH] avcodec: add h264_vchiq encoder (RISC OS, Raspberry Pi
+Subject: [PATCH] avcodec: add h264_encvchiq encoder (RISC OS, Raspberry Pi
  VideoCore)
 
 H.264 encoded by the Raspberry Pi's VideoCore on RISC OS, through the
@@ -10,7 +10,7 @@ riscos-reelhwaccel (in libvcdec, with --enable-vchiq). YUV420P frames in,
 Annex B packets out in the same order (no B frames); the SPS and PPS as
 extradata with global headers, otherwise in front of the first packet.
 Registered among the hardware encoders, so it's chosen only by name
-(-c:v h264_vchiq).
+(-c:v h264_encvchiq; h264_vchiq is the decoder).
 ---
  configure              |   1 +
  libavcodec/Makefile    |   1 +
@@ -26,7 +26,7 @@ diff --git a/configure b/configure
  hevc_hwdec_decoder_select="hevc_decoder hevc_hwdec_hwaccel"
  h264_vchiq_decoder_deps="vchiq"
  h264_vchiq_decoder_select="h264_mp4toannexb_bsf"
-+h264_vchiq_encoder_deps="vchiq"
++h264_encvchiq_encoder_deps="vchiq"
  h264_v4l2m2m_decoder_select="h264_mp4toannexb_bsf"
  h264_v4l2m2m_encoder_deps="v4l2_m2m h264_v4l2_m2m"
  hevc_amf_encoder_deps="amf"
@@ -37,7 +37,7 @@ diff --git a/libavcodec/Makefile b/libavcodec/Makefile
  OBJS-$(CONFIG_H264_MF_ENCODER)         += mfenc.o mf_utils.o
  OBJS-$(CONFIG_H264_MMAL_DECODER)       += mmaldec.o
  OBJS-$(CONFIG_H264_VCHIQ_DECODER)      += vchiqdec.o
-+OBJS-$(CONFIG_H264_VCHIQ_ENCODER)      += vchiqenc.o
++OBJS-$(CONFIG_H264_ENCVCHIQ_ENCODER)   += vchiqenc.o
  OBJS-$(CONFIG_H264_NVENC_ENCODER)      += nvenc_h264.o nvenc.o
  OBJS-$(CONFIG_H264_OMX_ENCODER)        += omx.o
  OBJS-$(CONFIG_H264_QSV_DECODER)        += qsvdec.o
@@ -48,7 +48,7 @@ diff --git a/libavcodec/allcodecs.c b/libavcodec/allcodecs.c
  extern const FFCodec ff_h264_mf_encoder;
  extern const FFCodec ff_h264_nvenc_encoder;
  extern const FFCodec ff_h264_omx_encoder;
-+extern const FFCodec ff_h264_vchiq_encoder;
++extern const FFCodec ff_h264_encvchiq_encoder;
  extern const FFCodec ff_h264_qsv_encoder;
  extern const FFCodec ff_h264_v4l2m2m_encoder;
  extern const FFCodec ff_h264_vaapi_encoder;
@@ -58,7 +58,7 @@ new file mode 100644
 +++ b/libavcodec/vchiqenc.c
 @@ -0,0 +1,306 @@
 +/*
-+ * h264_vchiq encoder: H.264 encoded by the Raspberry Pi's VideoCore on
++ * h264_encvchiq encoder: H.264 encoded by the Raspberry Pi's VideoCore on
 + * RISC OS, through the VCHIQ module and the firmware's MMAL service (vcenc,
 + * in riscos-reelhwaccel's libvcdec).
 + *
@@ -335,7 +335,7 @@ new file mode 100644
 +};
 +
 +static const AVClass vchiqenc_class = {
-+    .class_name = "h264_vchiq encoder",
++    .class_name = "h264_encvchiq encoder",
 +    .item_name  = av_default_item_name,
 +    .option     = options,
 +    .version    = LIBAVUTIL_VERSION_INT,
@@ -347,8 +347,8 @@ new file mode 100644
 +    { NULL },
 +};
 +
-+const FFCodec ff_h264_vchiq_encoder = {
-+    .p.name         = "h264_vchiq",
++const FFCodec ff_h264_encvchiq_encoder = {
++    .p.name         = "h264_encvchiq",
 +    .p.long_name    = NULL_IF_CONFIG_SMALL("H.264 on the VideoCore (RISC OS, VCHIQ)"),
 +    .p.type         = AVMEDIA_TYPE_VIDEO,
 +    .p.id           = AV_CODEC_ID_H264,

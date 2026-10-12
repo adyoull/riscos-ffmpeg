@@ -110,7 +110,7 @@ static const int aac_kbps[CONV_QUALITIES] = { 256, 160, 128, 96 };
 static const int mp3_q[CONV_QUALITIES] = { 0, 2, 4, 6 };
 const char *const conv_speed_names[CONV_SPEEDS] = { "Fastest", "Fast", "Balanced" };
 static const char *const x264_preset[CONV_SPEEDS] = { "ultrafast", "veryfast", "medium" };
-/* Hardware acceleration: H.264 encoded by the Pi's VideoCore (h264_vchiq).
+/* Hardware acceleration: H.264 encoded by the Pi's VideoCore (h264_encvchiq).
    Its speed is the same whichever is chosen; they trade the file's size
    for quality: the bit rate in bits per pixel of each picture (so it
    follows the size and frame rate), and the profile (FFmpeg 5.1 takes
@@ -279,7 +279,7 @@ int conv_build_args(char *buf, size_t size, const ConvSettings *s, const ConvSou
             kbps = kbps < 300 ? 300 : kbps > 20000 ? 20000 : kbps;
             if (v)
                 add(buf, size, &n, " -vf %s", vf);
-            add(buf, size, &n, " -c:v h264_vchiq -b:v %dk -profile:v %d -pix_fmt yuv420p",
+            add(buf, size, &n, " -c:v h264_encvchiq -b:v %dk -profile:v %d -pix_fmt yuv420p",
                 kbps, s->easy ? 66 : hw_profile[s->hw_mode]);   /* (quick to decode: baseline, no CABAC) */
         } else {
             if (v)
@@ -453,7 +453,7 @@ void conv_parse_progress(ConvProgress *p, const char *line)
         p->updates++;
     } else if (*line && !strchr(line, '=')) {
         snprintf(p->error, sizeof(p->error), "%s", line);   /* ffmpeg's -v error messages (the last) */
-        if (strstr(line, "h264_vchiq") || strstr(line, "hevc_hwdec") || strstr(line, "opening decoder"))
+        if (strstr(line, "h264_vchiq") || strstr(line, "hevc_hwdec") || strstr(line, "opening decoder"))   /* (the decoders: the encoder is h264_encvchiq) */
             p->hw_decode_failed = 1;
     }
 }
