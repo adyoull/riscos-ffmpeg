@@ -3,7 +3,7 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Unreleased (next FFmpeg): H.264 encoding on the VideoCore
+## 5.1.10-riscos21 (2026-10-12): H.264 encoded (and decoded) by the VideoCore, from the Convert window too
 
 - **`h264_encvchiq` encoder** (riscos-reelhwaccel devkit 0.2.13, its patch
   0003 as our 0027, with the encoder renamed from its `h264_vchiq`, the
@@ -47,22 +47,6 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   decoding then the limit). convert_test: the input option, the
   refusal and the second try, the next conversion, HEVC, MPEG-4 and
   1440p left to the ARM; mutation-checked.
-
-## 5.1.10-riscos20 (2026-10-11): UnixLib 5.0.3.3, riscos-mesa 20.3.5-16
-
-FFmpeg's own code is unchanged since riscos19; the programs are rebuilt
-with the latest UnixLib release and riscos-mesa devkit.
-
-- **Relinked with UnixLib 5.0.3.3** (github.com/adyoull/riscos-unixlib
-  release v5.0.3.3, an unofficial fork of GCCSDK's UnixLib;
-  `libunixlib.a` sha256 e24f16c3…), its fixes since 5.0.3.1: threads
-  waiting inside `read()`, `write()` and stdio let the others run, `fork()`
-  with threads running, `getservbyname_r` and friends, `swprintf`'s `%ls`,
-  exit codes 128-255, the heap's areas, and `LLONG_MIN` (it was an
-  unsigned long long, so it compared as a large positive number:
-  libavutil's `av_sscanf` uses it). FFmpeg rebuilt from clean against its
-  `limits.h`. PThreadTicker stays 0.03 (the same module) and the pthread
-  block 640 bytes. `tools/check-unixlib.sh` checks for 5.0.3.3's library.
 - **riscos-mesa 20.3.5-16** (replacing 20.3.5-12) for ReelEGL, ffplay,
   ffmpeg's EGL output and the EGL examples. ReelEGL full screen with
   Vsync now gets 20.3.5-13's non-blocking swap
@@ -73,12 +57,11 @@ with the latest UnixLib release and riscos-mesa devkit.
   ffplay -f egl and videowin show video pixel for pixel on EX0 EY0
   desktops, as before; videocube (freeglut) gets the window scale.
 
-## Reel 0.1.27 (2026-10-11): subtitles in Greek, Cyrillic and more, found in Subs; volume keys
+## Reel 0.1.28 (2026-10-12): subtitles in Greek, Cyrillic and more, found in Subs; volume keys
 
 From George Tsaousis and André Timmermans on the ROOL forum.
 
-- **Relinked with UnixLib 5.0.3.3 and riscos-mesa 20.3.5-16**, as
-  FFmpeg riscos20 (above).
+- **Rebuilt with riscos-mesa 20.3.5-16**, as FFmpeg riscos21 (above).
 - **Subtitle files in Windows' code pages are shown** (George's Greek
   .srt showed nothing at all): FFmpeg drops every line of a text
   subtitle that isn't UTF-8, so reelcore now reads the file itself and,
@@ -127,6 +110,27 @@ From George Tsaousis and André Timmermans on the ROOL forum.
 - **Full screen at start** (the icon bar menu, kept in Choices): a video
   opened with no Reel window open goes full screen at once. reel_test:
   saved, and the video playing isn't changed.
+
+## 5.1.10-riscos20 (2026-10-06): UnixLib 5.0.3.3
+
+FFmpeg's own code is unchanged since riscos19; the programs are rebuilt
+with the latest UnixLib release.
+
+- **Relinked with UnixLib 5.0.3.3** (github.com/adyoull/riscos-unixlib
+  release v5.0.3.3, an unofficial fork of GCCSDK's UnixLib;
+  `libunixlib.a` sha256 e24f16c3…), its fixes since 5.0.3.1: threads
+  waiting inside `read()`, `write()` and stdio let the others run, `fork()`
+  with threads running, `getservbyname_r` and friends, `swprintf`'s `%ls`,
+  exit codes 128-255, the heap's areas, and `LLONG_MIN` (it was an
+  unsigned long long, so it compared as a large positive number:
+  libavutil's `av_sscanf` uses it). FFmpeg rebuilt from clean against its
+  `limits.h`. PThreadTicker stays 0.03 (the same module) and the pthread
+  block 640 bytes. `tools/check-unixlib.sh` checks for 5.0.3.3's library.
+
+## Reel 0.1.27 (2026-10-06): UnixLib 5.0.3.3
+
+- **Relinked with UnixLib 5.0.3.3**, as FFmpeg riscos20 (above). Reel's
+  own code is unchanged since 0.1.26.
 
 ## 5.1.10-riscos19 (2026-10-06): speed-ups
 
