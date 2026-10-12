@@ -23,6 +23,7 @@ typedef struct {
     int preset, format, size, quality, speed;
     int sound, deinterlace, easy;
     int hw, hw_mode;                    /* hardware acceleration: the VideoCore's encoder, Fast / Normal / High quality */
+    int no_hw_decode;                   /* (set for a second try when the hardware decoder refused the file) */
     char from[16], to[16];              /* trim, as typed ("" = start / end) */
     char extra[256];                    /* more ffmpeg options for the output, as typed ("" = none) */
 } ConvSettings;
@@ -43,6 +44,7 @@ typedef struct {                        /* ffmpeg's -progress lines, and its err
     int ended, updates;
     int exited, exit_code;              /* ffmpeg's exit status, when the Obey file could echo it */
     char error[160];
+    int hw_decode_failed;               /* a message from the hardware decoder (or opening the decoder) */
 } ConvProgress;
 
 extern const ConvPreset conv_presets[CONV_PRESETS];
@@ -62,6 +64,7 @@ void conv_parse_probe(ConvSource *in, const char *text);
 void conv_describe(char *buf, size_t size, const ConvSource *in);
 void conv_parse_progress(ConvProgress *p, const char *line);
 int conv_succeeded(const ConvProgress *p);
+const char *conv_hw_decoder(const ConvSettings *s, const ConvSource *in);
 
 /* the window, from fffront.c's poll loop */
 void conv_init(int task, const char *ffdir);

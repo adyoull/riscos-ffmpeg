@@ -246,6 +246,10 @@ int conv_build_args(char *buf, size_t size, const ConvSettings *s, const ConvSou
         add(buf, size, &n, " -ss %.3f", from);
     if (to > 0)
         add(buf, size, &n, " -to %.3f", to);
+    if (video && conv_hw_decoder(s, in)) {   /* decoded by the hardware too (an input option: before -i) */
+        const char *d = conv_hw_decoder(s, in);
+        add(buf, size, &n, " -c:v %s%s", d, !strcmp(d, "hevc_hwdec") ? " -output_8bit 1" : "");
+    }
     add(buf, size, &n, " -i %s%s%s", q(src), src, q(src));
     if (video) {
         char vf[160] = "";
@@ -449,7 +453,24 @@ void conv_parse_progress(ConvProgress *p, const char *line)
         p->updates++;
     } else if (*line && !strchr(line, '=')) {
         snprintf(p->error, sizeof(p->error), "%s", line);   /* ffmpeg's -v error messages (the last) */
+        if (strstr(line, "h264_vchiq") || strstr(line, "hevc_hwdec") || strstr(line, "opening decoder"))
+            p->hw_decode_failed = 1;
     }
+}
+
+/* With hardware acceleration, the decoder for the source too: H.264 by
+   the VideoCore (up to 1920x1088), HEVC by the Pi 4's HEVC block; NULL:
+   the ARM's. Either may refuse a stream (High 10, 4:2:2, a Pi without the
+   HEVC block): the window then converts again with the ARM decoding. */
+const char *conv_hw_decoder(const ConvSettings *s, const ConvSource *in)
+{
+    if (!s->hw || s->no_hw_decode || conv_sound_only(s->format) || !in->has_video)
+        return NULL;
+    if (!strcmp(in->vcodec, "h264") && in->width <= HW_MAX_W && in->height <= HW_MAX_H)
+        return "h264_vchiq";
+    if (!strcmp(in->vcodec, "hevc"))
+        return "hevc_hwdec";
+    return NULL;
 }
 
 /* Did the conversion work? ffmpeg got to the end, and (when the Obey file
@@ -519,6 +540,7 @@ static struct {
     int fill_x1;
     int menu_icon;                      /* which popup's menu is open (-1: none) */
     int hw_avail;                       /* the VideoCore can be reached (the VCHIQ module's SWIs) */
+    int hw_decoding, retrying;          /* this conversion decodes by hardware; a second try without */
     int drag_ref;
     /* icon texts */
     char t_src[256], t_info[160], t_preset[40], t_preset_d[120], t_format[20], t_size[20],
@@ -557,8 +579,8 @@ static const char *const help[N_ICONS] = {
     [I_DEINT] = "Remove the stripes of interlaced video (TV, DVD, camcorders). Only acts on interlaced pictures.",
     [I_EASY] = "Makes the video simpler to decode (no deblocking or CABAC), so it plays smoothly on RISC OS; "
                "the file is a little bigger. (With hardware acceleration: the baseline profile, no CABAC.)",
-    [I_HW] = "Encode the H.264 picture with the Raspberry Pi's VideoCore: several times quicker than the ARM, but a "
-             "bigger file for the same quality. Up to 1920x1088. Speed then chooses Fast, Normal or High quality.",
+    [I_HW] = "Use the Raspberry Pi's VideoCore: it encodes the H.264 (and decodes H.264 or HEVC sources) several times "
+             "quicker than the ARM, but the file is bigger for the same quality. Up to 1920x1088. Speed: Fast, Normal or High quality.",
     [I_FROM] = "Convert only part of the file: start from this time (h:mm:ss, m:ss or seconds). Empty: from the start.",
     [I_TO] = "Stop at this time. Empty: to the end.",
     [I_OPTS] = "More ffmpeg options, as on the command line (e.g. -vf hflip, -r 25). They come after "
@@ -1047,6 +1069,8 @@ static void start(const char *out)
     char args[1200], err[200];
     _kernel_swi_regs r;
     conv_sync();
+    if (!C.retrying)
+        C.set.no_hw_decode = 0;
     if (!strcasecmp(out, C.src)) {            /* (RISC OS names: any case is the same file) */
         report("That's the file being converted: save the new one under another name.", 1 | 16);
         return;
@@ -1077,10 +1101,11 @@ static void start(const char *out)
     {
         char lp[300];
         scrap_path(lp, sizeof(lp), "ConvertLog");
-        C.log = fopen(lp, "w");
+        C.log = fopen(lp, C.retrying ? "a" : "w");   /* (a second try: after the first's messages) */
         if (C.log)
-            fprintf(C.log, "%s.ffmpeg %s\n\n", C.ffdir, args);
+            fprintf(C.log, "%s%s.ffmpeg %s\n\n", C.retrying ? "\nAgain, the ARM decoding:\n" : "", C.ffdir, args);
     }
+    C.hw_decoding = conv_hw_decoder(&C.set, &C.in) != NULL;
     C.state = CONV_RUNNING;
     r.r[0] = 0;
     swi(OS_ReadMonotonicTime, &r);
@@ -1147,6 +1172,18 @@ static void finished(void)
         int gone;
         r.r[0] = 6; r.r[1] = (intptr_t)C.out;
         gone = !swi(OS_File, &r) && r.r[0] != 0;
+        if (C.hw_decoding && C.prog.hw_decode_failed) {   /* the hardware decoder refused it: once more, without */
+            char out[256];
+            snprintf(out, sizeof(out), "%s", C.out);
+            C.set.no_hw_decode = 1;
+            C.retrying = 1;
+            start(out);
+            C.retrying = 0;
+            if (C.state == CONV_RUNNING) {
+                status("The hardware couldn't decode this file: converting again, the ARM decoding it...");
+                return;
+            }
+        }
         C.state = CONV_FAILED;
         progress_bar(0);
         status("Couldn't convert: %s%s", C.prog.error[0] ? C.prog.error : "ffmpeg stopped early (see Log).",

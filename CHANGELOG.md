@@ -34,6 +34,18 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   convert_test: the option, the Hardware menu, the command lines
   (bit rates, profiles, 4K refused and made 1080p, too wide, tiny);
   mutation-checked.
+- **The Convert window decodes by hardware too** with Hardware
+  acceleration ticked: an H.264 source up to 1920x1088 with
+  `-c:v h264_vchiq` before the input, HEVC with `-c:v hevc_hwdec
+  -output_8bit 1`. If the conversion fails with a message from the
+  hardware decoder (or "Error while opening decoder"), the unfinished
+  file is deleted and it converts again at once with the ARM decoding
+  (the log keeps both tries); the next conversion tries the hardware
+  again. The owner's Pi 4, a 1280x544 H.264 trailer to 720-line MP4:
+  libx264 0.66x real time, the VideoCore encoding 2.2x (the ARM's
+  decoding then the limit). convert_test: the input option, the
+  refusal and the second try, the next conversion, HEVC, MPEG-4 and
+  1440p left to the ARM; mutation-checked.
 
 ## 5.1.10-riscos20 (2026-10-11): UnixLib 5.0.3.3, riscos-mesa 20.3.5-16
 

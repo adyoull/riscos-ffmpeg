@@ -41,7 +41,7 @@ static char scrap[128];
 static int win_made, win_open, nicons, iflags[64], ibox[64][4];
 static int icons[64 * 8];                      /* the window's icon blocks (32 bytes each), copied as the Wimp does */
 static char started[16][700]; static int nstarted;
-static char reported[8][260]; static int nreports, ask_answer = 3;
+static char reported[8][260]; static int nreports, ask_answer = 3, hw_starts;
 static int menu_items; static char menu_title[16];
 static char drag_sprite[16]; static int drags;
 static int datasaves, datasave_type; static char datasave_leaf[64];
@@ -255,15 +255,61 @@ static int script(int *b)
         CHECK(conv_test_state() == CONV_DONE && deleted == 3 && !strncmp(conv_test_text(1), "Done: ", 6),
               "decoder messages, then the end and exit 0: state %d, deleted %d, '%s' (it worked: the file stays)",
               conv_test_state(), deleted, conv_test_text(1));
+        click(b, I_FORMAT_B, 4); return 6;                                       /* MP4 again, with hardware acceleration */
+    case 42: b[0] = 0; b[1] = -1; return 9;
+    case 43:
+        CHECK(!strcmp(conv_test_text(5), "MP4 video"), "back to MP4: '%s'", conv_test_text(5));
+        iflags[I_HW] ^= 1 << 21;
+        click(b, I_HW, 4); return 6;
+    case 44: hw_starts = nstarted; click(b, I_CONVERT, 4); return 6;            /* (Replace: yes) */
+    case 45:   /* the H.264 source decoded by the VideoCore too: an input option */
+        read_obey(started[(nstarted - 1) & 15]);
+        CHECK(nstarted == hw_starts + 1 && strstr(obey, " -c:v h264_vchiq -i SDFS::Pi.$.Films.trailer/mkv ") &&
+              strstr(obey, " -c:v h264_vchiq -b:v "), "hardware both ways: %s", obey);
+        msg(b, 0x808C2, 0x992, 24); b[5] = 0x434F4E56; return 17;
+    case 46:   /* the decoder refuses the stream */
+        tw_output(b, 0x992, "[h264_vchiq @ 0x5678] the VideoCore can't decode this stream (High 10)\n"
+                  "Error while opening decoder for input stream #0:0 : Function not implemented\nffmpeg-exit=1\n");
+        return 17;
+    case 47: msg(b, 0x808C3, 0x992, 20); return 17;
+    case 48:   /* deleted, and again at once with the ARM decoding (still the VideoCore encoding) */
+        read_obey(started[(nstarted - 1) & 15]);
+        CHECK(nstarted == hw_starts + 2 && deleted == 4 && conv_test_state() == CONV_RUNNING &&
+              strstr(conv_test_text(1), "converting again") && !strstr(obey, "-c:v h264_vchiq -i") &&
+              strstr(obey, " -c:v h264_vchiq -b:v "), "retry: started %d, deleted %d, state %d, '%s', %s",
+              nstarted - hw_starts, deleted, conv_test_state(), conv_test_text(1), obey);
+        msg(b, 0x808C2, 0x991, 24); b[5] = 0x434F4E56; return 17;
+    case 49: tw_output(b, 0x991, "out_time_us=90000000\ntotal_size=1048576\nprogress=end\nffmpeg-exit=0\n"); return 17;
+    case 50: msg(b, 0x808C3, 0x991, 20); return 17;
+    case 51:
+        CHECK(conv_test_state() == CONV_DONE && nstarted == hw_starts + 2, "after the retry: state %d, started %d",
+              conv_test_state(), nstarted - hw_starts);
+        click(b, I_CONVERT, 4); return 6;                                        /* the next: hardware decoding again */
+    case 52:
+        read_obey(started[(nstarted - 1) & 15]);
+        CHECK(nstarted == hw_starts + 3 && strstr(obey, " -c:v h264_vchiq -i "), "the next conversion tries the hardware "
+              "decoder again: %s", obey);
+        msg(b, 0x808C2, 0x990, 24); b[5] = 0x434F4E56; return 17;
+    case 53: tw_output(b, 0x990, "out_time_us=90000000\ntotal_size=1048576\nprogress=end\nffmpeg-exit=0\n"); return 17;
+    case 54:
+        msg(b, 0x808C3, 0x990, 20); return 17;
+    case 55:
+        CHECK(conv_test_state() == CONV_DONE, "the next: state %d", conv_test_state());
+        iflags[I_HW] ^= 1 << 21;
+        click(b, I_HW, 4); return 6;
+    case 56: click(b, I_FORMAT_B, 4); return 6;
+    case 57: b[0] = 2; b[1] = -1; return 9;                                      /* MP3 again */
+    case 58:
+        CHECK(!strcmp(conv_test_text(5), "MP3 sound") && !is_selected(I_HW), "MP3 again: '%s'", conv_test_text(5));
         click(b, I_CONVERT, 4); return 6;                                        /* again, then quit while converting */
-    case 42: msg(b, 0x808C2, 0x993, 24); b[5] = 0x434F4E56; return 17;
-    case 43: ask_answer = 3; msg(b, 8, 0x111, 20); return 18;                   /* PreQuit: Stop */
-    case 44:
+    case 59: msg(b, 0x808C2, 0x993, 24); b[5] = 0x434F4E56; return 17;
+    case 60: ask_answer = 3; msg(b, 8, 0x111, 20); return 18;                   /* PreQuit: Stop */
+    case 61:
         CHECK(morites == 3 && morite_to == 0x993 && conv_test_state() == CONV_STOPPING,
               "PreQuit, Stop: %d Morites to %x, state %d", morites, morite_to, conv_test_state());
         msg(b, 0, 0x111, 20); return 17;                                         /* Message_Quit */
-    case 45:   /* (conv_quitting waiting for the task window to end) */
-        CHECK(deleted == 3 && conv_test_state() == CONV_STOPPING, "quitting: deleted %d before ffmpeg ended, state %d",
+    case 62:   /* (conv_quitting waiting for the task window to end) */
+        CHECK(deleted == 4 && conv_test_state() == CONV_STOPPING, "quitting: deleted %d before ffmpeg ended, state %d",
               deleted, conv_test_state());
         msg(b, 0x808C3, 0x993, 20); return 17;
     default: msg(b, 0, 0x111, 20); return 17;                                   /* Message_Quit */
@@ -370,7 +416,7 @@ int main(void)
     setenv("Wimp$ScrapDir", scrap, 1);
     setenv("FFmpeg$Dir", "<Obey$Dir>", 1);
     CHECK(fffront_main() == 0, "front end didn't end cleanly");
-    CHECK(step == 46 && deleted == 4 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer/mp3") && conv_test_state() == CONV_STOPPED,
+    CHECK(step == 63 && deleted == 5 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer/mp3") && conv_test_state() == CONV_STOPPED,
           "quit while converting: step %d, deleted %d '%s', state %d (stopped, and the unfinished file deleted)", step,
           deleted, deleted_name, conv_test_state());
     {   /* the Options field takes spaces ("-vf hflip"); the name doesn't */
@@ -416,7 +462,7 @@ int main(void)
     {   /* Hardware acceleration: h264_vchiq, the bit rate from the size and rate, the profile as a number */
         s.hw = 1; s.hw_mode = 1;
         CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) == 0 &&
-              !strcmp(a, "-nostdin -hide_banner -v error -y -i in -map 0:v:0 -map 0:a:0 -c:v h264_vchiq -b:v 2300k -profile:v 66 "
+              !strcmp(a, "-nostdin -hide_banner -v error -y -c:v h264_vchiq -i in -map 0:v:0 -map 0:a:0 -c:v h264_vchiq -b:v 2300k -profile:v 66 "
                          "-pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart -progress pipe:1 -nostats out"),
               "hardware, Normal, quick to decode (baseline): %s", a);
         s.easy = 0; s.hw_mode = 2;
@@ -440,6 +486,37 @@ int main(void)
         CHECK(strstr(a, " -b:v 300k ") != NULL, "hardware, tiny: %s", a);
         in.width = 1280; in.height = 720; in.fps = 25;
         conv_apply_preset(&s, 0);
+        CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) == 0 &&
+              strstr(a, "-y -c:v h264_vchiq -i in ") != NULL, "hardware decoding of H.264: %s", a);
+        strcpy(s.from, "0:10");
+        conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
+        CHECK(strstr(a, "-y -ss 10.000 -c:v h264_vchiq -i in ") != NULL, "hardware decoding after -ss: %s", a);
+        s.from[0] = 0;
+        s.no_hw_decode = 1;
+        conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
+        CHECK(strstr(a, "-y -i in ") != NULL && strstr(a, " -c:v h264_vchiq -b:v "), "the second try: %s", a);
+        s.no_hw_decode = 0;
+        strcpy(in.vcodec, "hevc");
+        conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
+        CHECK(strstr(a, "-y -c:v hevc_hwdec -output_8bit 1 -i in ") != NULL, "hardware decoding of HEVC: %s", a);
+        strcpy(in.vcodec, "mpeg4");
+        conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
+        CHECK(strstr(a, "-y -i in ") != NULL, "MPEG-4 Part 2: the ARM decodes it: %s", a);
+        strcpy(in.vcodec, "h264"); in.width = 2560; in.height = 1440; s.size = 1;   /* bigger than the decoder takes */
+        conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
+        CHECK(strstr(a, "-y -i in ") != NULL && strstr(a, " -c:v h264_vchiq -b:v "), "1440p H.264: the ARM decodes it: %s", a);
+        in.width = 1280; in.height = 720;
+        conv_apply_preset(&s, 3);                                                /* MP3: no decoder chosen */
+        CHECK(!conv_hw_decoder(&s, &in), "sound only: no video decoder");
+        conv_apply_preset(&s, 0);
+        {
+            ConvProgress p;
+            memset(&p, 0, sizeof(p));
+            conv_parse_progress(&p, "[h264 @ 0x1] no frame!");
+            CHECK(!p.hw_decode_failed, "the ARM decoder's message isn't the hardware's");
+            conv_parse_progress(&p, "[hevc_hwdec @ 0x2] the HEVC block isn't there");
+            CHECK(p.hw_decode_failed, "the HEVC block's refusal");
+        }
         s.hw = 0;
     }
     in.width = 321;                                                            /* odd: made even */

@@ -59,6 +59,11 @@ Convert window. It works from the top down:
                    bit rate follows the picture's size and frame rate.
                    Quality then only sets the sound's. Greyed out where
                    there's no VideoCore (no VCHIQ module).
+                   The source is decoded by the hardware too where it
+                   can be: H.264 up to 1920x1088 by the VideoCore, HEVC
+                   by a Pi 4's HEVC block. If the hardware won't decode
+                   it (High 10 H.264, HEVC on an older Pi), the window
+                   converts again at once with the ARM decoding it.
        From ... to             only part of the file (e.g. 1:30 to 2:45)
        Options     more ffmpeg options for the new file, as you'd type
                    them on the command line: e.g. -vf hflip (mirror),
