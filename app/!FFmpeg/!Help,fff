@@ -193,6 +193,16 @@ is refused with a message; leave the option out to use the CPU (the
 default). Its pictures can differ from the CPU's by 1 in a few colour
 values (the VideoCore's own rounding).
 
+The VideoCore can also encode H.264: -c:v h264_vchiq after the input,
+for example
+  ffmpeg -i film/mkv -c:v h264_vchiq -b:v 5M -c:a copy out/mp4
+It is much quicker than libx264 (1080p30 at about 72 frames a second on
+a Pi 4), but files are usually bigger for the same quality. Even sizes
+up to 1920x1088 (1080p needs gpu_mem=128); -b:v sets the bit rate (10M
+if left out), -g the keyframe interval, -profile:v baseline, main or
+high. The Pi 4's firmware has no constant bit rate (-rc_constant 1 gives
+variable). It is only used when asked for: libx264 stays the default.
+
 On a Raspberry Pi 4 (and 400 and CM4), HEVC can be decoded by the Pi 4's
 HEVC block: -c:v hevc_hwdec (ffplay -vcodec hevc_hwdec). 8-bit and
 10-bit 4:2:0, up to 4096x4096; -output_8bit 1 gives 8-bit pictures from

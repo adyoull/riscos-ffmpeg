@@ -15,6 +15,8 @@
  *     hevcdec_frame_to_i420(d, f, planes, strides)
  *   hevcdec_close(d);
  *
+ * 0.1.12: the halved conversion row by row too (hevcdec_convert_benchmark
+ * bits 0), to time against column by column into memory that isn't cached.
  * 0.1.11: a frame is cleaned and invalidated once after the block writes
  * it, not on every conversion; hevcdec_frame_done (without waiting);
  * stats of conversions that waited, and of cleans.
@@ -47,7 +49,7 @@
 #include <stdint.h>
 #include "hevc_ctrls.h"
 
-#define HEVCDEC_VERSION "0.1.11"
+#define HEVCDEC_VERSION "0.1.12"
 
 #define HEVCDEC_OK           0
 #define HEVCDEC_ERROR       -1   /* hevcdec_error says why */
@@ -158,7 +160,9 @@ int hevcdec_frame_to_i420_16(hevcdec *d, const hevcdec_frame *f, uint16_t *const
    preloading; 3 10-bit through a row buffer, as 0.1.7), to bits 8 or 16
    (16: a 10-bit decoder), each time as hevcdec_frame_to_i420(_16) does it
    (the cache cleaned and invalidated first); the centiseconds taken in
-   *cs. HEVCDEC_OK, or HEVCDEC_UNSUPPORTED. */
+   *cs. (0.1.12) bits 0: halved (as hevcdec_frame_to_i420_half: w x h
+   the output's size), way 0 column by column or 1 row by row.
+   HEVCDEC_OK, or HEVCDEC_UNSUPPORTED. */
 /* (0.1.9) The decoder a frame belongs to (for a caller handed frames by
    FFmpeg's hevc_hwdec with output_hw: data[3] is the hevcdec_frame) */
 hevcdec *hevcdec_frame_decoder(const hevcdec_frame *f);

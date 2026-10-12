@@ -46,16 +46,17 @@ if [ ! -f ffbuild/config.mak ] || [ -n "${RECONFIGURE:-}" ]; then
     LINK=-no-pie
   else
     VARIANT="--enable-zlib --enable-sdl2 --enable-ffplay --enable-riscos-egl --enable-riscos-acornssl"
-    # h264_vchiq (patch 0021): H.264 on the Pi's VideoCore through
+    # h264_vchiq (patches 0021, 0027): H.264 decoded and encoded on the Pi's VideoCore through
     # riscos-reelhwaccel's vcdec, when its devkit is in third_party/reelhwaccel
     # (RHW= another place). Without it, FFmpeg is built as before.
     RHW=${RHW:-$TOP/third_party/reelhwaccel}
     if [ -f "$RHW/lib/libvcdec.a" ] && [ -f "$RHW/include/vcdec.h" ]; then
       cp "$RHW/include/vcdec.h" "$STAGE/include/" && cp "$RHW/lib/libvcdec.a" "$STAGE/lib/"
+      [ -f "$RHW/include/vcenc.h" ] && cp "$RHW/include/vcenc.h" "$STAGE/include/"   # (0.2.12+: the encoder, patch 0027)
       VARIANT="$VARIANT --enable-vchiq"
     else
       echo "(no reelhwaccel devkit in $RHW: FFmpeg without h264_vchiq)"
-      rm -f "$STAGE/include/vcdec.h" "$STAGE/lib/libvcdec.a"
+      rm -f "$STAGE/include/vcdec.h" "$STAGE/include/vcenc.h" "$STAGE/lib/libvcdec.a"
     fi
     # hevc_hwdec (patch 0023): HEVC on the Pi 4's HEVC block through the
     # same devkit's hevcdec (devkit 0.2.3 and later)

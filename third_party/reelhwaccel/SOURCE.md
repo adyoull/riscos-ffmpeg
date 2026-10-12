@@ -1,4 +1,4 @@
-# riscos-reelhwaccel devkit (vcdec: H.264 on the Raspberry Pi's VideoCore)
+# riscos-reelhwaccel devkit (vcdec and vcenc: H.264 on the Raspberry Pi's VideoCore; hevcdec)
 
 `build/build-ffmpeg.sh` builds FFmpeg with `--enable-vchiq` (patch 0021,
 `h264_vchiq`) when `include/vcdec.h` and `lib/libvcdec.a` are here, and
@@ -14,6 +14,13 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
+- Devkit 0.2.13, `riscos-reelhwaccel-devkit-0.2.13.tgz` (sha256
+  8e37d021ea24ba9c129e7d0575e74299cd491f499e9b43dfa9ea5525258a1457):
+  as 0.2.11 below, plus vcenc 0.1.2 (H.264 encoding on the VideoCore, in
+  `lib/libvcdec.a`, `include/vcenc.h`) and its FFmpeg patch
+  `ffmpeg/0003-avcodec-h264_vchiq-encoder.patch`, our 0027 (made again
+  against our series: only configure's line moved). hevcdec 0.1.12 adds a
+  row-by-row way to its benchmark. 0001 and 0002 are unchanged.
 - Devkit 0.2.11, `riscos-reelhwaccel-devkit-0.2.11.tgz` (sha256
   8a570fb81588ab2577f9f8e19bffa602d8af2b7c9f3ac2e14607fc2d9e945ae1):
   vcdec 0.4.2 (H.264; its contiguous memory never includes the program's

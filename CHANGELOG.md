@@ -3,6 +3,25 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Unreleased (next FFmpeg): H.264 encoding on the VideoCore
+
+- **`h264_vchiq` encoder** (riscos-reelhwaccel devkit 0.2.13, its patch
+  0003 as our 0027): H.264 encoded by the Raspberry Pi's VideoCore, e.g.
+  `ffmpeg -i in.mp4 -c:v h264_vchiq -b:v 5M -c:a copy out.mp4`. Never
+  the default: ask for it by name. YUV420P in (the ffmpeg command
+  converts), even sizes up to 1920x1088 (1080p needs gpu_mem=128); Annex
+  B out, no B frames; the SPS and PPS as extradata for MP4 and Matroska.
+  Options: `b` (default 10 Mbit/s), `g`, `profile`, `level`,
+  `rc_constant` (the Pi 4's firmware refuses constant bit rate, so it
+  falls back to variable), `repeat_headers`, `qp_min`, `qp_max`,
+  `in_buffers`, `pci_memory`, `gpu_mem_check`. On the Pi 4 (VCEncTest)
+  1080p30 encodes at about 72 frames a second. The patch was made again
+  against our series (configure's line moved by 0023); vcenc is in the
+  same `libvcdec.a`, and `vcenc.h` is in the devkit. hevcdec 0.1.12 (a
+  row-by-row benchmark way; nothing Reel uses changed). Tested by
+  riscos-reelhwaccel on a fake encoder that behaves as the Pi's; here,
+  built and linked (`ffmpeg -encoders` lists it).
+
 ## 5.1.10-riscos20 (2026-10-11): UnixLib 5.0.3.3, riscos-mesa 20.3.5-16
 
 FFmpeg's own code is unchanged since riscos19; the programs are rebuilt

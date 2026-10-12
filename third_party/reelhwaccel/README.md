@@ -1,14 +1,16 @@
 # riscos-reelhwaccel devkit
 
 What FFmpeg and Reel need to decode H.264 on the Raspberry Pi's VideoCore,
-and HEVC on the Pi 4's HEVC block, from RISC OS:
+and HEVC on the Pi 4's HEVC block, from RISC OS, and (0.2.12) to encode
+H.264 on the VideoCore:
 
 | File | What it is |
 |---|---|
-| `include/vcdec.h`, `lib/libvcdec.a` | vcdec: the VideoCore's H.264 decoder through RISC OS's VCHIQ module and the firmware's MMAL service. GCCSDK GCC 10, ARMv7, hard float. |
+| `include/vcdec.h`, `include/vcenc.h`, `lib/libvcdec.a` | vcdec: the VideoCore's H.264 decoder through RISC OS's VCHIQ module and the firmware's MMAL service; and (0.2.12) vcenc, its H.264 encoder, the same way. GCCSDK GCC 10, ARMv7, hard float. |
 | `ffmpeg/0001-avcodec-h264_vchiq.patch` | FFmpeg 5.1.10's `h264_vchiq` decoder on top of vcdec (`git am`, or `patch -p1`). It applies to plain 5.1.10 and on top of riscos-ffmpeg's series. |
 | `include/hwhevcdec.h`, `include/hevc_ctrls.h`, `lib/libhevcdec.a` | hevcdec: the Pi 4's HEVC block (rpivid), driven directly from user mode, fed V4L2 stateless HEVC controls. GCCSDK GCC 10, ARMv7, hard float, NEON. |
 | `ffmpeg/0002-avcodec-hevc_hwdec.patch` | FFmpeg 5.1.10's `hevc_hwdec` hwaccel and decoder on top of hevcdec. Apply after 0001; it applies on top of riscos-ffmpeg's series too. |
+| `ffmpeg/0003-avcodec-h264_vchiq-encoder.patch` | (0.2.12) FFmpeg 5.1.10's `h264_vchiq` encoder on top of vcenc. Apply after 0001, before or after 0002. |
 
 ## FFmpeg
 
@@ -29,6 +31,21 @@ gives ordinary YUV420P frames, in display order with their pts.
 - **Memory (vcdec 0.4):** pictures arrive in a cacheable Physical Memory Pool and are copied out by LDM 8: 1080p at 82 pictures a second on a Pi 4, against 64 from PCI memory. Without a pool (RISC OS before 5.23, or no contiguous pages) vcdec uses PCI memory and logs why (`-v verbose`). `-pci_memory 1` asks for PCI memory, as an escape hatch.
 - **The program's page at &8000 (vcdec 0.4.2, hevcdec 0.1.6):** the pools' contiguous pages never include it. RISC OS may hand over a running program's pages for contiguous memory, copying the program elsewhere, and ARMEABISupport (which recognises a program by that page's physical address) then loses it: stacks left behind, and later an EMT trap ("code 6") in another program. `app_page_moves` in either library's stats counts claims after which the page moved anyway (should be 0). On a RISC OS before 5.29 (which can't be asked to avoid a range) a pool that would include it is refused: vcdec uses PCI memory instead, and hevcdec reports that it has no contiguous memory, saying why (the case the libraries were already built to handle).
 - **Linking:** add `-lvcdec` after `-lavcodec` when linking programs.
+
+## H.264 encoding: the h264_vchiq encoder (0.2.12)
+
+Apply 0003 after 0001 (before or after 0002); `--enable-vchiq` builds the
+encoder too, and it links from the same `-lvcdec`. It is never FFmpeg's
+default H.264 encoder: ask for it by name (`-c:v h264_vchiq`, or
+`avcodec_find_encoder_by_name("h264_vchiq")`).
+
+    ffmpeg -i in.mkv -c:v h264_vchiq -b:v 5M -g 50 -c:a copy out.mp4
+
+- **Input:** YUV420P frames (the ffmpeg command converts others), even sizes up to 1920x1088; 1080p needs gpu_mem of 128 MB or more (`gpu_mem_check`, as the decoder). Refused at open with AVERROR(ENOSYS) otherwise, and for profiles other than baseline, main and high.
+- **Output:** Annex B packets, one access unit each, in the frames' order with their pts (no B frames, so dts = pts), keyframes flagged. With global headers (MP4, Matroska) the SPS and PPS are the extradata; otherwise they come at the start of the first packet. A frame with pict_type I is made a keyframe.
+- **Settings:** `b` (0, the default: 10 Mbit/s), `g` (0, the default: the encoder's, about 60), `profile` (baseline, main, high: the default), `level` (default: chosen from the size, rate and bit rate). Private: `rc_constant` (constant bit rate: the Pi 4's firmware refused it at the enable, and then refused every enable after, so vcenc 0.1.2 makes the encoder again for each way it tries: constant, constant skipping frames, then variable with constant set once running; `-v debug` says which took), `repeat_headers` (the SPS and PPS at the start of every keyframe), `qp_min`, `qp_max`, `in_buffers` (frames with the encoder at once: 0 for 2, up to 4), `pci_memory`, `gpu_mem_check`.
+- **Speed (Pi 4, VCEncTest):** 1080p30 at about 72 frames a second, 720p at about 155; copying a 1080p frame into the encoder's buffer takes about 3.6 ms (a cacheable pool; 12 ms from PCI memory).
+- **Waiting:** `avcodec_receive_packet` waits for the VideoCore only while its input is full or at the end of the stream; otherwise it gives EAGAIN. Opening waits for the SPS and PPS (a few centiseconds); a failure gives AVERROR_EXTERNAL.
 
 ## HEVC: hevc_hwdec
 
@@ -81,7 +98,7 @@ cropping applied. Ask for it by name (`-c:v hevc_hwdec`, or
 - **Header:** hevcdec's header is `hwhevcdec.h` (devkit 0.2.3; 0.2.2 called it `hevcdec.h`, which clashed with FFmpeg's own `libavcodec/hevcdec.h`). It comes from `-I<devkit>/include`.
 - **Speed (Pi 4, 1080p):** about 350 pictures a second through the block when pipelined, about 225 when not.
 
-## vcdec on its own
+## vcdec and vcenc on their own
 
 See `vcdec.h`: open, send an access unit with its pts, receive a picture
 into your planes (or take it without copying: `vcdec_receive_hold`, then
@@ -89,6 +106,10 @@ into your planes (or take it without copying: `vcdec_receive_hold`, then
 buffers are (pools or PCI memory) and where the time inside vcdec went.
 Nothing waits for the decoder but open, flush and close, so it suits a
 Wimp player polled on null events.
+
+`vcenc.h` is the same for encoding: open, send a picture (I420 planes and
+strides, with its pts) until the input is full, receive packets, send the
+EOS, close. `vcenc_headers` gives the SPS and PPS.
 
 The GNU GPL version 2 (without "or later"), the same licence as Linux's
 vchiq-mmal driver: vcdec is a new implementation over RISC OS's VCHIQ

@@ -1,0 +1,367 @@
+From 6f1266fd0a555d07cd71718e94d66692e0723e1d Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Mon, 12 Oct 2026 10:48:23 +0100
+Subject: [PATCH] avcodec: add h264_vchiq encoder (RISC OS, Raspberry Pi
+ VideoCore)
+
+H.264 encoded by the Raspberry Pi's VideoCore on RISC OS, through the
+VCHIQ module and the firmware's MMAL service, using vcenc from
+riscos-reelhwaccel (in libvcdec, with --enable-vchiq). YUV420P frames in,
+Annex B packets out in the same order (no B frames); the SPS and PPS as
+extradata with global headers, otherwise in front of the first packet.
+Registered among the hardware encoders, so it's chosen only by name
+(-c:v h264_vchiq).
+---
+ configure              |   1 +
+ libavcodec/Makefile    |   1 +
+ libavcodec/allcodecs.c |   1 +
+ libavcodec/vchiqenc.c  | 306 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 309 insertions(+)
+ create mode 100644 libavcodec/vchiqenc.c
+
+diff --git a/configure b/configure
+--- a/configure
++++ b/configure
+@@ -3203,6 +3203,7 @@
+ hevc_hwdec_decoder_select="hevc_decoder hevc_hwdec_hwaccel"
+ h264_vchiq_decoder_deps="vchiq"
+ h264_vchiq_decoder_select="h264_mp4toannexb_bsf"
++h264_vchiq_encoder_deps="vchiq"
+ h264_v4l2m2m_decoder_select="h264_mp4toannexb_bsf"
+ h264_v4l2m2m_encoder_deps="v4l2_m2m h264_v4l2_m2m"
+ hevc_amf_encoder_deps="amf"
+diff --git a/libavcodec/Makefile b/libavcodec/Makefile
+--- a/libavcodec/Makefile
++++ b/libavcodec/Makefile
+@@ -391,6 +391,7 @@
+ OBJS-$(CONFIG_H264_MF_ENCODER)         += mfenc.o mf_utils.o
+ OBJS-$(CONFIG_H264_MMAL_DECODER)       += mmaldec.o
+ OBJS-$(CONFIG_H264_VCHIQ_DECODER)      += vchiqdec.o
++OBJS-$(CONFIG_H264_VCHIQ_ENCODER)      += vchiqenc.o
+ OBJS-$(CONFIG_H264_NVENC_ENCODER)      += nvenc_h264.o nvenc.o
+ OBJS-$(CONFIG_H264_OMX_ENCODER)        += omx.o
+ OBJS-$(CONFIG_H264_QSV_DECODER)        += qsvdec.o
+diff --git a/libavcodec/allcodecs.c b/libavcodec/allcodecs.c
+--- a/libavcodec/allcodecs.c
++++ b/libavcodec/allcodecs.c
+@@ -825,6 +825,7 @@
+ extern const FFCodec ff_h264_mf_encoder;
+ extern const FFCodec ff_h264_nvenc_encoder;
+ extern const FFCodec ff_h264_omx_encoder;
++extern const FFCodec ff_h264_vchiq_encoder;
+ extern const FFCodec ff_h264_qsv_encoder;
+ extern const FFCodec ff_h264_v4l2m2m_encoder;
+ extern const FFCodec ff_h264_vaapi_encoder;
+diff --git a/libavcodec/vchiqenc.c b/libavcodec/vchiqenc.c
+new file mode 100644
+--- /dev/null
++++ b/libavcodec/vchiqenc.c
+@@ -0,0 +1,306 @@
++/*
++ * h264_vchiq encoder: H.264 encoded by the Raspberry Pi's VideoCore on
++ * RISC OS, through the VCHIQ module and the firmware's MMAL service (vcenc,
++ * in riscos-reelhwaccel's libvcdec).
++ *
++ * Frames go to the VideoCore as YUV420P, each with its pts; packets come
++ * back in the same order (the VideoCore makes no B frames, so dts = pts),
++ * Annex B, one access unit each. Nothing is encoded on the ARM.
++ *
++ * The SPS and PPS come from the encoder as it opens. With
++ * AV_CODEC_FLAG_GLOBAL_HEADER (MP4, Matroska) they are the extradata;
++ * otherwise (a raw .h264 stream, MPEG-TS) they come at the start of the
++ * first packet. repeat_headers puts them at the start of every keyframe's
++ * packet too. A frame with pict_type I is made a keyframe.
++ *
++ * Settings: b (bit rate; 0, the default: 10 Mbit/s), g (keyframe
++ * interval; 0, the default: the encoder's, about 60), profile (baseline,
++ * main or high, the default), level, the private options below. Up to
++ * 1920x1088, even sizes; 1080p needs gpu_mem=128 or more.
++ *
++ * This encoder only waits for the VideoCore when its input is full (about
++ * one picture's time) or at the end of the stream; otherwise
++ * receive_packet gives AVERROR(EAGAIN) for more frames.
++ *
++ * Copyright (C) 2026 Andrew Youll
++ *
++ * This file is part of FFmpeg's RISC OS port.
++ *
++ * It is free software; you can redistribute it and/or modify it under the
++ * terms of version 2 of the GNU General Public License as published by
++ * the Free Software Foundation. (GPL version 2 only, as riscos-reelhwaccel:
++ * see its README.)
++ *
++ * It is distributed in the hope that it will be useful, but WITHOUT ANY
++ * WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
++ * for more details.
++ *
++ * You should have received a copy of the GNU General Public License along
++ * with it; if not, write to the Free Software Foundation, Inc., 51
++ * Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#include <vcenc.h>
++
++#include "libavutil/opt.h"
++#include "libavutil/time.h"
++#include "avcodec.h"
++#include "codec_internal.h"
++#include "encode.h"
++#include "internal.h"
++
++#define WAIT_US 5000000                     /* no progress for this long while waiting: an error */
++
++typedef struct VCHIQEncContext {
++    const AVClass *class;
++    vcenc *e;
++    AVFrame *frame;                          /* the next frame to send (if it couldn't go yet) */
++    int eof_in, eos_sent, first_out, failed;
++    uint8_t *hdr;                            /* the SPS and PPS (Annex B) */
++    int hdr_len;
++    /* options */
++    int rc_constant, repeat_headers, qp_min, qp_max, in_buffers, pci_memory, gpu_mem_check;
++} VCHIQEncContext;
++
++static void log_cb(void *h, const char *text)
++{
++    av_log(h, AV_LOG_DEBUG, "%s\n", text);
++}
++
++static int map_result(AVCodecContext *avctx, VCHIQEncContext *s, int r, const char *what)
++{
++    av_log(avctx, AV_LOG_ERROR, "%s: %s\n", what, vcenc_error(s->e));
++    if (r == VCENC_EINVAL)
++        return AVERROR(EINVAL);
++    return s->failed = AVERROR_EXTERNAL;
++}
++
++static int keep_headers(AVCodecContext *avctx, VCHIQEncContext *s, const uint8_t *d, size_t n)
++{
++    av_freep(&s->hdr);
++    if (!(s->hdr = av_malloc(n)))
++        return AVERROR(ENOMEM);
++    memcpy(s->hdr, d, n);
++    s->hdr_len = (int)n;
++    return 0;
++}
++
++static av_cold int vchiqenc_close(AVCodecContext *avctx)
++{
++    VCHIQEncContext *s = avctx->priv_data;
++    if (s->e)
++        vcenc_close(s->e);
++    s->e = NULL;
++    av_frame_free(&s->frame);
++    av_freep(&s->hdr);
++    return 0;
++}
++
++static av_cold int vchiqenc_init(AVCodecContext *avctx)
++{
++    VCHIQEncContext *s = avctx->priv_data;
++    vcenc_config c;
++    vcenc_packet pk;
++    int r;
++    int64_t t0;
++    vcenc_config_init(&c);
++    c.width = avctx->width;
++    c.height = avctx->height;
++    if (avctx->framerate.num > 0 && avctx->framerate.den > 0) {
++        c.fps_num = avctx->framerate.num;
++        c.fps_den = avctx->framerate.den;
++    } else if (avctx->time_base.num > 0 && avctx->time_base.den > 0 &&
++               avctx->time_base.den / avctx->time_base.num <= 1000) {
++        c.fps_num = avctx->time_base.den;
++        c.fps_den = avctx->time_base.num;
++    }
++    if (avctx->bit_rate > 0)
++        c.bitrate = avctx->bit_rate > 0x7FFFFFFF ? 0x7FFFFFFFu : (unsigned)avctx->bit_rate;
++    switch (avctx->profile) {
++    case FF_PROFILE_H264_BASELINE:
++    case FF_PROFILE_H264_CONSTRAINED_BASELINE: c.profile = VCENC_PROFILE_BASELINE; break;
++    case FF_PROFILE_H264_MAIN:                 c.profile = VCENC_PROFILE_MAIN; break;
++    case FF_PROFILE_UNKNOWN:
++    case FF_PROFILE_H264_HIGH:                 c.profile = VCENC_PROFILE_HIGH; break;
++    default:
++        av_log(avctx, AV_LOG_ERROR, "Profile %d: the VideoCore makes baseline, main or high\n", avctx->profile);
++        return AVERROR(ENOSYS);
++    }
++    if (avctx->level > 0)
++        c.level = avctx->level;
++    if (avctx->gop_size > 0)
++        c.gop = avctx->gop_size;
++    c.qp_min = s->qp_min;
++    c.qp_max = s->qp_max;
++    c.in_buffers = s->in_buffers;
++    c.flags = (s->rc_constant ? VCENC_CBR : 0) | (s->repeat_headers ? VCENC_INLINE_HEADERS : 0) |
++              (s->pci_memory ? VCENC_PCI : 0) | (s->gpu_mem_check ? 0 : VCENC_NO_GPU_MEM_CHECK);
++    c.log = log_cb;
++    c.log_handle = avctx;
++    if (!(s->frame = av_frame_alloc()))
++        return AVERROR(ENOMEM);
++    r = vcenc_open(&s->e, &c);
++    if (r != VCENC_OK) {
++        av_log(avctx, r == VCENC_UNSUPPORTED ? AV_LOG_WARNING : AV_LOG_ERROR, "%s\n", vcenc_open_error());
++        return r == VCENC_UNSUPPORTED ? AVERROR(ENOSYS) : r == VCENC_EINVAL ? AVERROR(EINVAL) : AVERROR_EXTERNAL;
++    }
++    /* the SPS and PPS: the encoder's first packet, sent as it opens */
++    t0 = av_gettime_relative();
++    while ((r = vcenc_receive(s->e, &pk)) == VCENC_AGAIN && av_gettime_relative() - t0 < WAIT_US)
++        av_usleep(1000);
++    if (r != VCENC_OK || !(pk.flags & VCENC_PKT_CONFIG)) {
++        av_log(avctx, AV_LOG_ERROR, "No SPS and PPS from the VideoCore%s%s\n", r < 0 ? ": " : "",
++               r < 0 ? vcenc_error(s->e) : "");
++        return AVERROR_EXTERNAL;
++    }
++    if ((r = keep_headers(avctx, s, pk.data, pk.size)) < 0)
++        return r;
++    if (avctx->flags & AV_CODEC_FLAG_GLOBAL_HEADER) {
++        if (!(avctx->extradata = av_mallocz(s->hdr_len + AV_INPUT_BUFFER_PADDING_SIZE)))
++            return AVERROR(ENOMEM);
++        memcpy(avctx->extradata, s->hdr, s->hdr_len);
++        avctx->extradata_size = s->hdr_len;
++    }
++    avctx->has_b_frames = 0;
++    return 0;
++}
++
++/* the unit starts with an SPS (after a 3 or 4 byte start code) */
++static int starts_with_sps(const uint8_t *d, size_t n)
++{
++    if (n > 4 && !d[0] && !d[1] && d[2] == 1)
++        return (d[3] & 31) == 7;
++    return n > 5 && !d[0] && !d[1] && !d[2] && d[3] == 1 && (d[4] & 31) == 7;
++}
++
++/* a packet out of vcenc's into avpkt (the headers in front of the first,
++   without global headers) */
++static int output_packet(AVCodecContext *avctx, VCHIQEncContext *s, AVPacket *avpkt, const vcenc_packet *pk)
++{
++    int front = !s->first_out && !(avctx->flags & AV_CODEC_FLAG_GLOBAL_HEADER) && !starts_with_sps(pk->data, pk->size) ?
++                s->hdr_len : 0;
++    int r = ff_get_encode_buffer(avctx, avpkt, (int64_t)pk->size + front, 0);
++    if (r < 0)
++        return r;
++    if (front)
++        memcpy(avpkt->data, s->hdr, front);
++    memcpy(avpkt->data + front, pk->data, pk->size);
++    avpkt->pts = avpkt->dts = pk->pts == VCENC_NOPTS ? AV_NOPTS_VALUE : pk->pts;
++    if (pk->flags & VCENC_PKT_KEY)
++        avpkt->flags |= AV_PKT_FLAG_KEY;
++    s->first_out = 1;
++    return 0;
++}
++
++static int vchiqenc_receive_packet(AVCodecContext *avctx, AVPacket *avpkt)
++{
++    VCHIQEncContext *s = avctx->priv_data;
++    int64_t t0 = 0;
++    int r;
++    if (s->failed)
++        return s->failed;
++    for (;;) {
++        vcenc_packet pk;
++        int progress = 0;
++        /* a packet ready: out (the SPS and PPS again on their own: kept) */
++        r = vcenc_receive(s->e, &pk);
++        if (r == VCENC_OK) {
++            if (pk.flags & VCENC_PKT_CONFIG) {
++                if ((r = keep_headers(avctx, s, pk.data, pk.size)) < 0)
++                    return r;
++                continue;
++            }
++            return output_packet(avctx, s, avpkt, &pk);
++        }
++        if (r == VCENC_EOF)
++            return AVERROR_EOF;
++        if (r < 0)
++            return map_result(avctx, s, r, "Encoding");
++        /* input: the waiting frame, or the next */
++        if (!s->frame->buf[0] && !s->eof_in) {
++            r = ff_encode_get_frame(avctx, s->frame);
++            if (r == AVERROR_EOF)
++                s->eof_in = 1;
++            else if (r == AVERROR(EAGAIN))
++                return AVERROR(EAGAIN);     /* (the caller sends more) */
++            else if (r < 0)
++                return r;
++        }
++        if (s->frame->buf[0]) {
++            const uint8_t *planes[3] = { s->frame->data[0], s->frame->data[1], s->frame->data[2] };
++            int strides[3] = { s->frame->linesize[0], s->frame->linesize[1], s->frame->linesize[2] };
++            r = vcenc_send(s->e, planes, strides, s->frame->pts == AV_NOPTS_VALUE ? VCENC_NOPTS : s->frame->pts,
++                           s->frame->pict_type == AV_PICTURE_TYPE_I ? VCENC_FORCE_KEY : 0);
++            if (r == VCENC_OK) {
++                av_frame_unref(s->frame);
++                progress = 1;
++            } else if (r != VCENC_AGAIN) {
++                av_frame_unref(s->frame);
++                return map_result(avctx, s, r, "Sending a frame");
++            }
++        } else if (s->eof_in && !s->eos_sent) {
++            r = vcenc_send_eos(s->e);
++            if (r == VCENC_OK)
++                s->eos_sent = progress = 1;
++            else if (r != VCENC_AGAIN)
++                return map_result(avctx, s, r, "Sending the end of the stream");
++        }
++        /* the input full, or the end sent: wait for the VideoCore */
++        if (progress) {
++            t0 = 0;
++        } else if (!t0) {
++            t0 = av_gettime_relative();
++        } else if (av_gettime_relative() - t0 > WAIT_US) {
++            av_log(avctx, AV_LOG_ERROR, "No packet from the VideoCore in %d s\n", WAIT_US / 1000000);
++            return s->failed = AVERROR_EXTERNAL;
++        }
++    }
++}
++
++#define OFFSET(x) offsetof(VCHIQEncContext, x)
++#define VE AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_ENCODING_PARAM
++static const AVOption options[] = {
++    { "rc_constant", "constant bit rate (tried several ways; if the encoder takes none, variable)",
++      OFFSET(rc_constant), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, VE },
++    { "repeat_headers", "SPS and PPS at the start of every keyframe", OFFSET(repeat_headers), AV_OPT_TYPE_BOOL,
++      { .i64 = 0 }, 0, 1, VE },
++    { "qp_min", "the smallest quantiser (0: the encoder's)", OFFSET(qp_min), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 51, VE },
++    { "qp_max", "the largest quantiser (0: the encoder's)", OFFSET(qp_max), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 51, VE },
++    { "in_buffers", "frames with the encoder at once (0: 2)", OFFSET(in_buffers), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 4, VE },
++    { "pci_memory", "frames copied into PCI memory, not a cacheable pool", OFFSET(pci_memory), AV_OPT_TYPE_BOOL,
++      { .i64 = 0 }, 0, 1, VE },
++    { "gpu_mem_check", "refuse 1080p when gpu_mem is under 128 MB", OFFSET(gpu_mem_check), AV_OPT_TYPE_BOOL,
++      { .i64 = 1 }, 0, 1, VE },
++    { NULL }
++};
++
++static const AVClass vchiqenc_class = {
++    .class_name = "h264_vchiq encoder",
++    .item_name  = av_default_item_name,
++    .option     = options,
++    .version    = LIBAVUTIL_VERSION_INT,
++};
++
++static const FFCodecDefault vchiqenc_defaults[] = {
++    { "b", "0" },
++    { "g", "0" },
++    { NULL },
++};
++
++const FFCodec ff_h264_vchiq_encoder = {
++    .p.name         = "h264_vchiq",
++    .p.long_name    = NULL_IF_CONFIG_SMALL("H.264 on the VideoCore (RISC OS, VCHIQ)"),
++    .p.type         = AVMEDIA_TYPE_VIDEO,
++    .p.id           = AV_CODEC_ID_H264,
++    .priv_data_size = sizeof(VCHIQEncContext),
++    .init           = vchiqenc_init,
++    .close          = vchiqenc_close,
++    FF_CODEC_RECEIVE_PACKET_CB(vchiqenc_receive_packet),
++    .defaults       = vchiqenc_defaults,
++    .p.priv_class   = &vchiqenc_class,
++    .p.capabilities = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_HARDWARE,
++    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
++    .p.pix_fmts     = (const enum AVPixelFormat[]) { AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE },
++    .p.wrapper_name = "vchiq",
++};
+-- 
+2.39.5
