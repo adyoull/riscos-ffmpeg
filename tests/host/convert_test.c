@@ -29,7 +29,7 @@ int conv_test_fill(void);
 
 enum { I_SRC_L, I_SRC, I_INFO, I_PRESET_L, I_PRESET, I_PRESET_B, I_PRESET_D, I_FORMAT_L, I_FORMAT, I_FORMAT_B,
        I_SIZE_L, I_SIZE, I_SIZE_B, I_QUAL_L, I_QUAL, I_QUAL_B, I_SPEED_L, I_SPEED, I_SPEED_B, I_SOUND, I_DEINT,
-       I_EASY, I_TRIM_L, I_FROM, I_TO_L, I_TO, I_TRIM_H, I_OPTS_L, I_OPTS, I_OPTS_H, I_FILE, I_NAME, I_CONVERT, I_BAR, I_FILL, I_STOP,
+       I_EASY, I_HW, I_TRIM_L, I_FROM, I_TO_L, I_TO, I_TRIM_H, I_OPTS_L, I_OPTS, I_OPTS_H, I_FILE, I_NAME, I_CONVERT, I_BAR, I_FILL, I_STOP,
        I_STATUS, I_PLAY, I_SHOW, I_LOG, N_ICONS };
 
 #define WINH 0x6000
@@ -136,7 +136,25 @@ static int script(int *b)
     case 7:
         CHECK(menu_items == 6 && !strcmp(menu_title, "Size"), "size menu: %d items, '%s'", menu_items, menu_title);
         b[0] = 4; b[1] = -1; return 9;                                           /* 480 lines */
-    case 8:
+    case 8:   /* Hardware acceleration: the VideoCore's choices replace Speed's */
+        CHECK(!shaded(I_HW) && !is_selected(I_HW) && !strcmp(conv_test_text(7), "Fast"),
+              "before Hardware: shaded %d, ticked %d, speed '%s'", shaded(I_HW), is_selected(I_HW), conv_test_text(7));
+        iflags[I_HW] ^= 1 << 21;                                                 /* (the Wimp ticks an option icon) */
+        click(b, I_HW, 4); return 6;
+    case 9:
+        CHECK(is_selected(I_HW) && !strcmp(conv_test_text(7), "Normal") && !strcmp(conv_test_text(3), "Custom"),
+              "Hardware ticked: speed '%s' (want Normal), preset '%s'", conv_test_text(7), conv_test_text(3));
+        click(b, I_SPEED_B, 4); return 6;
+    case 10:
+        CHECK(menu_items == 3 && !strcmp(menu_title, "Hardware"), "hardware menu: %d items, '%s'", menu_items, menu_title);
+        b[0] = 2; b[1] = -1; return 9;                                           /* High quality */
+    case 11:
+        CHECK(!strcmp(conv_test_text(7), "High quality") && !strcmp(conv_test_text(3), "Custom"),
+              "High quality: speed '%s', preset '%s'", conv_test_text(7), conv_test_text(3));
+        iflags[I_HW] ^= 1 << 21;
+        click(b, I_HW, 4); return 6;                                             /* off again: libx264 as before */
+    case 12:
+        CHECK(!is_selected(I_HW) && !strcmp(conv_test_text(7), "Fast"), "Hardware off: speed '%s'", conv_test_text(7));
         CHECK(!strcmp(conv_test_text(4), "480 lines") && !strcmp(conv_test_text(3), "Custom") &&
               !strcmp(conv_test_text(2), "SDFS::Pi.$.Films.trailer_480/mp4"), "after 480: size '%s', preset '%s', name '%s'",
               conv_test_text(4), conv_test_text(3), conv_test_text(2));
@@ -145,20 +163,20 @@ static int script(int *b)
         strcpy(conv_test_buffer(2), "1:40");
         strcpy(conv_test_buffer(3), "-metadata title=Trailer");                 /* more options, as typed */
         memset(b, 0, 28); b[0] = WINH; b[1] = I_NAME; b[6] = 13; return 8;      /* Return: not a full path */
-    case 9:
+    case 13:
         CHECK(nreports == 1 && strstr(reported[0], "needs a directory"), "refused name: %s", reported[0]);
         CHECK(nstarted == 1, "started anyway");
         click(b, I_FILE, 64); return 6;                                          /* drag the file icon */
-    case 10:
+    case 14:
         CHECK(drags == 1 && !strcmp(drag_sprite, "file_bf8"), "drag: %d, sprite '%s'", drags, drag_sprite);
         memset(b, 0, 16); return 7;                                              /* dropped on a Filer window */
-    case 11:
+    case 15:
         CHECK(datasaves == 1 && !strcmp(datasave_leaf, "trailer_480/mp4") && datasave_type == 0xBF8,
               "DataSave: %d, '%s', type %x", datasaves, datasave_leaf, datasave_type);
         msg(b, 2, 0x333, 256); b[3] = 999; b[9] = 1234;                          /* DataSaveAck from the Filer */
         strcpy((char *)&b[11], "SDFS::Pi.$.Out.trailer_480/mp4");
         return 17;
-    case 12:
+    case 16:
         CHECK(nstarted == 2 && strstr(started[1], "-txt &434f4e56"), "convert task: %s", started[1]);
         read_obey(started[1]);
         CHECK(!strcmp(obey, "| Run by !FFmpeg's Convert window\nSDFS::Pi.$.Apps.!FFmpeg.ffmpeg -nostdin -hide_banner -v error -y "
@@ -169,82 +187,82 @@ static int script(int *b)
         CHECK(shaded(I_CONVERT) && shaded(I_SIZE) && !shaded(I_STOP) && !strcmp(conv_test_text(2), "SDFS::Pi.$.Out.trailer_480/mp4"),
               "while converting: shading, name '%s'", conv_test_text(2));
         msg(b, 0x808C2, 0x998, 24); b[5] = 0x434F4E56; return 17;
-    case 13: tw_output(b, 0x998, "frame=1\nout_time_us=45000000\nspeed=0.5x\nprogress=continue\n"); return 17;
-    case 14:
+    case 17: tw_output(b, 0x998, "frame=1\nout_time_us=45000000\nspeed=0.5x\nprogress=continue\n"); return 17;
+    case 18:
         CHECK(!strcmp(conv_test_text(1), "Converting: 0:45 of 1:30, 0.5x real time, about 1:30 left"), "status: '%s'", conv_test_text(1));
         CHECK(conv_test_fill() == 28 + 424, "bar to %d (want half: 452)", conv_test_fill());
         click(b, I_STOP, 4); return 6;
-    case 15:
+    case 19:
         CHECK(morites == 1 && morite_to == 0x998 && !strcmp(conv_test_text(1), "Stopping..."), "Stop: %d Morite to %x, '%s'",
               morites, morite_to, conv_test_text(1));
         msg(b, 0x808C3, 0x998, 20); return 17;
-    case 16:
+    case 20:
         CHECK(deleted == 1 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer_480/mp4") &&
               !strcmp(conv_test_text(1), "Stopped. The unfinished file was deleted.") && !shaded(I_CONVERT) && !shaded(I_LOG),
               "stopped: deleted %d '%s', '%s'", deleted, deleted_name, conv_test_text(1));
         exists = 1;
         click(b, I_CONVERT, 4); return 6;                                        /* again: it's there now */
-    case 17:
+    case 21:
         CHECK(nreports == 2 && strstr(reported[1], "trailer_480/mp4 is already there. Replace it?"), "replace question: %s", reported[1]);
         CHECK(nstarted == 3, "not started after Replace");
         msg(b, 0x808C2, 0x997, 24); b[5] = 0x434F4E56; return 17;
-    case 18: fake_cs += 20000; tw_output(b, 0x997, "out_time_us=90000000\nspeed=0.6x\ntotal_size=31457280\nprogress=end\n"); return 17;
-    case 19: msg(b, 0x808C3, 0x997, 20); return 17;
-    case 20:
+    case 22: fake_cs += 20000; tw_output(b, 0x997, "out_time_us=90000000\nspeed=0.6x\ntotal_size=31457280\nprogress=end\n"); return 17;
+    case 23: msg(b, 0x808C3, 0x997, 20); return 17;
+    case 24:
         CHECK(settype == 0xBF8 && !strcmp(conv_test_text(1), "Done: trailer_480/mp4, 30.0 MB, in 3:20.") && !shaded(I_PLAY) &&
               !shaded(I_SHOW) && conv_test_fill() == 876, "done: type %x, '%s', fill %d", settype, conv_test_text(1), conv_test_fill());
         click(b, I_PLAY, 4); return 6;
-    case 21:
+    case 25:
         CHECK(nstarted == 4 && strstr(started[3], "ffplay") && strstr(started[3], " SDFS::Pi.$.Out.trailer_480/mp4"), "Play: %s", started[3]);
         msg(b, 0x502, 0x444, 40); b[5] = 500; b[6] = 500; b[8] = WINH; b[9] = I_CONVERT; return 17;   /* HelpRequest */
-    case 22:
+    case 26:
         CHECK(helps == 1 && strstr(help_text, "Click to convert"), "help: %s", help_text);
         click(b, I_CONVERT, 4); return 6;                                        /* a failure */
-    case 23: msg(b, 0x808C2, 0x996, 24); b[5] = 0x434F4E56; return 17;
-    case 24: tw_output(b, 0x996, "SDFS::Pi.$.Out.trailer_480/mp4: Permission denied\n"); return 17;
-    case 25: msg(b, 0x808C3, 0x996, 20); return 17;
-    case 26:
+    case 27: msg(b, 0x808C2, 0x996, 24); b[5] = 0x434F4E56; return 17;
+    case 28: tw_output(b, 0x996, "SDFS::Pi.$.Out.trailer_480/mp4: Permission denied\n"); return 17;
+    case 29: msg(b, 0x808C3, 0x996, 20); return 17;
+    case 30:
         CHECK(!strcmp(conv_test_text(1), "Couldn't convert: SDFS::Pi.$.Out.trailer_480/mp4: Permission denied "
                       "The unfinished file was deleted.") && !shaded(I_LOG) && shaded(I_PLAY) && deleted == 2 &&
               !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer_480/mp4"),
               "failed: '%s', deleted %d '%s' (a failed file isn't left behind)", conv_test_text(1), deleted, deleted_name);
         click(b, I_FORMAT_B, 4); return 6;                                       /* sound only */
-    case 27: b[0] = 2; b[1] = -1; return 9;                                      /* MP3 */
-    case 28:
+    case 31: b[0] = 2; b[1] = -1; return 9;                                      /* MP3 */
+    case 32:
         CHECK(!strcmp(conv_test_text(5), "MP3 sound") && shaded(I_SIZE) && shaded(I_DEINT) && shaded(I_SOUND) && is_selected(I_SOUND) &&
               !strcmp(conv_test_text(6), "Sfile_xxx"), "MP3: format '%s', shading, icon '%s' (no file_1ad sprite: the unknown one)",
               conv_test_text(5), conv_test_text(6));
         CHECK(!strcmp(conv_test_text(2), "SDFS::Pi.$.Out.trailer/mp3"), "MP3 name keeps the directory: '%s'", conv_test_text(2));
         click(b, I_CONVERT, 4); return 6;                                        /* converting, then quit */
-    case 29: msg(b, 0x808C2, 0x995, 24); b[5] = 0x434F4E56; return 17;
-    case 30: ask_answer = 2; msg(b, 8, 0x111, 20); return 18;                   /* PreQuit: Cancel */
-    case 31:
+    case 33: msg(b, 0x808C2, 0x995, 24); b[5] = 0x434F4E56; return 17;
+    case 34: ask_answer = 2; msg(b, 8, 0x111, 20); return 18;                   /* PreQuit: Cancel */
+    case 35:
         CHECK(ack19 == 1, "PreQuit not objected to (%d)", ack19);
         ask_answer = 3; memset(b, 0, 20); b[0] = WINH; return 3;                /* close the window: Stop */
-    case 32:
+    case 36:
         CHECK(morites == 2 && morite_to == 0x995 && !win_open, "close while converting: %d Morites, open %d", morites, win_open);
         msg(b, 0x808C3, 0x995, 20); return 17;
-    case 33:
+    case 37:
         CHECK(conv_test_state() == CONV_STOPPED && deleted == 3, "after closing: state %d, deleted %d", conv_test_state(), deleted);
         click(b, I_CONVERT, 4); return 6;                                        /* again (Replace) */
-    case 34: msg(b, 0x808C2, 0x994, 24); b[5] = 0x434F4E56; return 17;
-    case 35:   /* a recording that starts part way: decoder messages, then to the end, exit status 0 */
+    case 38: msg(b, 0x808C2, 0x994, 24); b[5] = 0x434F4E56; return 17;
+    case 39:   /* a recording that starts part way: decoder messages, then to the end, exit status 0 */
         tw_output(b, 0x994, "[h264 @ 0x1234] non-existing PPS 0 referenced\n[h264 @ 0x1234] no frame!\n"
                   "out_time_us=90000000\ntotal_size=1048576\nprogress=end\nffmpeg-exit=0\n");
         return 17;
-    case 36: msg(b, 0x808C3, 0x994, 20); return 17;
-    case 37:
+    case 40: msg(b, 0x808C3, 0x994, 20); return 17;
+    case 41:
         CHECK(conv_test_state() == CONV_DONE && deleted == 3 && !strncmp(conv_test_text(1), "Done: ", 6),
               "decoder messages, then the end and exit 0: state %d, deleted %d, '%s' (it worked: the file stays)",
               conv_test_state(), deleted, conv_test_text(1));
         click(b, I_CONVERT, 4); return 6;                                        /* again, then quit while converting */
-    case 38: msg(b, 0x808C2, 0x993, 24); b[5] = 0x434F4E56; return 17;
-    case 39: ask_answer = 3; msg(b, 8, 0x111, 20); return 18;                   /* PreQuit: Stop */
-    case 40:
+    case 42: msg(b, 0x808C2, 0x993, 24); b[5] = 0x434F4E56; return 17;
+    case 43: ask_answer = 3; msg(b, 8, 0x111, 20); return 18;                   /* PreQuit: Stop */
+    case 44:
         CHECK(morites == 3 && morite_to == 0x993 && conv_test_state() == CONV_STOPPING,
               "PreQuit, Stop: %d Morites to %x, state %d", morites, morite_to, conv_test_state());
         msg(b, 0, 0x111, 20); return 17;                                         /* Message_Quit */
-    case 41:   /* (conv_quitting waiting for the task window to end) */
+    case 45:   /* (conv_quitting waiting for the task window to end) */
         CHECK(deleted == 3 && conv_test_state() == CONV_STOPPING, "quitting: deleted %d before ffmpeg ended, state %d",
               deleted, conv_test_state());
         msg(b, 0x808C3, 0x993, 20); return 17;
@@ -263,6 +281,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     int *b = (int *)(intptr_t)in->r[1];
     switch (swi) {
     case 0x400C0: out->r[1] = 0x1234; return NULL;                               /* Wimp_Initialise */
+    case 0x39:                                                                   /* OS_SWINumberFromString: a Pi */
+        return !strcmp((const char *)(intptr_t)in->r[1], "VCHIQ_MsgQueue") ? NULL : &err;
     case 0x29:                                                                   /* OS_FSControl 37 */
         strcpy((char *)(intptr_t)in->r[2], "SDFS::Pi.$.Apps.!FFmpeg");
         out->r[5] = 100;
@@ -350,7 +370,7 @@ int main(void)
     setenv("Wimp$ScrapDir", scrap, 1);
     setenv("FFmpeg$Dir", "<Obey$Dir>", 1);
     CHECK(fffront_main() == 0, "front end didn't end cleanly");
-    CHECK(step == 42 && deleted == 4 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer/mp3") && conv_test_state() == CONV_STOPPED,
+    CHECK(step == 46 && deleted == 4 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer/mp3") && conv_test_state() == CONV_STOPPED,
           "quit while converting: step %d, deleted %d '%s', state %d (stopped, and the unfinished file deleted)", step,
           deleted, deleted_name, conv_test_state());
     {   /* the Options field takes spaces ("-vf hflip"); the name doesn't */
@@ -393,6 +413,35 @@ int main(void)
           !strcmp(a, "-nostdin -hide_banner -v error -y -i in -map 0:v:0 -map 0:a:0 -c:v libx264 -preset veryfast -crf 23 "
                      "-tune fastdecode -pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart -progress pipe:1 -nostats out"),
           "720p source, preset 0: %s", a);
+    {   /* Hardware acceleration: h264_vchiq, the bit rate from the size and rate, the profile as a number */
+        s.hw = 1; s.hw_mode = 1;
+        CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) == 0 &&
+              !strcmp(a, "-nostdin -hide_banner -v error -y -i in -map 0:v:0 -map 0:a:0 -c:v h264_vchiq -b:v 2300k -profile:v 66 "
+                         "-pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart -progress pipe:1 -nostats out"),
+              "hardware, Normal, quick to decode (baseline): %s", a);
+        s.easy = 0; s.hw_mode = 2;
+        conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
+        CHECK(strstr(a, " -c:v h264_vchiq -b:v 3450k -profile:v 100 -pix_fmt yuv420p ") != NULL, "hardware, High quality: %s", a);
+        s.hw_mode = 0;
+        conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
+        CHECK(strstr(a, " -c:v h264_vchiq -b:v 1600k -profile:v 77 ") != NULL && !strstr(a, "libx264") && !strstr(a, "-crf"),
+              "hardware, Fast: %s", a);
+        in.width = 3840; in.height = 2160; s.size = 0;                           /* 4K: too big for the VideoCore */
+        CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) < 0 && strstr(e, "at most 1920x1088") &&
+              strstr(e, "3840x2160"), "hardware, 4K at its own size: %s", e);
+        s.size = 1;                                                              /* made 1080 lines: fine */
+        CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) == 0 &&
+              strstr(a, " -vf scale=-2:1080 -c:v h264_vchiq -b:v 3650k -profile:v 77 "), "hardware, 4K made 1080p: %s", a);
+        in.width = 2560; in.height = 1080; s.size = 0;                           /* too wide */
+        CHECK(conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e)) < 0 && strstr(e, "2560x1080"),
+              "hardware, too wide: %s", e);
+        in.width = 160; in.height = 90; in.fps = 0;                              /* tiny, rate unknown: 25, at least 300k */
+        conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
+        CHECK(strstr(a, " -b:v 300k ") != NULL, "hardware, tiny: %s", a);
+        in.width = 1280; in.height = 720; in.fps = 25;
+        conv_apply_preset(&s, 0);
+        s.hw = 0;
+    }
     in.width = 321;                                                            /* odd: made even */
     conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
     CHECK(strstr(a, " -vf scale=trunc(iw/2)*2:trunc(ih/2)*2 ") != NULL, "odd width: %s", a);

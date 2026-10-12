@@ -110,6 +110,16 @@ static const int aac_kbps[CONV_QUALITIES] = { 256, 160, 128, 96 };
 static const int mp3_q[CONV_QUALITIES] = { 0, 2, 4, 6 };
 const char *const conv_speed_names[CONV_SPEEDS] = { "Fastest", "Fast", "Balanced" };
 static const char *const x264_preset[CONV_SPEEDS] = { "ultrafast", "veryfast", "medium" };
+/* Hardware acceleration: H.264 encoded by the Pi's VideoCore (h264_vchiq).
+   Its speed is the same whichever is chosen; they trade the file's size
+   for quality: the bit rate in bits per pixel of each picture (so it
+   follows the size and frame rate), and the profile (FFmpeg 5.1 takes
+   H.264 profiles as numbers: 66 baseline, 77 main, 100 high). */
+const char *const conv_hw_mode_names[CONV_HW_MODES] = { "Fast", "Normal", "High quality" };
+static const double hw_bpp[CONV_HW_MODES] = { 0.07, 0.10, 0.15 };
+static const int hw_profile[CONV_HW_MODES] = { 77, 100, 100 };
+#define HW_MAX_W 1920                   /* what the VideoCore's encoder takes */
+#define HW_MAX_H 1088
 
 int conv_sound_only(int format) { return format == CONV_MP3 || format == CONV_M4A; }
 
@@ -250,10 +260,29 @@ int conv_build_args(char *buf, size_t size, const ConvSettings *s, const ConvSou
             add(vf, sizeof(vf), &v, "%sscale=-2:%d", v ? "," : "", lines);
         else if ((in->width | in->height) & 1)          /* H.264 needs even sizes */
             add(vf, sizeof(vf), &v, "%sscale=trunc(iw/2)*2:trunc(ih/2)*2", v ? "," : "");
-        if (v)
-            add(buf, size, &n, " -vf %s", vf);
-        add(buf, size, &n, " -c:v libx264 -preset %s -crf %d%s -pix_fmt yuv420p",
-            x264_preset[s->speed], crf[s->quality], s->easy ? " -tune fastdecode" : "");
+        if (s->hw) {                    /* the size it will be (as scale=-2:lines) */
+            int scaled = lines && in->height > lines;
+            int oh = scaled ? lines : in->height & ~1;
+            int ow = !scaled ? in->width & ~1 : (int)((double)in->width * oh / in->height / 2 + 0.5) * 2;
+            double fps = in->fps > 0 && in->fps < 1000 ? in->fps : 25;
+            int kbps;
+            if (ow > HW_MAX_W || oh > HW_MAX_H) {
+                snprintf(err, errsize, "Hardware acceleration: the picture can be at most %dx%d (this would be %dx%d): "
+                         "choose a smaller Size.", HW_MAX_W, HW_MAX_H, ow, oh);
+                return -1;
+            }
+            kbps = (int)(hw_bpp[s->hw_mode] * ow * oh * fps / 1000 / 50 + 0.5) * 50;
+            kbps = kbps < 300 ? 300 : kbps > 20000 ? 20000 : kbps;
+            if (v)
+                add(buf, size, &n, " -vf %s", vf);
+            add(buf, size, &n, " -c:v h264_vchiq -b:v %dk -profile:v %d -pix_fmt yuv420p",
+                kbps, s->easy ? 66 : hw_profile[s->hw_mode]);   /* (quick to decode: baseline, no CABAC) */
+        } else {
+            if (v)
+                add(buf, size, &n, " -vf %s", vf);
+            add(buf, size, &n, " -c:v libx264 -preset %s -crf %d%s -pix_fmt yuv420p",
+                x264_preset[s->speed], crf[s->quality], s->easy ? " -tune fastdecode" : "");
+        }
     } else
         add(buf, size, &n, " -vn -map 0:a:0");
     if (sound) {
@@ -443,7 +472,7 @@ enum {
     I_PRESET_L, I_PRESET, I_PRESET_B, I_PRESET_D,
     I_FORMAT_L, I_FORMAT, I_FORMAT_B, I_SIZE_L, I_SIZE, I_SIZE_B,
     I_QUAL_L, I_QUAL, I_QUAL_B, I_SPEED_L, I_SPEED, I_SPEED_B,
-    I_SOUND, I_DEINT, I_EASY,
+    I_SOUND, I_DEINT, I_EASY, I_HW,
     I_TRIM_L, I_FROM, I_TO_L, I_TO, I_TRIM_H,
     I_OPTS_L, I_OPTS, I_OPTS_H,
     I_FILE, I_NAME, I_CONVERT,
@@ -489,6 +518,7 @@ static struct {
     int t0_cs;
     int fill_x1;
     int menu_icon;                      /* which popup's menu is open (-1: none) */
+    int hw_avail;                       /* the VideoCore can be reached (the VCHIQ module's SWIs) */
     int drag_ref;
     /* icon texts */
     char t_src[256], t_info[160], t_preset[40], t_preset_d[120], t_format[20], t_size[20],
@@ -496,7 +526,7 @@ static struct {
     char t_from[16], t_to[16], t_opts[256];
 } C;
 
-static char s_sound[] = "Sound", s_deint[] = "Deinterlace if needed", s_easy[] = "Quick to decode (for RISC OS)";
+static char s_sound[] = "Sound", s_deint[] = "Deinterlace if needed", s_easy[] = "Quick to decode", s_hw[] = "Hardware acceleration";
 static char s_src_l[] = "Source", s_preset_l[] = "Convert to", s_format_l[] = "Format", s_size_l[] = "Size",
             s_qual_l[] = "Quality", s_speed_l[] = "Speed", s_trim_l[] = "From", s_to_l[] = "to",
             s_trim_h[] = "e.g. 1:30; empty: the start / the end",
@@ -526,7 +556,9 @@ static const char *const help[N_ICONS] = {
     [I_SOUND] = "Keep the sound (as AAC in MP4 or MKV). Untick for a silent video.",
     [I_DEINT] = "Remove the stripes of interlaced video (TV, DVD, camcorders). Only acts on interlaced pictures.",
     [I_EASY] = "Makes the video simpler to decode (no deblocking or CABAC), so it plays smoothly on RISC OS; "
-               "the file is a little bigger.",
+               "the file is a little bigger. (With hardware acceleration: the baseline profile, no CABAC.)",
+    [I_HW] = "Encode the H.264 picture with the Raspberry Pi's VideoCore: several times quicker than the ARM, but a "
+             "bigger file for the same quality. Up to 1920x1088. Speed then chooses Fast, Normal or High quality.",
     [I_FROM] = "Convert only part of the file: start from this time (h:mm:ss, m:ss or seconds). Empty: from the start.",
     [I_TO] = "Stop at this time. Empty: to the end.",
     [I_OPTS] = "More ffmpeg options, as on the command line (e.g. -vf hflip, -r 25). They come after "
@@ -615,7 +647,8 @@ static int create_window(void)
     POPUP(I_SPEED_B, 860, -360);
     OPTION(I_SOUND, 200, -416, 360, s_sound);
     OPTION(I_DEINT, 380, -416, 780, s_deint);
-    OPTION(I_EASY, 200, -468, 700, s_easy);
+    OPTION(I_EASY, 200, -468, 500, s_easy);
+    OPTION(I_HW, 520, -468, 920, s_hw);
     LABEL(I_TRIM_L, 16, -532, 184, -484, s_trim_l);
     icon_mk(&w.icon[I_FROM], 200, -532, 360, -484, IF_TEXT | IF_BORDER | IF_VCENT | IF_FILLED | IF_BUTTON(15) | IF_COL(7, 0),
             C.t_from, v_time, sizeof(C.t_from));
@@ -782,10 +815,11 @@ static void show_settings(void)
     SET(I_FORMAT, C.t_format, conv_format_names[C.set.format]);
     SET(I_SIZE, C.t_size, conv_size_names[C.set.size]);
     SET(I_QUAL, C.t_qual, conv_quality_names[C.set.quality]);
-    SET(I_SPEED, C.t_speed, conv_speed_names[C.set.speed]);
+    SET(I_SPEED, C.t_speed, C.set.hw ? conv_hw_mode_names[C.set.hw_mode] : conv_speed_names[C.set.speed]);
     select_icon(I_SOUND, (C.set.sound || sound_only) && (!have || C.in.has_audio));
     select_icon(I_DEINT, C.set.deinterlace);
     select_icon(I_EASY, C.set.easy);
+    select_icon(I_HW, C.set.hw);
     for (int i = I_PRESET; i <= I_FORMAT_B; i++)
         shade(i, !have || busy);
     shade(I_PRESET_L, !have || busy);
@@ -795,6 +829,7 @@ static void show_settings(void)
     for (int i = I_SPEED_L; i <= I_SPEED_B; i++) shade(i, !video_opts);
     shade(I_DEINT, !video_opts);
     shade(I_EASY, !video_opts);
+    shade(I_HW, !video_opts || !C.hw_avail);
     shade(I_SOUND, !have || busy || sound_only || !C.in.has_audio || !C.in.has_video);
     for (int i = I_TRIM_L; i <= I_TRIM_H; i++) shade(i, !have || busy);
     for (int i = I_OPTS_L; i <= I_OPTS_H; i++) shade(i, !have || busy);
@@ -835,6 +870,12 @@ void conv_init(int task, const char *ffdir)
     snprintf(C.ffdir, sizeof(C.ffdir), "%s", ffdir);
     conv_apply_preset(&C.set, 0);
     C.set.deinterlace = 1;
+    C.set.hw_mode = 1;                  /* (Normal, when hardware acceleration is ticked) */
+    {   /* the VideoCore's encoder needs the VCHIQ module (RISC OS 5 on a Raspberry Pi) */
+        _kernel_swi_regs r;
+        r.r[1] = (intptr_t)"VCHIQ_MsgQueue";
+        C.hw_avail = !swi(0x39 /* OS_SWINumberFromString */, &r);
+    }
     snprintf(C.t_src, sizeof(C.t_src), "Drop a video or sound file here");
     snprintf(C.t_status, sizeof(C.t_status), "Drop a video or sound file on this window to convert it.");
 }
@@ -1163,12 +1204,18 @@ static void popup(int ic)
     case I_FORMAT_B: n = CONV_FORMATS; cur = C.set.format; names = conv_format_names; break;
     case I_SIZE_B:   n = CONV_SIZES; cur = C.set.size; names = conv_size_names; break;
     case I_QUAL_B:   n = CONV_QUALITIES; cur = C.set.quality; names = conv_quality_names; break;
-    case I_SPEED_B:  n = CONV_SPEEDS; cur = C.set.speed; names = conv_speed_names; break;
+    case I_SPEED_B:
+        if (C.set.hw) {
+            n = CONV_HW_MODES; cur = C.set.hw_mode; names = conv_hw_mode_names;
+        } else {
+            n = CONV_SPEEDS; cur = C.set.speed; names = conv_speed_names;
+        }
+        break;
     default: return;
     }
     memset(&menu, 0, sizeof(menu));
     snprintf(menu.title, sizeof(menu.title), "%s", ic == I_PRESET_B ? "Convert to" : ic == I_FORMAT_B ? "Format" :
-             ic == I_SIZE_B ? "Size" : ic == I_QUAL_B ? "Quality" : "Speed");
+             ic == I_SIZE_B ? "Size" : ic == I_QUAL_B ? "Quality" : C.set.hw ? "Hardware" : "Speed");
     menu.tfg = 7; menu.tbg = 2; menu.wfg = 7; menu.wbg = 0;
     menu.width = 12 * 16 + 32;
     menu.height = 44;
@@ -1221,7 +1268,14 @@ void conv_menu_select(const int *sel)
     case I_FORMAT_B: C.set.format = i; C.set.preset = CONV_PRESETS - 1; break;
     case I_SIZE_B:   C.set.size = i; C.set.preset = CONV_PRESETS - 1; break;
     case I_QUAL_B:   C.set.quality = i; C.set.preset = CONV_PRESETS - 1; break;
-    case I_SPEED_B:  C.set.speed = i; C.set.preset = CONV_PRESETS - 1; break;
+    case I_SPEED_B:
+        if (C.set.hw)
+            C.set.hw_mode = i;          /* (presets don't set it: still the same preset) */
+        else {
+            C.set.speed = i;
+            C.set.preset = CONV_PRESETS - 1;
+        }
+        break;
     }
     suggest_name();
     show_settings();
@@ -1320,6 +1374,7 @@ int conv_click(const int *b)
     case I_SOUND: C.set.sound = selected(I_SOUND); C.set.preset = CONV_PRESETS - 1; show_settings(); break;
     case I_DEINT: C.set.deinterlace = selected(I_DEINT); show_settings(); break;
     case I_EASY:  C.set.easy = selected(I_EASY); C.set.preset = CONV_PRESETS - 1; show_settings(); break;
+    case I_HW:    C.set.hw = selected(I_HW) && C.hw_avail; show_settings(); break;
     case I_FILE:
         if ((b[2] & (64 | 16)) && C.state != CONV_NONE && !conv_busy())
             drag_file((int *)b);
@@ -1437,6 +1492,9 @@ int conv_message(int *b)
             if (ic == I_SRC_L || ic == I_PRESET_L || ic == I_FORMAT_L || ic == I_SIZE_L || ic == I_QUAL_L ||
                 ic == I_SPEED_L || ic == I_TRIM_L || ic == I_TO_L || ic == I_OPTS_L)
                 t = help[ic + 1] ? help[ic + 1] : t;
+            if (C.set.hw && (ic == I_SPEED_L || ic == I_SPEED || ic == I_SPEED_B))
+                t = "The VideoCore encodes as quickly whichever you choose: Fast makes the smallest file, High quality "
+                    "the best picture (a higher bit rate). Quality then only sets the sound's.";
             reply(b, MSG_HELPREPLY, t);
         }
         return 1;
@@ -1540,6 +1598,7 @@ const char *conv_test_text(int which)
     case 4: return C.t_size;
     case 5: return C.t_format;
     case 6: return v_file;
+    case 7: return C.t_speed;
     }
     return "";
 }

@@ -9,6 +9,7 @@ enum { CONV_MP4, CONV_MKV, CONV_MP3, CONV_M4A, CONV_FORMATS };
 #define CONV_SIZES     6
 #define CONV_QUALITIES 4
 #define CONV_SPEEDS    3
+#define CONV_HW_MODES  3
 
 /* the window's state */
 enum { CONV_NONE, CONV_PROBING, CONV_READY, CONV_RUNNING, CONV_STOPPING, CONV_DONE, CONV_FAILED, CONV_STOPPED };
@@ -21,6 +22,7 @@ typedef struct {
 typedef struct {
     int preset, format, size, quality, speed;
     int sound, deinterlace, easy;
+    int hw, hw_mode;                    /* hardware acceleration: the VideoCore's encoder, Fast / Normal / High quality */
     char from[16], to[16];              /* trim, as typed ("" = start / end) */
     char extra[256];                    /* more ffmpeg options for the output, as typed ("" = none) */
 } ConvSettings;
@@ -46,7 +48,7 @@ typedef struct {                        /* ffmpeg's -progress lines, and its err
 extern const ConvPreset conv_presets[CONV_PRESETS];
 extern const char *const conv_format_names[CONV_FORMATS], *const conv_format_ext[CONV_FORMATS];
 extern const char *const conv_size_names[CONV_SIZES], *const conv_quality_names[CONV_QUALITIES],
-                  *const conv_speed_names[CONV_SPEEDS];
+                  *const conv_speed_names[CONV_SPEEDS], *const conv_hw_mode_names[CONV_HW_MODES];
 
 /* the logic (no Wimp) */
 int conv_sound_only(int format);

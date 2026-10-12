@@ -11,7 +11,9 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   the default: ask for it by name. YUV420P in (the ffmpeg command
   converts), even sizes up to 1920x1088 (1080p needs gpu_mem=128); Annex
   B out, no B frames; the SPS and PPS as extradata for MP4 and Matroska.
-  Options: `b` (default 10 Mbit/s), `g`, `profile`, `level`,
+  Options: `b` (default 10 Mbit/s), `g`, `profile` (as a number in
+  FFmpeg 5.1: `-profile:v 66`, `77` or `100` for baseline, main, high;
+  the names aren't understood), `level`,
   `rc_constant` (the Pi 4's firmware refuses constant bit rate, so it
   falls back to variable), `repeat_headers`, `qp_min`, `qp_max`,
   `in_buffers`, `pci_memory`, `gpu_mem_check`. On the Pi 4 (VCEncTest)
@@ -21,6 +23,17 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   row-by-row benchmark way; nothing Reel uses changed). Tested by
   riscos-reelhwaccel on a fake encoder that behaves as the Pi's; here,
   built and linked (`ffmpeg -encoders` lists it).
+- **Hardware acceleration in the Convert window** (!FFmpeg): an option
+  that encodes the picture with `h264_vchiq`; Speed then offers Fast,
+  Normal and High quality, which set the bit rate from the picture's
+  size and frame rate (0.07, 0.10 and 0.15 bits a pixel, 300k to 20M)
+  and the profile (main, high, high; Quick to decode makes it
+  baseline). Quality then only sets the sound's. Pictures over
+  1920x1088 are refused with a message asking for a smaller Size.
+  Greyed out where OS_SWINumberFromString doesn't know VCHIQ_MsgQueue.
+  convert_test: the option, the Hardware menu, the command lines
+  (bit rates, profiles, 4K refused and made 1080p, too wide, tiny);
+  mutation-checked.
 
 ## 5.1.10-riscos20 (2026-10-11): UnixLib 5.0.3.3, riscos-mesa 20.3.5-16
 
