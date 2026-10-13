@@ -65,7 +65,12 @@
 #include "../common/version.h"
 #include "../common/proginfo.h"   /* Info: the standard About this program window */
 
-/* Big heap in a dynamic area (the default would share the WimpSlot) */
+/* Big heap in a dynamic area (the default would share the WimpSlot). Its
+   maximum is logical address space reserved whole when the area is made,
+   however little is in it; where DALimit allows (1GB on some Pi 4s) 512MB
+   was given in full and other programs ran out ("Unable to allocate
+   logical address space"). 128MB, and UnixLib adds "Reel Heap 2" and on
+   when more is needed. */
 #ifdef REEL_EGL
 #define EGL_EGLEXT_PROTOTYPES 1
 #include <EGL/egl.h>
@@ -76,7 +81,7 @@ const char *const __dynamic_da_name = "ReelEGL Heap";
 #else
 const char *const __dynamic_da_name = "Reel Heap";
 #endif
-int __dynamic_da_max_size = 512 << 20;
+int __dynamic_da_max_size = 128 << 20;
 
 #define OS_WriteN              0x46
 #define OS_ReadModeVariable    0x35

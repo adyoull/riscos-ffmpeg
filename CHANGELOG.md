@@ -3,8 +3,18 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Reel (not yet released)
+## Reel and FFmpeg (not yet released)
 
+- **The heaps ask for 128MB of address space, not 512MB** (Reel, ReelEGL
+  and the ffmpeg, ffprobe and ffplay commands; patch 0002). A dynamic
+  area takes logical address space for its whole maximum when it's made,
+  however little is in it. Most machines' DALimit cut 512MB down to 128MB,
+  but on a 4GB Pi 4 with DALimit 1GB, ReelEGL reserved 512MB holding 96K,
+  and other programs then failed with "Unable to allocate logical address
+  space" (seen with AddrSpace). UnixLib 5.0.3.3 adds "Reel Heap 2", "FFmpeg
+  Heap 2" and so on when more is needed, so nothing is lost. The picture
+  buffers' Physical Memory Pools are already made at exactly their size.
+  Checked in the binaries: `__dynamic_da_max_size` is 0x8000000.
 - **A subtitle file FFmpeg doesn't recognise is read as what its name
   says** (`/srt`, `/ass`, `/ssa`, `/vtt`, `/sub`, `/smi`). A Greek .srt
   whose first cue had no number before its times showed nothing: FFmpeg's

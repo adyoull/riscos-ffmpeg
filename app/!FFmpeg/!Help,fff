@@ -237,7 +237,8 @@ Memory
 Each program is about 31MB and needs about 43MB of application space
 (the Boot file sets it). They are bigger than before because they now
 include riscos-mesa's EGL and OpenGL for the egl output device. Memory for pictures and sound comes from a dynamic area called
-"FFmpeg Heap" (up to 512MB), which goes away when the program quits.
+"FFmpeg Heap" (up to 128MB; "FFmpeg Heap 2" and on are added if more is
+needed), which goes away when the program quits.
 
 Needs
 -----
