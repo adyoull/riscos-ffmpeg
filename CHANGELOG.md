@@ -15,12 +15,12 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
     still work), and opens about 6 cs sooner with `rc_constant`.
   - Patch 0023 is the devkit's again; 0027 is its 0003, made again against
     our series.
-- **Reel keeps at most 4 HEVC block pictures decoded ahead above 1080p**
+- **Reel keeps at most 6 HEVC block pictures decoded ahead above 1080p**
   (it was up to 8 at 60 fps). Each is a 12.6MB (8-bit) or 16.6MB (10-bit)
-  frame, so at 4K 10-bit that's 66MB less memory and address space while
-  it plays. 4 is 67ms at 60 fps, against the block's 17ms latency.
-  (`vc_test`: 2048x1088 at 60 fps keeps 4 waiting with every picture shown,
-  320x180 at 60 fps still keeps 8.)
+  frame, so at 4K 10-bit that's 33MB less memory and address space while
+  it plays. 6 is 100ms at 60 fps: the block only just keeps up at 4K
+  10-bit, so the margin stays. (`vc_test`: 2048x1088 at 60 fps keeps 6
+  waiting with every picture shown, 320x180 at 60 fps still keeps 8.)
 - **The heaps ask for 128MB of address space, not 512MB** (Reel, ReelEGL
   and the ffmpeg, ffprobe and ffplay commands; patch 0002). A dynamic
   area takes logical address space for its whole maximum when it's made,

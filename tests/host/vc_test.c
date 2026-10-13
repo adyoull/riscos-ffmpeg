@@ -815,7 +815,7 @@ int main(int argc, char **argv)
             }
             draw_mode = 0;
             asked_hb -= 8;                       /* (eight more uses of the block above) */
-            /* Over 1080p, the block's pictures kept ahead are at most 4
+            /* Over 1080p, the block's pictures kept ahead are at most 6
                (each a 12.6-16.6 MB frame: memory and address space; the
                ReelHWAccel handoff for devkit 0.2.15), + 1 taken in; at
                1080p and under, as many as the frame rate wants (60 fps: 8,
@@ -828,8 +828,8 @@ int main(int argc, char **argv)
                 asked_hb -= 2;
                 printf("  HEVC block over 1080p: up to %d pictures waiting, %u shown of %u; at 320x180, up to %d\n",
                        big.max_q, big.shown, big.decoded, small.max_q);
-                CHECK(big.max_q >= 4 && big.max_q <= 5 && big.end && big.shown + 2 >= big.decoded && small.max_q >= 8,
-                      "HEVC block over 1080p: up to %d waiting (want 4-5), %u shown of %u, end %d; 320x180 60 fps: up to %d "
+                CHECK(big.max_q >= 6 && big.max_q <= 7 && big.end && big.shown + 2 >= big.decoded && small.max_q >= 8,
+                      "HEVC block over 1080p: up to %d waiting (want 6-7), %u shown of %u, end %d; 320x180 60 fps: up to %d "
                       "(want 8 or more)", big.max_q, big.shown, big.decoded, big.end, small.max_q);
             }
         }
