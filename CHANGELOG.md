@@ -3,7 +3,10 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Reel and FFmpeg (not yet released)
+## 5.1.10-riscos22 and Reel 0.1.28 (2026-10-13): less address space, devkit 0.2.15, subtitle and log fixes
+
+Reel 0.1.28 is a new release (an earlier 0.1.28, the same as 0.1.27, was
+withdrawn on 2026-10-12).
 
 - **riscos-reelhwaccel devkit 0.2.15** (0.2.14 too):
   - `hevc_hwdec` gives the HEVC block's frames back to RISC OS once they're
