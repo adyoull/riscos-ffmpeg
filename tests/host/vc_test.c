@@ -160,6 +160,8 @@ static int burst, releasing, stash_n, stash_max;
 static AVFrame *stash[64];
 static int64_t drop_before = INT64_MIN;
 static int vc_dropped, drop_sets;
+/* the picture (counted from 1) given out two pictures late: the log's "out of order" */
+static int bump_at = -1;
 /* the block only just keeping up: a picture out every hb_period (fake time)
    at most, dropped ones too (it decodes every picture), the caller waiting
    for it meanwhile; 0: as fast as asked */
@@ -297,6 +299,11 @@ int __wrap_avcodec_receive_frame(AVCodecContext *c, AVFrame *f)
             break;
         av_frame_unref(f);
     }
+    if (c == vc_ctx && r >= 0 && vc_frames + 1 == bump_at) {
+        int64_t d = av_rescale_q(1, (AVRational){ 2, 25 }, c->pkt_timebase);
+        f->pts += d;
+        f->best_effort_timestamp += d;     /* (what reelcore goes by) */
+    }
     if (c == vc_ctx && r >= 0 && ++vc_frames == fail_after) {
         av_frame_unref(f);
         failed = 1;
@@ -343,7 +350,7 @@ static void log_line(int level, const char *line)
     }
 }
 
-typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells, crc, drawn, slips, conv_busy, conv_idle; int max_skip; double pos, last, lag_late, rect_time; char info[4096]; } run_t;
+typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells, crc, drawn, slips, conv_busy, conv_idle; int max_skip; double pos, last, lag_late, rect_time; char info[4096]; char dbg[600]; } run_t;
 
 /* each picture shown, drawn (1: 1:1 YUV, as into an overlay; 2: halved, as
    4K into an HD overlay; 3: 32bpp, as into a sprite), its bytes summed */
@@ -468,6 +475,7 @@ static void play(const char *clip, int flags, run_t *out)
     out->pos = reelcore_position(v);
     if (fell_back)                            /* (media info after the switch) */
         reelcore_media_info(v, out->info, sizeof out->info);
+    reelcore_debug(v, out->dbg, sizeof out->dbg);
     play_v = NULL;
     reelcore_close(v);
 }
@@ -544,6 +552,24 @@ int main(int argc, char **argv)
     CHECK(out_buffers == 9, "VideoCore: out_buffers %d, want 9 (3 + 4 ahead + 2)", out_buffers);
     CHECK(a.decoder_early == REELCORE_DECODER_VIDEOCORE && a.decoder == REELCORE_DECODER_VIDEOCORE,
           "VideoCore: stats decoder %d, %d", a.decoder_early, a.decoder);
+    {   /* Reel's log: the packets the decoder took, and pictures out of order */
+        unsigned given = 0, back = 99;
+        const char *d = strstr(a.dbg, "; video: ");
+        if (d)
+            sscanf(d, "; video: %u packets given, %u out of order", &given, &back);
+        printf("  log:%s\n", d ? d + 1 : " (no video part)");
+        CHECK(given >= a.decoded && given < a.decoded + 8 && back == 0, "log: %u packets given for %u pictures, %u out of order",
+              given, a.decoded, back);
+        bump_at = 30;                        /* one picture out two pictures late */
+        play(argv[1], 0, &a);
+        d = strstr(a.dbg, "; video: ");
+        back = 0;
+        if (d)
+            sscanf(d, "; video: %*u packets given, %u out of order", &back);
+        printf("  a picture out of order: log says %u\n", back);
+        CHECK(back >= 1 && back <= 2, "a picture two late: %u out of order in the log (want 1 or 2)", back);
+        bump_at = -1;
+    }
     refuse_send = 0;
 
     /* bursts of 16 pictures, packets refused while it hands them over */

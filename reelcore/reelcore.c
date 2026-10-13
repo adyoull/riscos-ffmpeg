@@ -165,6 +165,9 @@ struct ReelCore {
 
     /* for reelcore_stats */
     unsigned n_decoded, n_shown;
+    unsigned n_sent;                   /* video packets the decoder took */
+    unsigned n_backwards;              /* pictures out with a time not after the last's */
+    double last_dec_pts;               /* the last picture out's time (-1e9: none since a seek) */
     int64_t t_decode, t_audio, t_convert;   /* microseconds */
     int conv_w, conv_h;
     AVFrame *cur;                      /* the current frame (NULL before the first) */
@@ -1264,6 +1267,7 @@ static ReelCore *core_alloc(int flags)
     v->flags = flags;
     v->vs = v->as = -1;
     v->vst = v->ast = NULL;
+    v->last_dec_pts = -1e9;
     v->audio_end = -1;
     v->seek_target = v->aseek_target = -1;
     v->need_first = 1;
@@ -1541,6 +1545,16 @@ int reelcore_debug(const ReelCore *v, char *buf, int size)
                      v->vpk_n, (unsigned)(v->vpk_bytes >> 10), v->dropped,
                      v->skipping == 2 ? ", keyframes only" : v->skipping ? ", skipping non-reference frames" : "",
                      v->skip_spells, v->late_skips, v->clock_slips);
+    if (n >= size)
+        return n;
+    /* the decoder's side: packets given, the next one's time, the pictures
+       waiting's times, and pictures out of order (a hardware decoder that
+       stopped keeping up) */
+    n += snprintf(buf + n, size - n, "; video: %u packets given, %u out of order", v->n_sent, v->n_backwards);
+    if (n < size && v->vst && v->vpk_n && v->vpk[v->vpk_head]->pts != AV_NOPTS_VALUE)
+        n += snprintf(buf + n, size - n, ", next packet at %.2f", v->vpk[v->vpk_head]->pts * av_q2d(v->vst->time_base));
+    if (n < size && v->qn)
+        n += snprintf(buf + n, size - n, ", pictures at %.2f-%.2f", v->qpts[0], v->qpts[v->qn - 1]);
     if (n >= size)
         return n;
     if (v->net) {
@@ -2232,6 +2246,9 @@ static void got_video(ReelCore *v, AVFrame *f)
                            v->qn ? v->qpts[v->qn - 1] + (v->fps > 0 ? 1 / v->fps : 0.04)
                                  : v->cur ? v->cur_pts : 0);
     v->n_decoded++;
+    if (v->last_dec_pts > -1e8 && pts <= v->last_dec_pts)
+        v->n_backwards++;
+    v->last_dec_pts = pts;
     if (f->interlaced_frame)
         v->n_interlaced++;
     if (f->interlaced_frame)
@@ -2942,6 +2959,7 @@ static void fill(ReelCore *v)
                 vpk_unpop(v, p);           /* the decoder full and so is the queue: later */
                 break;
             }
+            v->n_sent++;
             av_packet_free(&p);
         } else if (v->eof_demux && !v->vflushed) {
             v->vflushed = 1;
@@ -3241,6 +3259,7 @@ int reelcore_seek(ReelCore *v, double seconds)
     clear_queue(v);
     vpk_clear(v);
     apk_clear(v);
+    v->last_dec_pts = -1e9;
     v->aflushed = 0;
     deint_close(v);                       /* the pictures it held are from before */
     v->vflushed = 0;
@@ -4592,6 +4611,28 @@ int reelcore_subtitle_charset_used(const ReelCore *v)
     return v->ready && v->sub_track >= 0 && v->sub_tracks[v->sub_track].path ? v->sub_cs_used : -1;
 }
 
+/* the subtitle format a file's name says it is: the part after the last
+   '/' (RISC OS) or '.', if that's after the last directory separator */
+static const AVInputFormat *sub_ext_format(const char *path)
+{
+    static const char *const map[][2] = {
+        { "srt", "srt" }, { "ass", "ass" }, { "ssa", "ass" }, { "vtt", "webvtt" },
+        { "sub", "microdvd" }, { "smi", "sami" }, { "sami", "sami" },
+    };
+    const char *slash = strrchr(path, '/'), *dot = strrchr(path, '.'), *e;
+    size_t i;
+    if (slash && (!dot || slash > dot))
+        e = slash + 1;      /* RISC OS: Film/srt (directories are '.') */
+    else if (dot && !strchr(dot, '/'))
+        e = dot + 1;
+    else
+        return NULL;
+    for (i = 0; i < FF_ARRAY_ELEMS(map); i++)
+        if (!av_strcasecmp(e, map[i][0]))
+            return av_find_input_format(map[i][1]);
+    return NULL;
+}
+
 static int sub_read_file(ReelCore *v, const char *path)
 {
     AVFormatContext *fc = NULL;
@@ -4602,6 +4643,7 @@ static int sub_read_file(ReelCore *v, const char *path)
     size_t rn = 0, cn = 0;
     uint8_t *raw = file_slurp(path, SUB_FILE_MAX, &rn), *conv = NULL;
     AVIOContext *pb = NULL;
+    const AVInputFormat *ifmt;
     MemIn mi;
     if (!pkt) {
         av_free(raw);
@@ -4636,7 +4678,22 @@ static int sub_read_file(ReelCore *v, const char *path)
         av_log(NULL, AV_LOG_INFO, "reelcore: %s read as %s\n", path, cs_names[cs]);
     }
     av_freep(&raw);
-    if ((ret = avformat_open_input(&fc, path, NULL, NULL)) < 0 ||
+    ret = avformat_open_input(&fc, path, NULL, NULL);
+    if (ret < 0 && (ifmt = sub_ext_format(path))) {
+        /* FFmpeg's probe turned it down (an .srt whose first cue has no
+           number, say): try again as what its name says it is */
+        if (pb) {   /* (the probe gave pb back rewound, with what it read) */
+            if ((fc = avformat_alloc_context())) {
+                fc->pb = pb;
+                fc->flags |= AVFMT_FLAG_CUSTOM_IO;
+            }
+        }
+        if (!pb || fc)
+            ret = avformat_open_input(&fc, path, ifmt, NULL);
+        if (ret >= 0)
+            av_log(NULL, AV_LOG_INFO, "reelcore: %s read as %s by its name\n", path, ifmt->name);
+    }
+    if (ret < 0 ||
         (ret = avformat_find_stream_info(fc, NULL)) < 0 ||
         (ret = s = av_find_best_stream(fc, AVMEDIA_TYPE_SUBTITLE, -1, -1, NULL, 0)) < 0 ||
         !(dec = open_decoder(fc->streams[s]))) {

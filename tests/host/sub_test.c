@@ -24,7 +24,8 @@
  *     read as UTF-8; Greek read as UTF-8 shows '?'s.
  *
  *   sub_test SUBS.mkv PLAIN.mp4 SUBS.srt ROT.mp4 SUBS.ass GOP.mp4 LONG.mp4 PICS.sup
- *            GREEK.srt CYR.srt WEST.srt TURK.srt
+ *            GREEK.srt CYR.srt WEST.srt TURK.srt NONUM.srt NONUM1253.srt
+ *            DIR.d/srt (NONUM.srt named as on RISC OS, its type after a '/')
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -353,6 +354,21 @@ int main(int argc, char **argv)
         if (v) {
             reelcore_add_subtitle_file(v, argv[3]);
             CHECK(reelcore_subtitle_charset_used(v) == REELCORE_CS_UTF8, "UTF-8 file read as %d", reelcore_subtitle_charset_used(v));
+            reelcore_close(v);
+        }
+    }
+    if (argc > 14) {   /* an .srt whose first cue has no number: FFmpeg's probe
+                          turns it down, so it's read as what its name says */
+        for (int a = 13; a <= (argc > 15 ? 15 : 14); a++) {
+            v = reelcore_open(argv[2], 0);
+            if (!v)
+                break;
+            CHECK(reelcore_add_subtitle_file(v, argv[a]) == 0, "adding %s (first cue without a number)", argv[a]);
+            text_at(v, 1.5, t, sizeof(t));
+            printf("  %s: '%s'\n", argv[a], t);
+            CHECK(!strcmp(t, "Καλημέρα, τι κάνεις;"), "%s at 1.5 s: '%s'", argv[a], t);
+            text_at(v, 3.5, t, sizeof(t));
+            CHECK(!strcmp(t, "Πολύ καλά, ευχαριστώ!"), "%s at 3.5 s: '%s'", argv[a], t);
             reelcore_close(v);
         }
     }

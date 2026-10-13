@@ -3,6 +3,23 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel (not yet released)
+
+- **A subtitle file FFmpeg doesn't recognise is read as what its name
+  says** (`/srt`, `/ass`, `/ssa`, `/vtt`, `/sub`, `/smi`). A Greek .srt
+  whose first cue had no number before its times showed nothing: FFmpeg's
+  SubRip probe wants the number. It's tried again as SubRip (in its
+  character set, as before), and the log says so. Tested with that file
+  in UTF-8 and in Windows-1253 (`sub_test`).
+- **Reel's log says more about the video decoder each second**: packets
+  given to it, pictures that came out of it out of order, the time of the
+  next packet waiting, and the times of the pictures waiting. A Reel user's
+  1080p H.264 film on the VideoCore went into slow motion (2-3 pictures a
+  second, packets piling up) after a moment's hold-up, and the log so far
+  can't say whether the decoder was starved or gave out pictures with the
+  wrong times. (`vc_test` checks the counts, with one picture given out
+  late by the stand-in.)
+
 ## 5.1.10-riscos21 (2026-10-12): H.264 encoded (and decoded) by the VideoCore, from the Convert window too
 
 Reel is unchanged: 0.1.27 stays the current Reel (its programs here are

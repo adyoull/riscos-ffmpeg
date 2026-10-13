@@ -1782,7 +1782,7 @@ static void close_video(void)
     _kernel_swi_regs r;
     opening_cancel();
     if (S.v) {
-        char d[300];
+        char d[600];
         reelcore_debug(S.v, d, sizeof(d));
         lg("close: %s", d);
         resume_note();
@@ -4804,7 +4804,7 @@ static void tick(void)
     swi(OS_ReadMonotonicTime, &r);
     t = r.r[0];
     if (logf && t - S.log_cs >= 100) {    /* once a second */
-        char d[300];
+        char d[600];
         /* what each picture cost (full screen too, where Media info can't be seen) */
         static ReelCoreStats p;
         static unsigned p_draw_n, p_draw_cs, p_waited, p_replaced;

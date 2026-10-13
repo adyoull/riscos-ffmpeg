@@ -149,9 +149,10 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/sub_test" 
 echo "== sub_test (subtitles, chapters, turned pictures, frame steps)"
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=21 -c:v libx264 -preset ultrafast -g 25 -an "$O/long21.mp4"
 python3 "$HERE/mkpgs.py" "$O/pics.sup" 20                     # Blu-ray picture subtitles, 20 of them
-python3 "$HERE/mkcharsubs.py" "$O"                              # greek.srt cyr.srt west.srt turk.srt (code pages)
+python3 "$HERE/mkcharsubs.py" "$O"                              # greek.srt cyr.srt west.srt turk.srt (code pages), nonum*.srt
+mkdir -p "$O/nonum.d" && cp "$O/nonum.srt" "$O/nonum.d/srt"         # (named as on RISC OS: Film/srt)
 "$TOP/tests/qemu/aligntrap.sh" "$O/sub_test" "$O/subs.mkv" "$O/plain.mp4" "$O/subs.srt" "$O/turned.mp4" "$O/subs.ass" "$O/gop.mp4" \
-  "$O/long21.mp4" "$O/pics.sup" "$O/greek.srt" "$O/cyr.srt" "$O/west.srt" "$O/turk.srt" 2>&1 | grep -v "reelcore: " || bad=1
+  "$O/long21.mp4" "$O/pics.sup" "$O/greek.srt" "$O/cyr.srt" "$O/west.srt" "$O/turk.srt" "$O/nonum.srt" "$O/nonum1253.srt" "$O/nonum.d/srt" 2>&1 | grep -v "reelcore: " || bad=1
 
 # RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
 # (the hardware decoding test tools and the HEVCHW module moved to
