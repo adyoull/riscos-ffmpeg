@@ -350,7 +350,7 @@ static void log_line(int level, const char *line)
     }
 }
 
-typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells, crc, drawn, slips, conv_busy, conv_idle; int max_skip; double pos, last, lag_late, rect_time; char info[4096]; char dbg[600]; } run_t;
+typedef struct { int end, decoder, decoder_early, jumps, back; unsigned decoded, shown, late, skip_spells, crc, drawn, slips, conv_busy, conv_idle; int max_skip, max_q; double pos, last, lag_late, rect_time; char info[4096]; char dbg[600]; } run_t;
 
 /* each picture shown, drawn (1: 1:1 YUV, as into an overlay; 2: halved, as
    4K into an HD overlay; 3: 32bpp, as into a sprite), its bytes summed */
@@ -427,6 +427,9 @@ static void play(const char *clip, int flags, run_t *out)
             hiccuped = 1;
         }
         r = reelcore_update(v);
+        reelcore_stats(v, &st);
+        if ((int)st.pictures_waiting > out->max_q)
+            out->max_q = st.pictures_waiting;   /* (the most decoded ahead at once) */
         if (hb_latency > 0) {                /* (Reel sleeps whole centiseconds: nothing given to the block meanwhile) */
             static unsigned nd;
             reelcore_stats(v, &st);
@@ -812,6 +815,23 @@ int main(int argc, char **argv)
             }
             draw_mode = 0;
             asked_hb -= 8;                       /* (eight more uses of the block above) */
+            /* Over 1080p, the block's pictures kept ahead are at most 4
+               (each a 12.6-16.6 MB frame: memory and address space; the
+               ReelHWAccel handoff for devkit 0.2.15), + 1 taken in; at
+               1080p and under, as many as the frame rate wants (60 fps: 8,
+               + 1). Every picture still shown. (argv[6]: 2048x1088 at 60
+               fps; argv[5]: 320x180 at 60 fps.) */
+            if (argc > 6) {
+                run_t big, small;
+                play(argv[6], 0, &big);
+                play(argv[5], 0, &small);
+                asked_hb -= 2;
+                printf("  HEVC block over 1080p: up to %d pictures waiting, %u shown of %u; at 320x180, up to %d\n",
+                       big.max_q, big.shown, big.decoded, small.max_q);
+                CHECK(big.max_q >= 4 && big.max_q <= 5 && big.end && big.shown + 2 >= big.decoded && small.max_q >= 8,
+                      "HEVC block over 1080p: up to %d waiting (want 4-5), %u shown of %u, end %d; 320x180 60 fps: up to %d "
+                      "(want 8 or more)", big.max_q, big.shown, big.decoded, big.end, small.max_q);
+            }
         }
 #endif
         refuse_open = 1;

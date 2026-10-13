@@ -5,6 +5,22 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Reel and FFmpeg (not yet released)
 
+- **riscos-reelhwaccel devkit 0.2.15** (0.2.14 too):
+  - `hevc_hwdec` gives the HEVC block's frames back to RISC OS once they're
+    let go, keeping 2 spare (`-spare_frames N`). Before, every frame it
+    made stayed until the decoder closed, so after a burst (catching up, a
+    seek) 4K 10-bit kept about 280MB of memory and address space for the
+    rest of the film.
+  - `h264_encvchiq` takes profiles by name: `-profile:v main` (numbers
+    still work), and opens about 6 cs sooner with `rc_constant`.
+  - Patch 0023 is the devkit's again; 0027 is its 0003, made again against
+    our series.
+- **Reel keeps at most 4 HEVC block pictures decoded ahead above 1080p**
+  (it was up to 8 at 60 fps). Each is a 12.6MB (8-bit) or 16.6MB (10-bit)
+  frame, so at 4K 10-bit that's 66MB less memory and address space while
+  it plays. 4 is 67ms at 60 fps, against the block's 17ms latency.
+  (`vc_test`: 2048x1088 at 60 fps keeps 4 waiting with every picture shown,
+  320x180 at 60 fps still keeps 8.)
 - **The heaps ask for 128MB of address space, not 512MB** (Reel, ReelEGL
   and the ffmpeg, ffprobe and ffplay commands; patch 0002). A dynamic
   area takes logical address space for its whole maximum when it's made,

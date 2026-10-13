@@ -58,6 +58,9 @@ static void cur_changed(ReelCore *v);
 #define PICS_AHEAD    0.13   /* seconds of pictures decoded ahead: rides out a slow one */
 #define PICS_MIN      3      /* (as before, for 24-30 fps) */
 #define PICS_MAX      8      /* 60 fps; below QMAX, so a packet giving 2 never pushes one out */
+#define HB_4K_AHEAD   4      /* the HEVC block's pictures over 1080p kept ahead at most (each a 12.6-16.6 MB frame
+                                in a Physical Memory Pool: memory and logical address space; devkit 0.2.15 gives
+                                them back once let go) */
 #define AUDIO_AHEAD   0.25   /* seconds of sound kept queued (SDL) */
 #define SSB_AHEAD     0.5    /* and with SharedSoundBuffer: rides out a busy desktop */
 #define SSB_BLOCK     2048   /* sample frames per StreamManager block */
@@ -2876,7 +2879,16 @@ static int pics_for(double rate)
 
 static int pics_wanted(const ReelCore *v)
 {
-    return pics_for(v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
+    int n = pics_for(v->fps > 0 ? v->fps * (v->speed > 1 ? v->speed : 1) : 25);
+    /* The HEVC block's frames above 1080p: each picture ahead holds a
+       12.6 MB (8-bit) or 16.6 MB (10-bit) frame, as do the decoder's own
+       (about 6) and the one shown. At 4K 60 fps 8 ahead were 133 MB of
+       them; at most HB_4K_AHEAD (67 ms at 60 fps: the block's latency is
+       17 ms). ReelHWAccel's handoff, devkit 0.2.15. */
+    if (v->hb && v->vst && (int64_t)v->vst->codecpar->width * v->vst->codecpar->height > 1920 * 1088 &&
+        n > HB_4K_AHEAD)
+        n = HB_4K_AHEAD;
+    return n;
 }
 
 static void fill(ReelCore *v)

@@ -10,7 +10,7 @@ H.264 on the VideoCore:
 | `ffmpeg/0001-avcodec-h264_vchiq.patch` | FFmpeg 5.1.10's `h264_vchiq` decoder on top of vcdec (`git am`, or `patch -p1`). It applies to plain 5.1.10 and on top of riscos-ffmpeg's series. |
 | `include/hwhevcdec.h`, `include/hevc_ctrls.h`, `lib/libhevcdec.a` | hevcdec: the Pi 4's HEVC block (rpivid), driven directly from user mode, fed V4L2 stateless HEVC controls. GCCSDK GCC 10, ARMv7, hard float, NEON. |
 | `ffmpeg/0002-avcodec-hevc_hwdec.patch` | FFmpeg 5.1.10's `hevc_hwdec` hwaccel and decoder on top of hevcdec. Apply after 0001; it applies on top of riscos-ffmpeg's series too. |
-| `ffmpeg/0003-avcodec-h264_vchiq-encoder.patch` | (0.2.12) FFmpeg 5.1.10's `h264_vchiq` encoder on top of vcenc. Apply after 0001, before or after 0002. |
+| `ffmpeg/0003-avcodec-h264_encvchiq.patch` | (0.2.12; renamed in 0.2.14) FFmpeg 5.1.10's `h264_encvchiq` encoder on top of vcenc. Apply after 0001, before or after 0002. |
 
 ## FFmpeg
 
@@ -32,19 +32,21 @@ gives ordinary YUV420P frames, in display order with their pts.
 - **The program's page at &8000 (vcdec 0.4.2, hevcdec 0.1.6):** the pools' contiguous pages never include it. RISC OS may hand over a running program's pages for contiguous memory, copying the program elsewhere, and ARMEABISupport (which recognises a program by that page's physical address) then loses it: stacks left behind, and later an EMT trap ("code 6") in another program. `app_page_moves` in either library's stats counts claims after which the page moved anyway (should be 0). On a RISC OS before 5.29 (which can't be asked to avoid a range) a pool that would include it is refused: vcdec uses PCI memory instead, and hevcdec reports that it has no contiguous memory, saying why (the case the libraries were already built to handle).
 - **Linking:** add `-lvcdec` after `-lavcodec` when linking programs.
 
-## H.264 encoding: the h264_vchiq encoder (0.2.12)
+## H.264 encoding: h264_encvchiq (0.2.12; named h264_encvchiq since 0.2.14)
 
 Apply 0003 after 0001 (before or after 0002); `--enable-vchiq` builds the
 encoder too, and it links from the same `-lvcdec`. It is never FFmpeg's
-default H.264 encoder: ask for it by name (`-c:v h264_vchiq`, or
-`avcodec_find_encoder_by_name("h264_vchiq")`).
+default H.264 encoder: ask for it by name (`-c:v h264_encvchiq`, or
+`avcodec_find_encoder_by_name("h264_encvchiq")`). (0.2.12 and 0.2.13 called
+it `h264_vchiq`, the decoder's name; riscos-ffmpeg asked for its own name, so
+users can ask for each and ffmpeg's messages say which one spoke.)
 
-    ffmpeg -i in.mkv -c:v h264_vchiq -b:v 5M -g 50 -c:a copy out.mp4
+    ffmpeg -c:v h264_vchiq -i in.mp4 -c:v h264_encvchiq -profile:v main -b:v 5M -g 50 -c:a copy out.mp4
 
 - **Input:** YUV420P frames (the ffmpeg command converts others), even sizes up to 1920x1088; 1080p needs gpu_mem of 128 MB or more (`gpu_mem_check`, as the decoder). Refused at open with AVERROR(ENOSYS) otherwise, and for profiles other than baseline, main and high.
 - **Output:** Annex B packets, one access unit each, in the frames' order with their pts (no B frames, so dts = pts), keyframes flagged. With global headers (MP4, Matroska) the SPS and PPS are the extradata; otherwise they come at the start of the first packet. A frame with pict_type I is made a keyframe.
-- **Settings:** `b` (0, the default: 10 Mbit/s), `g` (0, the default: the encoder's, about 60), `profile` (baseline, main, high: the default), `level` (default: chosen from the size, rate and bit rate). Private: `rc_constant` (constant bit rate: the Pi 4's firmware refused it at the enable, and then refused every enable after, so vcenc 0.1.2 makes the encoder again for each way it tries: constant, constant skipping frames, then variable with constant set once running; `-v debug` says which took), `repeat_headers` (the SPS and PPS at the start of every keyframe), `qp_min`, `qp_max`, `in_buffers` (frames with the encoder at once: 0 for 2, up to 4), `pci_memory`, `gpu_mem_check`.
-- **Speed (Pi 4, VCEncTest):** 1080p30 at about 72 frames a second, 720p at about 155; copying a 1080p frame into the encoder's buffer takes about 3.6 ms (a cacheable pool; 12 ms from PCI memory).
+- **Settings:** `b` (0, the default: 10 Mbit/s), `g` (0, the default: the encoder's, about 60), `profile` (by name, through a private option, since FFmpeg 5.1's own takes only numbers for H.264: `baseline`, `constrained_baseline`, `main`, `high` (the default); or 66, 578, 77, 100), `level` (default: chosen from the size, rate and bit rate). Private: `rc_constant` (constant bit rate, set once the encoder is running. The Pi 4's firmware refuses it every way, before the enable and after, so there it gives variable, which holds the rate on real content: 1080p30 at 8 Mbit/s came out at 8.04. `-v debug` says what took), `repeat_headers` (the SPS and PPS at the start of every keyframe), `qp_min`, `qp_max`, `in_buffers` (frames with the encoder at once: 0 for 2, up to 4), `pci_memory`, `gpu_mem_check`.
+- **Speed (Pi 4, VCEncTest):** 1080p30 at about 72 frames a second, 720p at about 155; copying a 1080p frame into the encoder's buffer takes about 3.6 ms (a cacheable pool; 12 ms from PCI memory). In riscos-ffmpeg's Convert window (riscos21), a 1280x544 trailer with AAC converted at 3.4x real time with `h264_vchiq` decoding and this encoding, 2.2x with ARM decoding, against 0.66x with libx264 veryfast.
 - **Waiting:** `avcodec_receive_packet` waits for the VideoCore only while its input is full or at the end of the stream; otherwise it gives EAGAIN. Opening waits for the SPS and PPS (a few centiseconds); a failure gives AVERROR_EXTERNAL.
 
 ## HEVC: hevc_hwdec
@@ -92,7 +94,8 @@ cropping applied. Ask for it by name (`-c:v hevc_hwdec`, or
   - `hevcdec_frame_done(d, f)` says, without waiting, whether a picture is decoded (1) or still in the block (0). It also sees finished phases and starts the next. A player that has fallen behind can show a picture that's done and keep the one on screen rather than wait for one that isn't.
   - `hevcdec_stats` has three more fields at the end: `convert_waits` and `cs_convert_wait` (conversions that waited for their picture, and how long), and `cache_cleans`. Rebuild with the new header: the struct is bigger.
 - **skip_frame (devkit 0.2.11):** the caller's `skip_frame` is passed to FFmpeg's HEVC decoder inside before each packet, so it can change as playback goes. At `AVDISCARD_NONREF` the pictures nothing refers to (sub-layer non-reference NAL types, and RASL pictures FFmpeg would skip) are dropped before they're parsed and **never reach the block**: a player that has fallen behind sets it so the block can get ahead, and clears it once caught up. The count is the read-only option `skipped` (`av_opt_get_int(avctx, "skipped", AV_OPT_SEARCH_CHILDREN, &n)`), also logged at close (verbose). Higher levels work too (`NONKEY` leaves only keyframes), but only NONREF pictures are counted.
-- **Options:** `output_hw` (above), `drop_before` (above), `output_8bit` (default off; see 10-bit), `pipelined` (default on: the block decodes while FFmpeg parses the next picture; one picture is held back, so output is a picture later) and `cached_frames` (default on: the block's frames are cacheable, cleaned and invalidated before conversion, about twice as quick to convert).
+- **Memory and address space (devkit 0.2.15, hevcdec 0.1.13):** every buffer the block uses is its own Physical Memory Pool, which reserves logical address space equal to its size, exactly what's used. At 4K 10-bit that's about 50 MB of working buffers plus 16.6 MB per frame (4K 8-bit: about 12.6 MB per frame; 1080p: about 12 MB plus 3-4 MB per frame). Before 0.2.15, `hevc_hwdec` kept every frame it had ever made until it closed, so a player holding pictures ahead kept its peak for the whole film: 14 frames at 4K 10-bit is about 280 MB. Now frames beyond `spare_frames` (default 2) that FFmpeg and the caller have let go of are given back to RISC OS (`hevcdec_frame_free`; a frame the block may still read is freed once it's past it). The pool still grows to what's held at once, so **the fewer 4K frames a player keeps decoded ahead, the less it takes**: each is 12.6-16.6 MB of memory and of logical address space.
+- **Options:** `output_hw` (above), `drop_before` (above), `output_8bit` (default off; see 10-bit), `spare_frames` (0.2.15; default 2: free frames kept for reuse, more go back to RISC OS; 32 keeps them all, as before), `pipelined` (default on: the block decodes while FFmpeg parses the next picture; one picture is held back, so output is a picture later) and `cached_frames` (default on: the block's frames are cacheable, cleaned and invalidated before conversion, about twice as quick to convert).
 - **Threads:** the decoder runs FFmpeg's HEVC decoder single-threaded; the parallelism is the block's.
 - **Seeking:** `avcodec_flush_buffers` as for `hevc`.
 - **Header:** hevcdec's header is `hwhevcdec.h` (devkit 0.2.3; 0.2.2 called it `hevcdec.h`, which clashed with FFmpeg's own `libavcodec/hevcdec.h`). It comes from `-I<devkit>/include`.

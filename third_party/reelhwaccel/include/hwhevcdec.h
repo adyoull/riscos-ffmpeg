@@ -49,7 +49,7 @@
 #include <stdint.h>
 #include "hevc_ctrls.h"
 
-#define HEVCDEC_VERSION "0.1.12"
+#define HEVCDEC_VERSION "0.1.13"
 
 #define HEVCDEC_OK           0
 #define HEVCDEC_ERROR       -1   /* hevcdec_error says why */
@@ -107,6 +107,10 @@ typedef struct {
        however many conversions read it: cs_cache's count) */
     unsigned convert_waits, cs_convert_wait;
     unsigned cache_cleans;
+    /* (0.1.13) frames now (including any freed but not yet gone), their
+       bytes, and frames hevcdec_frame_free has given back */
+    unsigned frames, frames_freed;
+    unsigned long long frames_bytes;
 } hevcdec_stats;
 
 void hevcdec_config_init(hevcdec_config *c);
@@ -115,8 +119,18 @@ const char *hevcdec_open_error(void);
 
 /* An output frame (NV12, or 10-bit NV12 three samples a word, in 128-byte
    columns, as the block writes it); NULL
-   if there's no memory. Frames go with hevcdec_close. */
+   if there's no memory. Frames go with hevcdec_close, or hevcdec_frame_free. */
 hevcdec_frame *hevcdec_frame_new(hevcdec *d);
+
+/* (0.1.13) A frame no longer wanted: not a reference of any picture still
+   to be given, and not to be converted again. Its memory (and logical
+   address space: a 4K 10-bit frame is 16.6 MB) goes back to RISC OS
+   without waiting: at once if the block has finished every picture given
+   so far, otherwise at a later call (hevcdec_decode, _frame_new,
+   _frame_done, _finish), once it has, since it may be reading the frame as
+   a reference. HEVCDEC_OK, or HEVCDEC_ERROR if f isn't one of d's frames
+   (or was freed already). A dead decoder keeps its memory, as at close. */
+int hevcdec_frame_free(hevcdec *d, hevcdec_frame *f);
 
 /* Decodes one picture into f: waiting for the block, or (pipelined) only
    until it's given to it. f may be a frame still being decoded or one a

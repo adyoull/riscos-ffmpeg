@@ -14,6 +14,20 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
+- Devkit 0.2.15, `riscos-reelhwaccel-devkit-0.2.15.tgz` (sha256
+  fd21f2af8765ea1759a11de6d40e4f4b63dad79577f90f7f0fcca9de1e57ac9e;
+  includes 0.2.14): hevcdec 0.1.13 and its hevc_hwdec patch (our 0023,
+  the devkit's `ffmpeg/0002-avcodec-hevc_hwdec.patch` unchanged) give the
+  HEVC block's frames back to RISC OS once nobody holds them, beyond
+  `spare_frames` (default 2) free, where before every frame ever made was
+  kept until the decoder closed (14 at 4K 10-bit: about 280MB of memory
+  and logical address space). vcenc 0.1.3 (0.2.14): `h264_encvchiq` is
+  the devkit's own name now, with profiles by name (`-profile:v main`) as
+  well as by number, and no 6 cs at open for `rc_constant`. Patch 0027 is
+  the devkit's `ffmpeg/0003-avcodec-h264_encvchiq.patch` made again
+  against our series (configure's line moved by 0023, as before; the same
+  files result). `include/hwhevcdec.h` (hevcdec_stats is bigger),
+  `include/vcenc.h`, both libraries, `README.md` and `COPYING` replaced.
 - Devkit 0.2.13, `riscos-reelhwaccel-devkit-0.2.13.tgz` (sha256
   8e37d021ea24ba9c129e7d0575e74299cd491f499e9b43dfa9ea5525258a1457):
   as 0.2.11 below, plus vcenc 0.1.2 (H.264 encoding on the VideoCore, in

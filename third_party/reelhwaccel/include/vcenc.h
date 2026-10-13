@@ -34,7 +34,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define VCENC_VERSION "0.1.2"
+#define VCENC_VERSION "0.1.3"
 
 /* results (as vcdec's) */
 #define VCENC_OK           0
@@ -53,8 +53,9 @@
 
 /* vcenc_config.flags */
 #define VCENC_INLINE_HEADERS  1u    /* SPS and PPS again at the start of every keyframe's packet */
-#define VCENC_CBR             2u    /* constant bit rate (default: variable). Tried several ways, as the
-                                       Pi 4 refused the plain one; vcenc_stats.rate_control says what took */
+#define VCENC_CBR             2u    /* constant bit rate (default: variable), tried once the encoder is
+                                       running. The Pi 4's firmware refuses it every way, so there it's
+                                       variable: vcenc_stats.rate_control says what took */
 #define VCENC_LOG_MESSAGES    4u    /* every MMAL message to the log */
 #define VCENC_NO_GPU_MEM_CHECK 8u   /* open even if gpu_mem looks too small for the size */
 #define VCENC_PCI            16u    /* buffers in PCI_RAMAlloc memory, not Physical Memory Pools */
