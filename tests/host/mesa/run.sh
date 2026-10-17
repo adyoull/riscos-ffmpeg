@@ -6,7 +6,7 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 TOP=$(cd "$HERE/../../.." && pwd)
 S=$TOP/stage-linuxarm
-DEVKIT=${DEVKIT:-$TOP/devkit/riscos-mesa-devkit-20.3.5-16}
+DEVKIT=${DEVKIT:-$TOP/devkit/riscos-mesa-devkit-$(awk '$1 == "riscos-mesa" {sub(/^v/, "", $2); print $2}' "$TOP/.riscos-deps")}   # (.riscos-deps)
 O=$TOP/src-linuxarm/host-tests/mesa
 mkdir -p "$O"
 

@@ -1,0 +1,8 @@
+# NAME TAG: the releases (github.com/adyoull/NAME) riscos-ffmpeg is built
+# with. The riscos-crossdev line chooses the container image the GitHub
+# workflows build in; riscos-mesa's devkit and riscos-reelhwaccel's devkit
+# are pinned by build/SOURCES and third_party/reelhwaccel too
+# (ci/riscos-deps-hook.sh moves those with these lines).
+riscos-crossdev v1.8.1
+riscos-mesa v20.3.5-16
+riscos-reelhwaccel v0.2.15

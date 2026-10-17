@@ -5,6 +5,27 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Reel (not yet released)
 
+- **Builds on GitHub** (riscos-crossdev 1.8.1's container image and
+  workflows; riscos-crossdev's handoff):
+  - `.riscos-deps` pins riscos-crossdev v1.8.1, riscos-mesa v20.3.5-16 and
+    riscos-reelhwaccel v0.2.15.
+  - `make sources` fetches every source by itself (`build/SOURCES`: FFmpeg,
+    Ubuntu's archive for x264, dav1d, LAME, libogg, libvorbis and Opus;
+    SDL from libsdl's GitHub tag; meson 1.5.2, which dav1d needs and the
+    image hasn't, from PyPI, run from its tarball; the riscos-mesa devkit
+    from its release) and checks each against `build/SHA256SUMS`.
+  - `build/env.sh` takes riscos-crossdev's toolchain (`RISCOS_TOOLCHAIN`)
+    when it's set, and the riscos-mesa devkit `.riscos-deps` names; the
+    toolchain's elf2aif is used when ours isn't built. The UnixLib check
+    accepts riscos-crossdev 1.4's build of 5.0.3.3 (the same symbols).
+  - `ci/riscos-deps-hook.sh` moves the riscos-mesa devkit's checksum, and
+    `third_party/reelhwaccel` with the devkit's patches, when the
+    daily update workflow finds a newer release.
+  - Checked: a clean clone, with riscos-crossdev 1.4's toolchain, an empty
+    `dl/` and no meson, makes the four release files (the Linux tests stay
+    local for now). The hook, run against the releases, gives back
+    exactly the files vendored now.
+
 - **Live streams start with more in hand** (TubeSearch's handoff: YouTube
   webcams and news that buffered straight away, and played on a second
   try).

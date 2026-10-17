@@ -20,11 +20,14 @@ bad=0
 # fixes: threads waiting in read/write and stdio, fork with threads, eventfd,
 # getserv*_r, LLONG_MIN) can't be told from 5.0.3.1 by a program's symbols:
 # check the library the programs were just linked with is that release's
-# (v5.0.3.3; 5.0.3.1's was fa98152f...).
-UNIXLIB_SHA256=${UNIXLIB_SHA256:-e24f16c3f4612aae3871ceff521ab86b0d3ac4cc689d734e0e4085d02c774adf}
+# (v5.0.3.3; 5.0.3.1's was fa98152f...). Two builds of it: riscos-unixlib's
+# release (e24f16c3...), and riscos-crossdev toolchain 1.4's, built from the
+# same 5.0.3.3 diff (47cf6a2d...; the same symbols), which the container
+# image the GitHub workflows build in has.
+UNIXLIB_SHA256=${UNIXLIB_SHA256:-e24f16c3f4612aae3871ceff521ab86b0d3ac4cc689d734e0e4085d02c774adf 47cf6a2d35cc1b193d3f49ffe262025f6d78e3cb65d92651d3a002aba32983ec}
 LIB=$(${CROSS}gcc -print-file-name=libunixlib.a 2>/dev/null)
-if [ -f "$LIB" ] && [ "$(sha256sum "$LIB" | cut -d' ' -f1)" != "$UNIXLIB_SHA256" ]; then
-  echo "$LIB: not UnixLib 5.0.3.3's libunixlib.a (sha256 ${UNIXLIB_SHA256%${UNIXLIB_SHA256#????????}}...)" >&2; bad=1
+if [ -f "$LIB" ] && ! echo " $UNIXLIB_SHA256 " | grep -q " $(sha256sum "$LIB" | cut -d' ' -f1) "; then
+  echo "$LIB: not UnixLib 5.0.3.3's libunixlib.a (sha256 e24f16c3... or 47cf6a2d...)" >&2; bad=1
 elif [ -f "$LIB" ]; then
   echo "  the toolchain's libunixlib.a: UnixLib 5.0.3.3"
 fi

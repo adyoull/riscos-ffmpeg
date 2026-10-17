@@ -1,0 +1,13 @@
+# Where each file in build/SHA256SUMS comes from (make sources fetches the
+# ones dl/ doesn't have, then checks every one). FILE URL
+ffmpeg-5.1.10.tar.xz https://ffmpeg.org/releases/ffmpeg-5.1.10.tar.xz
+x264_0.165.3222+gitb35605ac.orig.tar.gz http://archive.ubuntu.com/ubuntu/pool/universe/x/x264/x264_0.165.3222+gitb35605ac.orig.tar.gz
+dav1d_1.5.4.orig.tar.xz http://archive.ubuntu.com/ubuntu/pool/universe/d/dav1d/dav1d_1.5.4.orig.tar.xz
+dav1d_1.5.4.orig.tar.xz.asc http://archive.ubuntu.com/ubuntu/pool/universe/d/dav1d/dav1d_1.5.4.orig.tar.xz.asc
+lame_3.100.orig.tar.gz http://archive.ubuntu.com/ubuntu/pool/main/l/lame/lame_3.100.orig.tar.gz
+libogg_1.3.5.orig.tar.gz http://archive.ubuntu.com/ubuntu/pool/main/libo/libogg/libogg_1.3.5.orig.tar.gz
+libvorbis_1.3.7.orig.tar.gz http://archive.ubuntu.com/ubuntu/pool/main/libv/libvorbis/libvorbis_1.3.7.orig.tar.gz
+opus_1.5.2.orig.tar.gz http://archive.ubuntu.com/ubuntu/pool/main/o/opus/opus_1.5.2.orig.tar.gz
+SDL-2.26.0.tgz https://github.com/libsdl-org/SDL/archive/refs/tags/release-2.26.0.tar.gz
+meson-1.5.2.tar.gz https://files.pythonhosted.org/packages/source/m/meson/meson-1.5.2.tar.gz
+riscos-mesa-devkit-20.3.5-16.tgz https://github.com/adyoull/riscos-mesa/releases/download/v20.3.5-16/riscos-mesa-devkit-20.3.5-16.tgz

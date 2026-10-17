@@ -1,15 +1,18 @@
 # Common settings for the riscos-ffmpeg build scripts. Source it, don't run it.
 #
-# GCCSDK_ENV  the GCCSDK GCC 10.2 install (default ~/gccsdk/env, the layout of
-#             Warzone2100/dist/gccsdk-gcc10.2-x86_64-linux-env.tgz unpacked in /root)
-# DEVKIT      riscos-mesa devkit (SDL2 for ffplay), unpacked
+# GCCSDK_ENV  the GCCSDK GCC 10.2 install: riscos-crossdev's toolchain
+#             ($RISCOS_TOOLCHAIN, set in its container image), else ~/gccsdk/env
+# DEVKIT      riscos-mesa devkit (SDL2 for ffplay), unpacked: by default the
+#             release .riscos-deps names, unpacked from dl/ into devkit/
+#             (make sources fetches it)
 # STAGE       where the libraries and headers are installed
 # SRC         where source tarballs are unpacked and built
 # DL          where the source tarballs are (checked against build/SHA256SUMS)
 
 TOP=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-: "${GCCSDK_ENV:=$HOME/gccsdk/env}"
-: "${DEVKIT:=$TOP/devkit/riscos-mesa-devkit-20.3.5-16}"
+: "${GCCSDK_ENV:=${RISCOS_TOOLCHAIN:-$HOME/gccsdk/env}}"
+MESA_VERSION=$(awk '$1 == "riscos-mesa" {sub(/^v/, "", $2); print $2}' "$TOP/.riscos-deps")
+: "${DEVKIT:=$TOP/devkit/riscos-mesa-devkit-$MESA_VERSION}"
 # LINUX_ARM_TEST=1 builds the same code for arm-linux-gnueabihf instead, for
 # tests/qemu (run under qemu-arm with RISC OS's alignment traps). No SDL2,
 # no zlib, no ffplay there.
@@ -26,6 +29,14 @@ fi
 for v in GCCSDK_ENV DEVKIT STAGE SRC DL; do
   case "${!v}" in *" "*) echo "env.sh: $v has a space in it; autotools can't cope" >&2; return 1 ;; esac
 done
+
+# the pinned devkit, unpacked from dl/ the first time (its checksum checked)
+if [ ! -d "$DEVKIT" ] && [ "$DEVKIT" = "$TOP/devkit/riscos-mesa-devkit-$MESA_VERSION" ]; then
+  t=riscos-mesa-devkit-$MESA_VERSION.tgz
+  (cd "${DL:-$TOP/dl}" && grep " $t\$" "$TOP/build/SHA256SUMS" | sha256sum -c --quiet -) ||
+    { echo "env.sh: no $t in dl/ (make sources)" >&2; return 1; }
+  mkdir -p "$TOP/devkit" && tar xzf "${DL:-$TOP/dl}/$t" -C "$TOP/devkit"
+fi
 
 HOST=arm-riscos-gnueabihf
 BUILD=$(gcc -dumpmachine)

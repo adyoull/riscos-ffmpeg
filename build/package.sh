@@ -12,8 +12,13 @@
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 V=${1:-5.1.10-riscos22}
-ELF2AIF=${ELF2AIF:-$TOP/tools/elf2aif/elf2aif}
-[ -x "$ELF2AIF" ] || { echo "no elf2aif at $ELF2AIF (make -C tools/elf2aif GCCSDK_SRC=...)" >&2; exit 1; }
+# elf2aif: ours (tools/elf2aif, built), else the toolchain's (riscos-crossdev's
+# has the same large image fix)
+if [ -z "${ELF2AIF:-}" ]; then
+  ELF2AIF=$TOP/tools/elf2aif/elf2aif
+  [ -x "$ELF2AIF" ] || ELF2AIF=$(command -v elf2aif || true)
+fi
+[ -x "$ELF2AIF" ] || { echo "no elf2aif (make -C tools/elf2aif GCCSDK_SRC=..., or the toolchain's on PATH)" >&2; exit 1; }
 FF=$SRC/ffmpeg-5.1.10
 DIST=$TOP/dist
 mkdir -p "$DIST"

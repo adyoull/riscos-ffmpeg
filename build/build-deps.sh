@@ -163,7 +163,14 @@ EOF
     fi
   fi
   rm -rf build-ro
-  meson setup build-ro --cross-file "$cf" --prefix="$STAGE" --libdir=lib --buildtype=release \
+  # meson: the one installed, else meson 1.5.2 from dl/, run from its source
+  # (riscos-crossdev's container image has none)
+  local MESON=meson
+  if ! command -v meson >/dev/null; then
+    unpack meson-1.5.2 meson-1.5.2.tar.gz
+    MESON="python3 $SRC/meson-1.5.2/meson.py"
+  fi
+  $MESON setup build-ro --cross-file "$cf" --prefix="$STAGE" --libdir=lib --buildtype=release \
     -Denable_tools=false -Denable_tests=$tests -Denable_asm=true $testopts >/dev/null
   ninja -C build-ro >/dev/null && ninja -C build-ro install >/dev/null
   sed -i 's/ -pthread//' "$STAGE/lib/pkgconfig/dav1d.pc"

@@ -146,18 +146,39 @@ and the ARM assembly in FFmpeg, dav1d and x264 relies on that.
 
 ## Building
 
-On an x86-64 Linux with the GCCSDK GCC 10.2 environment in `~/gccsdk/env`
-(the Warzone 2100 port's `gccsdk-gcc10.2-x86_64-linux-env.tgz`) and the
-riscos-mesa devkit (20.3.5-16; 20.3.5-7pre12 or later works) unpacked in `devkit/`:
+The simplest way is riscos-crossdev's container image, which has the
+toolchain (GCCSDK GCC 10.2 with UnixLib 5.0.3.3); everything else is
+fetched by checksum:
 
 ```
-make sources      # checks dl/ against build/SHA256SUMS (fetch them first)
+docker run --rm -v "$PWD":/src ghcr.io/adyoull/riscos-crossdev:1.8.1 \
+  sh -c 'make sources deps ffmpeg apps package'
+```
+
+Or on an x86-64 Linux with a GCCSDK GCC 10.2 toolchain: riscos-crossdev's
+(`RISCOS_TOOLCHAIN`), or one in `~/gccsdk/env`:
+
+```
+make sources      # fetches dl/ (build/SOURCES) and checks it against build/SHA256SUMS
 make deps         # SDL2 (riscos-mesa overlay, no GL), x264, dav1d, LAME, ...
 make ffmpeg       # FFmpeg 5.1.10 + patches/ffmpeg + the NEON rewrite
 make apps         # libreelcore, libffegl, !Reel, !ReelEGL, videowin, videocube, the icon bar front end
 make package      # dist/: the FFmpeg, EGL examples and Reel zips, the devkit
 make test         # the same code for arm-linux, run under the trapping qemu
 ```
+
+The riscos-mesa devkit is the release `.riscos-deps` names, fetched into
+`dl/` and unpacked into `devkit/`; riscos-reelhwaccel's is in
+`third_party/reelhwaccel`.
+
+**On GitHub:** `.github/workflows/riscos-build.yml` builds every push in
+the image, and keeps the zips and devkit as the run's download.
+`riscos-deps-update.yml` checks each day for newer releases of what
+`.riscos-deps` names (riscos-crossdev, riscos-mesa, riscos-reelhwaccel),
+moves the pins (`ci/riscos-deps-hook.sh` moves the devkit's checksum and
+`third_party/reelhwaccel` with them), builds, and opens a pull request
+saying whether it passed. Nothing is merged or released by itself:
+riscos-crossdev's `docs/CI.md` has the details.
 
 `build/env.sh` holds the settings:
 
@@ -172,7 +193,8 @@ make test         # the same code for arm-linux, run under the trapping qemu
 ## Layout
 
 ```
-build/      env.sh, build-deps.sh, build-ffmpeg.sh, build-apps.sh, package.sh, SHA256SUMS
+build/      env.sh, build-deps.sh, build-ffmpeg.sh, build-apps.sh, package.sh, SHA256SUMS, SOURCES, fetch-sources.sh
+ci/         riscos-deps-hook.sh (the GitHub workflows' pins outside .riscos-deps)
 patches/    ffmpeg/ (git format-patch series), dav1d/, x264/, lame/, sdl2/ (riscos-mesa overlay copy)
 reelcore/   the player core (reelcore.h, reelcore.c): no EGL
 ffegl/      the EGL layer on reelcore (ffegl.h, ffegl.c) and the videowin/videocube examples
