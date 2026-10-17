@@ -1,6 +1,10 @@
 # Where each file in build/SHA256SUMS comes from (make sources fetches the
-# ones dl/ doesn't have, then checks every one). FILE URL
-ffmpeg-5.1.10.tar.xz https://ffmpeg.org/releases/ffmpeg-5.1.10.tar.xz
+# ones dl/ doesn't have, then checks every one). FILE URL [URL ...]: the
+# URLs are tried in turn until one gives the right checksum.
+# FFmpeg's is a git archive of the tag n5.1.10 (docs/SOURCES.md), not
+# ffmpeg.org's release tarball (a different file), so it's kept as an asset
+# of this repository's "sources" release.
+ffmpeg-5.1.10.tar.xz https://github.com/adyoull/riscos-ffmpeg/releases/download/sources/ffmpeg-5.1.10.tar.xz
 x264_0.165.3222+gitb35605ac.orig.tar.gz http://archive.ubuntu.com/ubuntu/pool/universe/x/x264/x264_0.165.3222+gitb35605ac.orig.tar.gz
 dav1d_1.5.4.orig.tar.xz http://archive.ubuntu.com/ubuntu/pool/universe/d/dav1d/dav1d_1.5.4.orig.tar.xz
 dav1d_1.5.4.orig.tar.xz.asc http://archive.ubuntu.com/ubuntu/pool/universe/d/dav1d/dav1d_1.5.4.orig.tar.xz.asc

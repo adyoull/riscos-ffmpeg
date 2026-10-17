@@ -5,7 +5,7 @@ unpacked.
 
 | Package | Version | File in `dl/` | Where from |
 |---|---|---|---|
-| FFmpeg | 5.1.10 (tag n5.1.10, commit 19feb712f5c1) | ffmpeg-5.1.10.tar.xz | `git archive` of the tag from github.com/FFmpeg/FFmpeg (ffmpeg.org is not reachable from the build machine) |
+| FFmpeg | 5.1.10 (tag n5.1.10, commit 19feb712f5c1) | ffmpeg-5.1.10.tar.xz | `git archive` of the tag from github.com/FFmpeg/FFmpeg (ffmpeg.org is not reachable from the build machine); not the same file as ffmpeg.org's release tarball, so `make sources` fetches it from this repository's `sources` release |
 | x264 | 0.165.3222 (git b35605ac, "stable") | x264_0.165.3222+gitb35605ac.orig.tar.gz | archive.ubuntu.com (Ubuntu's orig tarball) |
 | dav1d | 1.5.4 | dav1d_1.5.4.orig.tar.xz (+ .asc) | archive.ubuntu.com (= videolan's release tarball; signature included) |
 | LAME | 3.100 | lame_3.100.orig.tar.gz | archive.ubuntu.com; sha256 ddfe36ca… = the SourceForge release |

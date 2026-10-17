@@ -9,8 +9,10 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   workflows; riscos-crossdev's handoff):
   - `.riscos-deps` pins riscos-crossdev v1.8.1, riscos-mesa v20.3.5-16 and
     riscos-reelhwaccel v0.2.15.
-  - `make sources` fetches every source by itself (`build/SOURCES`: FFmpeg,
-    Ubuntu's archive for x264, dav1d, LAME, libogg, libvorbis and Opus;
+  - `make sources` fetches every source by itself (`build/SOURCES`, the URLs
+    for a file tried in turn until one has its checksum: FFmpeg's git archive
+    of n5.1.10 from this repository's `sources` release (ffmpeg.org's
+    tarball is a different file), Ubuntu's archive for x264, dav1d, LAME, libogg, libvorbis and Opus;
     SDL from libsdl's GitHub tag; meson 1.5.2, which dav1d needs and the
     image hasn't, from PyPI, run from its tarball; the riscos-mesa devkit
     from its release) and checks each against `build/SHA256SUMS`.
