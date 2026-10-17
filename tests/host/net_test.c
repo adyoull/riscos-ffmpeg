@@ -257,6 +257,57 @@ int main(int argc, char **argv)
     CHECK(!reelcore_is_network("SDFS::Pi.$.Films.clip/mp4") && !reelcore_is_network("file:///tmp/x.mp4") &&
           !reelcore_is_network("/tmp/a://b") && !reelcore_is_network("<Obey$Dir>.x/mp4"), "files seen as addresses");
 
+    /* 8. a live HLS stream (no end; its segments 0.3 s late): started 6
+       segments behind the newest (FFmpeg's own -3 gave YouTube's webcams
+       too little in hand), and its first picture shown only once 4 s are
+       read (on the first packet, it soon ran dry: buffering at once) */
+    {
+        FILE *lf = fopen(hlog, "w");             /* (this test's requests only) */
+        if (lf)
+            fclose(lf);
+        snprintf(url, sizeof(url), "%s/live.m3u8", base);
+        memset(&src, 0, sizeof(src));
+        src.url = url;
+        v = reelcore_open_source(&src, REELCORE_ASYNC);
+        CHECK(v != NULL, "live: open");
+        if (v) {
+            double ahead = -1, waited = 0;
+            int first = -1, held = 0;
+            r = pump(v, REELCORE_READY, 20, NULL);
+            CHECK(r == REELCORE_READY, "live: %d (want READY), %s", r, reelcore_last_error());
+            {
+                double end = real_now() + 30, t0 = fake_time;
+                while (real_now() < end) {
+                    r = reelcore_update(v);
+                    if (r == REELCORE_NEW_FRAME)
+                        break;
+                    reelcore_net(v, &ns);
+                    held += ns.buffering;
+                    fake_time += 0.01;
+                    usleep(2000);
+                }
+                waited = fake_time - t0;
+            }
+            reelcore_net(v, &ns);
+            ahead = ns.ahead;
+            lf = fopen(hlog, "r");
+            if (lf) {
+                char line[300];
+                while (fgets(line, sizeof(line), lf))
+                    if (sscanf(line, "GET /live_slow%d.ts", &first) == 1)
+                        break;
+                fclose(lf);
+            }
+            printf("  live HLS: first segment %d of 0-11, first picture with %.1f s read, after %.1f s (buffering shown %d "
+                   "times)\n", first, ahead, waited, held);
+            CHECK(r == REELCORE_NEW_FRAME, "live: no picture (%d)", r);
+            CHECK(first == 6, "live: started at segment %d (want 6: six behind the newest, 11)", first);
+            CHECK(ahead >= 3.9 && held > 0, "live: first picture with only %.1f s read (want 4), buffering shown %d times",
+                  ahead, held);
+            reelcore_close(v);
+        }
+    }
+
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;
 }

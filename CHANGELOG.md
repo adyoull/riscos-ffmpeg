@@ -3,6 +3,22 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Reel (not yet released)
+
+- **Live streams start with more in hand** (TubeSearch's handoff: YouTube
+  webcams and news that buffered straight away, and played on a second
+  try).
+  - Live HLS starts 6 segments behind the newest (`live_start_index`
+    -6). FFmpeg's own -3 left only 6 s with 2 s segments, which a slow
+    first connection used up at once.
+  - A live stream (one with no length) shows its first picture only once
+    4 s are read, or after 10 s at most; nothing is decoded meanwhile, so
+    the sound waits too, and Reel shows it as buffering. The log says how
+    much was read and how long it took.
+  - `net_test`: a live playlist of 12 one-second segments, each served
+    0.3 s late, starts at segment 6 and shows its first picture with 4 s
+    or more read.
+
 ## 5.1.10-riscos22 and Reel 0.1.28 (2026-10-13): less address space, devkit 0.2.15, subtitle and log fixes
 
 Reel 0.1.28 is a new release (an earlier 0.1.28, the same as 0.1.27, was

@@ -177,6 +177,11 @@ ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -map 0:a -c copy "$NS/net_
 for i in $(seq 0 39); do printf '%d\n00:00:%02d,123 --> 00:00:%02d,800\nLine %d\n\n' $((i + 1)) $i $i $i; done > "$NS/net_subs.srt"   # (times that aren't whole seconds)
 ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=40 -i "$NS/net_subs.srt" -map 0:v -map 1 \
   -c:v libx264 -preset ultrafast -g 25 -c:s srt -disposition:s:0 default "$NS/net_subs.mkv"   # (longer than the read-ahead)
+# a live HLS stream (no end): 12 segments of 1 s, each answered 0.3 s late (httpserve.py)
+ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=12 -f lavfi -i sine=d=12:sample_rate=44100 \
+  -c:v libx264 -preset ultrafast -g 25 -c:a aac -f hls -hls_time 1 -hls_list_size 0 \
+  -hls_segment_filename "$NS/live_slow%03d.ts" "$NS/live.m3u8"
+sed -i '/#EXT-X-ENDLIST/d;/#EXT-X-PLAYLIST-TYPE/d' "$NS/live.m3u8"
 NP=$((20000 + RANDOM % 20000)); : > "$O/net_headers.log"
 python3 "$HERE/httpserve.py" "$NP" "$NS" "$O/net_headers.log" >/dev/null 2>&1 & NS1=$!
 python3 "$HERE/httpserve.py" $((NP + 1)) --silent >/dev/null 2>&1 & NS2=$!
@@ -187,7 +192,7 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/net_test" 
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/net_test.o" $LIBS -lm 2>/dev/null
 echo "== net_test (reelcore: addresses read by a thread; video and sound apart)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/net_test" "http://127.0.0.1:$NP" "http://127.0.0.1:$((NP + 1))/x.mp4" "$NS" \
-  "$O/net_headers.log" 2>&1 | grep -v "swscaler\|reelcore: " || bad=1
+  "$O/net_headers.log" 2>&1 | grep -v "swscaler\|reelcore: \|^\[hls @\|^\[http @" || bad=1
 ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -c copy -f hls -hls_time 2 -hls_list_size 0 \
   -hls_playlist_type vod "$NS/hlsv.m3u8"                     # (a saved master names it relatively: reel_test P_HLSREL)
 echo '<!DOCTYPE html><html><head><title>A video</title></head><body><p>A page about a video.</p></body></html>' > "$NS/page.html"

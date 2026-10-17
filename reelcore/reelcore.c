@@ -98,6 +98,9 @@ static void cur_changed(ReelCore *v);
 #define NET_AHEAD     10.0   /* network: seconds read ahead of the picture shown */
 #define NET_MAX_BYTES (32 << 20)  /* ... and at most this much */
 #define NET_LOW       3.0    /* below this, reelcore_update gives the reader time */
+#define NET_LIVE_START 4.0   /* a live stream: seconds read before its first picture is shown ... */
+#define NET_LIVE_WAIT  10.0  /* ... waiting at most this long for them */
+#define NET_LIVE_INDEX "-6"  /* live HLS: started this many segments behind the newest (FFmpeg: -3) */
 
 struct Net;
 
@@ -204,6 +207,8 @@ struct ReelCore {
     unsigned pace_n;
     double stall_clock;                /* the sound clock when it last moved ... */
     int64_t stall_since;               /* ... and when that was */
+    int64_t live_wait_t0;              /* a live stream: when its first picture began waiting for NET_LIVE_START */
+    int live_hold;                     /* ... waiting now (shown as buffering) */
     double latency;                    /* the device's own buffer, seconds */
     uint8_t *abuf, *mixbuf;
     int abuf_size;
@@ -968,6 +973,11 @@ static int open_input(ReelCore *v, AVFormatContext **fc, const char *url, const 
         av_dict_set(&o, "reconnect_delay_max", "4", 0);
         av_dict_set(&o, "rw_timeout", "20000000", 0);       /* 20 s without data: give up */
         av_dict_set(&o, "recv_buffer_size", "262144", 0);
+        /* Live HLS (YouTube's webcams, news): FFmpeg starts 3 segments
+           behind the newest, only 6 s in hand with 2 s segments, and a slow
+           first connection used that up at once (buffering straight away;
+           a second try worked). 6 behind. (Only the hls demuxer reads it.) */
+        av_dict_set(&o, "live_start_index", NET_LIVE_INDEX, 0);
         if (src && src->headers && *src->headers)
             av_dict_set(&o, "headers", src->headers, 0);
         if (src && src->user_agent && *src->user_agent)
@@ -1391,7 +1401,7 @@ int reelcore_net(const ReelCore *v, ReelCoreNet *st)
     st->bytes_ahead = (unsigned)n->bytes;
     st->bytes_read = n->bytes_read;
     st->ended = n->eof_all;
-    st->buffering = v->ready && !n->eof_all && n->n == 0 && !v->paused;
+    st->buffering = v->ready && !n->eof_all && (n->n == 0 || v->live_hold) && !v->paused;
     snprintf(st->error, sizeof(st->error), "%s", n->state < 0 ? n->error : n->read_error);
     pthread_mutex_unlock(&n->lock);
     return 1;
@@ -3074,6 +3084,30 @@ int reelcore_update(ReelCore *v)
         pthread_mutex_unlock(&v->net->lock);
         if (low)
             net_give_time(v, 8);
+    }
+    /* A live stream (no length): its first picture waits until
+       NET_LIVE_START seconds are read (or NET_LIVE_WAIT has passed, or it
+       ended), and nothing is decoded meanwhile, so the sound doesn't start
+       either: started on the first packet, a slow segment soon after left
+       it buffering at once. */
+    if (v->net && v->need_first && !v->cur && v->duration <= 0 && v->live_wait_t0 >= 0) {
+        int64_t t = av_gettime_relative();
+        double ahead;
+        int ended;
+        pthread_mutex_lock(&v->net->lock);
+        ahead = net_ahead(v);
+        ended = v->net->eof_all;
+        pthread_mutex_unlock(&v->net->lock);
+        if (!v->live_wait_t0)
+            v->live_wait_t0 = t;
+        v->live_hold = !ended && ahead < NET_LIVE_START && t - v->live_wait_t0 < (int64_t)(NET_LIVE_WAIT * 1e6);
+        if (v->live_hold) {
+            net_give_time(v, 10);
+            return REELCORE_SAME_FRAME;
+        }
+        av_log(NULL, AV_LOG_INFO, "reelcore: live: started with %.1f s read, after %.1f s\n",
+               ended ? 0.0 : ahead, (t - v->live_wait_t0) / 1e6);
+        v->live_wait_t0 = -1;              /* (not again: a seek's first picture doesn't wait) */
     }
     fill(v);
     if (v->need_first) {

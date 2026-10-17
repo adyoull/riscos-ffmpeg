@@ -2,12 +2,13 @@
 """A small HTTP server for the network tests (tests/host/https.sh, net_test):
 serves the files in ROOT with Range requests (which FFmpeg uses to seek;
 python's own http.server has none), 404 for anything else, and writes each
-request's headers to LOG if given.
+request's headers to LOG if given. A file whose name has "slow" in it is
+answered 0.3 s late (a live stream's segments from a slow server).
 
   httpserve.py PORT ROOT [LOG]     serve
   httpserve.py PORT --silent       accept connections, never answer
 """
-import http.server, os, re, socket, sys
+import http.server, os, re, socket, sys, time
 
 port = int(sys.argv[1])
 if sys.argv[2] == "--silent":
@@ -32,6 +33,8 @@ class H(http.server.BaseHTTPRequestHandler):
         if not os.path.isfile(path):
             self.send_error(404)
             return
+        if "slow" in os.path.basename(path):
+            time.sleep(0.3)
         data = open(path, "rb").read()
         m = re.match(r"bytes=(\d+)-(\d*)", self.headers.get("Range", ""))
         if m:
