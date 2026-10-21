@@ -22,6 +22,25 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
     Escape already ends it normally.
   - `vc_test` checks reelcore_hw_close_all reaches the HEVC block's
     close_all.
+- **The Convert window's Stop asks ffmpeg to stop** instead of killing
+  it. Killed (Message_TaskWindow_Morite), ffmpeg closed nothing, and with
+  hardware acceleration its VideoCore decoder and encoder kept the
+  VideoCore's memory until a restart: every later hardware conversion or
+  playback failed and fell back to the slow ARM.
+  - Stop, closing the window and quitting now type Escape into its task
+    window (Message_TaskWindow_Input), which UnixLib raises as SIGINT:
+    ffmpeg ends as on Ctrl-C, closing its codecs. Only if it hasn't ended
+    8 s later is it killed; the status then says to restart before using
+    hardware acceleration again. The unfinished file is deleted as before.
+  - The front end takes null events only while it waits.
+- **"The VideoCore has no memory left" said, at once.** The first
+  message that says so (devkit 0.2.16+: "no memory left"; 0.2.15: "Nothing
+  from the decoder in N cs"; the encoder: ENOSPC or ENOMEM) stops the
+  conversion, instead of an error for every packet to the end, and it is
+  made again all on the ARM (encoding too), the status saying that a
+  restart frees memory a stopped program left there.
+- Convert: a message holding an '=' (such as "gpu_mem=128") is a message,
+  not taken for a -progress line.
 
 - **Speed-ups from instruction profiles** (new: `tools/profile`, a QEMU
   plugin and a reelcore player for counting where the instructions go;

@@ -74,6 +74,7 @@
 #define MSG_PREQUIT       8
 #define MSG_HELPREQUEST   0x502
 #define MSG_HELPREPLY     0x503
+#define MSG_TW_INPUT      0x808C0
 #define MSG_TW_OUTPUT     0x808C1
 #define MSG_TW_EGO        0x808C2
 #define MSG_TW_MORIO      0x808C3
@@ -176,6 +177,9 @@ void conv_format_time(char *buf, size_t n, double s)
         snprintf(buf, n, "%d:%02d", t / 60, t % 60);
 }
 
+/* The VideoCore converts: ticked, and not turned off for a second try */
+static int uses_hw(const ConvSettings *s) { return s->hw && !s->no_hw; }
+
 static void add(char *buf, size_t size, size_t *n, const char *fmt, ...) __attribute__((format(printf, 4, 5)));
 #include <stdarg.h>
 static void add(char *buf, size_t size, size_t *n, const char *fmt, ...)
@@ -264,7 +268,7 @@ int conv_build_args(char *buf, size_t size, const ConvSettings *s, const ConvSou
             add(vf, sizeof(vf), &v, "%sscale=-2:%d", v ? "," : "", lines);
         else if ((in->width | in->height) & 1)          /* H.264 needs even sizes */
             add(vf, sizeof(vf), &v, "%sscale=trunc(iw/2)*2:trunc(ih/2)*2", v ? "," : "");
-        if (s->hw) {                    /* the size it will be (as scale=-2:lines) */
+        if (uses_hw(s)) {               /* the size it will be (as scale=-2:lines) */
             int scaled = lines && in->height > lines;
             int oh = scaled ? lines : in->height & ~1;
             int ow = !scaled ? in->width & ~1 : (int)((double)in->width * oh / in->height / 2 + 0.5) * 2;
@@ -435,6 +439,14 @@ void conv_describe(char *buf, size_t size, const ConvSource *in)
     }
 }
 
+/* A -progress line ("frame=", "stream_0_0_q=": a lower-case key, then '=')
+   rather than a message (which may hold an '=': "...gpu_mem=128") */
+static int progress_key(const char *line)
+{
+    size_t k = strspn(line, "abcdefghijklmnopqrstuvwxyz0123456789_");
+    return k > 0 && line[k] == '=';
+}
+
 /* One of ffmpeg's -progress lines */
 void conv_parse_progress(ConvProgress *p, const char *line)
 {
@@ -451,10 +463,17 @@ void conv_parse_progress(ConvProgress *p, const char *line)
     } else if (!strncmp(line, "progress=", 9)) {
         p->ended = !strncmp(line + 9, "end", 3);
         p->updates++;
-    } else if (*line && !strchr(line, '=')) {
+    } else if (*line && !progress_key(line)) {
         snprintf(p->error, sizeof(p->error), "%s", line);   /* ffmpeg's -v error messages (the last) */
         if (strstr(line, "h264_vchiq") || strstr(line, "hevc_hwdec") || strstr(line, "opening decoder"))   /* (the decoders: the encoder is h264_encvchiq) */
             p->hw_decode_failed = 1;
+        /* the VideoCore had no memory (most often a decoder or encoder left
+           there by a program that was killed): ReelHWAccel's decoders say
+           "no memory left" (devkit 0.2.15 and older: "Nothing from the
+           decoder in N cs"), its encoder "...: ENOSPC" or "ENOMEM" */
+        if (strstr(line, "no memory left") || strstr(line, "Nothing from the decoder in ") ||
+            strstr(line, "ENOSPC") || strstr(line, "ENOMEM"))
+            p->vc_full = 1;
     }
 }
 
@@ -464,7 +483,7 @@ void conv_parse_progress(ConvProgress *p, const char *line)
    HEVC block): the window then converts again with the ARM decoding. */
 const char *conv_hw_decoder(const ConvSettings *s, const ConvSource *in)
 {
-    if (!s->hw || s->no_hw_decode || conv_sound_only(s->format) || !in->has_video)
+    if (!uses_hw(s) || s->no_hw_decode || conv_sound_only(s->format) || !in->has_video)
         return NULL;
     if (!strcmp(in->vcodec, "h264") && in->width <= HW_MAX_W && in->height <= HW_MAX_H)
         return "h264_vchiq";
@@ -541,6 +560,7 @@ static struct {
     int menu_icon;                      /* which popup's menu is open (-1: none) */
     int hw_avail;                       /* the VideoCore can be reached (the VCHIQ module's SWIs) */
     int hw_decoding, retrying;          /* this conversion decodes by hardware; a second try without */
+    int stop_asked, stop_t0, killed;    /* Escape sent to ffmpeg (when), and it was ended after STOP_GRACE_CS */
     int drag_ref;
     /* icon texts */
     char t_src[256], t_info[160], t_preset[40], t_preset_d[120], t_format[20], t_size[20],
@@ -995,7 +1015,16 @@ static int run(const char *program, const char *args, int txt, const char *obey_
     return 0;
 }
 
-static void stop_child(void)
+/* Ending ffmpeg. Killing its task window (Morite) runs none of its clean-up,
+   so the VideoCore's decoder and encoder would stay there, holding its
+   memory, until the computer restarts. So it's asked first: Escape typed
+   into the task window, which UnixLib raises as SIGINT, and ffmpeg ends as
+   on Ctrl-C, closing its codecs (and devkit 0.2.17 anything left). Only if
+   it hasn't ended STOP_GRACE_CS later is it killed (conv_null). ffprobe
+   holds nothing: it's killed at once. */
+#define STOP_GRACE_CS 800
+
+static void kill_child(void)
 {
     int b[5];
     _kernel_swi_regs r;
@@ -1004,6 +1033,44 @@ static void stop_child(void)
     b[0] = 20; b[3] = 0; b[4] = MSG_TW_MORITE;
     r.r[0] = 17; r.r[1] = (intptr_t)b; r.r[2] = C.child;
     swi(Wimp_SendMessage, &r);
+    C.killed = 1;
+}
+
+static void stop_child(void)
+{
+    int b[7];
+    _kernel_swi_regs r;
+    if (!C.child)                       /* (not started yet: MSG_TW_EGO stops it) */
+        return;
+    if (C.child_txt == TXT_PROBE) {
+        kill_child();
+        return;
+    }
+    b[0] = 28; b[3] = 0; b[4] = MSG_TW_INPUT;
+    b[5] = 1; b[6] = 27;                /* one character: Escape */
+    r.r[0] = 17; r.r[1] = (intptr_t)b; r.r[2] = C.child;
+    swi(Wimp_SendMessage, &r);
+    if (!C.stop_asked) {                /* (the grace runs from the first time) */
+        C.stop_asked = 1;
+        r.r[0] = 0;
+        swi(OS_ReadMonotonicTime, &r);
+        C.stop_t0 = r.r[0];
+    }
+}
+
+/* ffmpeg has been asked to stop and hasn't yet: the front end wants null
+   events (conv_null), which it otherwise doesn't */
+int conv_stop_pending(void) { return C.child && C.stop_asked && !C.killed; }
+
+void conv_null(void)
+{
+    _kernel_swi_regs r;
+    if (!conv_stop_pending())
+        return;
+    r.r[0] = 0;
+    swi(OS_ReadMonotonicTime, &r);
+    if (r.r[0] - C.stop_t0 >= STOP_GRACE_CS)
+        kill_child();
 }
 
 static void set_source(const char *file)
@@ -1070,7 +1137,7 @@ static void start(const char *out)
     _kernel_swi_regs r;
     conv_sync();
     if (!C.retrying)
-        C.set.no_hw_decode = 0;
+        C.set.no_hw_decode = C.set.no_hw = 0;
     if (!strcasecmp(out, C.src)) {            /* (RISC OS names: any case is the same file) */
         report("That's the file being converted: save the new one under another name.", 1 | 16);
         return;
@@ -1103,9 +1170,11 @@ static void start(const char *out)
         scrap_path(lp, sizeof(lp), "ConvertLog");
         C.log = fopen(lp, C.retrying ? "a" : "w");   /* (a second try: after the first's messages) */
         if (C.log)
-            fprintf(C.log, "%s%s.ffmpeg %s\n\n", C.retrying ? "\nAgain, the ARM decoding:\n" : "", C.ffdir, args);
+            fprintf(C.log, "%s%s.ffmpeg %s\n\n", !C.retrying ? "" : C.set.no_hw ? "\nAgain, all on the ARM:\n" :
+                    "\nAgain, the ARM decoding:\n", C.ffdir, args);
     }
     C.hw_decoding = conv_hw_decoder(&C.set, &C.in) != NULL;
+    C.stop_asked = C.killed = 0;
     C.state = CONV_RUNNING;
     r.r[0] = 0;
     swi(OS_ReadMonotonicTime, &r);
@@ -1139,6 +1208,28 @@ static void show_progress(void)
         status("Converting: %s so far", at);
 }
 
+/* A second try after the first failed: all on the ARM (all_arm: the
+   VideoCore had no memory), or only the ARM decoding (the hardware decoder
+   refused the file). 0: it couldn't start. */
+static int retry(int all_arm)
+{
+    char out[256];
+    snprintf(out, sizeof(out), "%s", C.out);
+    C.set.no_hw_decode = 1;
+    C.set.no_hw = all_arm;
+    C.retrying = 1;
+    start(out);
+    C.retrying = 0;
+    if (C.state != CONV_RUNNING)
+        return 0;
+    if (all_arm)
+        status("The VideoCore has no memory left (restarting the computer frees any a stopped program left there): "
+               "converting again on the ARM...");
+    else
+        status("The hardware couldn't decode this file: converting again, the ARM decoding it...");
+    return 1;
+}
+
 static void finished(void)
 {
     _kernel_swi_regs r;
@@ -1157,8 +1248,12 @@ static void finished(void)
         swi(OS_File, &r);
         C.state = CONV_STOPPED;
         progress_bar(0);
-        status("Stopped. The unfinished file was deleted.");
-    } else if (conv_succeeded(&C.prog)) {
+        if (C.killed && uses_hw(&C.set))    /* (its codecs may still be in the VideoCore) */
+            status("Stopped, but ffmpeg had to be ended: restart the computer before using hardware acceleration "
+                   "again. The unfinished file was deleted.");
+        else
+            status("Stopped. The unfinished file was deleted.");
+    } else if (conv_succeeded(&C.prog) && !C.prog.vc_full) {
         const char *l = strrchr(C.out, '.');
         r.r[0] = 18; r.r[1] = (intptr_t)C.out; r.r[2] = format_filetype(C.set.format);
         swi(OS_File, &r);
@@ -1172,18 +1267,10 @@ static void finished(void)
         int gone;
         r.r[0] = 6; r.r[1] = (intptr_t)C.out;
         gone = !swi(OS_File, &r) && r.r[0] != 0;
-        if (C.hw_decoding && C.prog.hw_decode_failed) {   /* the hardware decoder refused it: once more, without */
-            char out[256];
-            snprintf(out, sizeof(out), "%s", C.out);
-            C.set.no_hw_decode = 1;
-            C.retrying = 1;
-            start(out);
-            C.retrying = 0;
-            if (C.state == CONV_RUNNING) {
-                status("The hardware couldn't decode this file: converting again, the ARM decoding it...");
-                return;
-            }
-        }
+        if (C.prog.vc_full && uses_hw(&C.set) && retry(1))
+            return;
+        if (C.hw_decoding && C.prog.hw_decode_failed && retry(0))
+            return;
         C.state = CONV_FAILED;
         progress_bar(0);
         status("Couldn't convert: %s%s", C.prog.error[0] ? C.prog.error : "ffmpeg stopped early (see Log).",
@@ -1210,7 +1297,10 @@ static void output(const char *data, int n)
             C.line[C.line_n] = 0;
             if (C.line_n) {
                 conv_parse_progress(&C.prog, C.line);
-                if (!strncmp(C.line, "progress=", 9) && C.state == CONV_RUNNING)
+                if (C.prog.vc_full && C.state == CONV_RUNNING && uses_hw(&C.set) && !C.stop_asked) {
+                    status("The VideoCore has no memory left: stopping, to convert again on the ARM...");
+                    stop_child();               /* (rather than an error for every packet; finished() retries) */
+                } else if (!strncmp(C.line, "progress=", 9) && C.state == CONV_RUNNING && !C.stop_asked)
                     show_progress();
             }
             C.line_n = 0;
@@ -1580,8 +1670,8 @@ int conv_message(int *b)
 /* Quitting (Message_Quit, or Quit on the menu once agreed to): a conversion
    still running is stopped, and its unfinished file deleted, before the
    front end goes. ffmpeg has the file open until its task window ends, so
-   wait (up to 10 s) for TaskWindow_Morio, handling only messages, as the
-   window's own Stop does. */
+   wait for TaskWindow_Morio (ffmpeg asked, then killed after STOP_GRACE_CS:
+   up to 5 s more), handling only messages, as the window's own Stop does. */
 void conv_quitting(void)
 {
     int b[64], t0;
@@ -1596,7 +1686,7 @@ void conv_quitting(void)
     swi(OS_ReadMonotonicTime, &r);
     t0 = r.r[0];
     for (int polls = 0; C.state == CONV_STOPPING && polls < 2000; polls++) {
-        /* Wimp_PollIdle: a null event at least every 10 cs, so the 10 s
+        /* Wimp_PollIdle: a null event at least every 10 cs, so the time
            runs out even when nothing comes; only the task window's own
            messages are taken (a file dropped now isn't), keys passed on */
         swi(OS_ReadMonotonicTime, &r);
@@ -1617,8 +1707,9 @@ void conv_quitting(void)
             for (more = !swi(0x400C8, &r) && r.r[0]; more; more = !swi(0x400CA, &r) && r.r[0])
                 r.r[1] = (intptr_t)b;
         }
+        conv_null();
         swi(OS_ReadMonotonicTime, &r);
-        if (r.r[0] - t0 > 1000)
+        if (r.r[0] - t0 > STOP_GRACE_CS + 500)
             break;
     }
 }

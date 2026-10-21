@@ -24,6 +24,7 @@ typedef struct {
     int sound, deinterlace, easy;
     int hw, hw_mode;                    /* hardware acceleration: the VideoCore's encoder, Fast / Normal / High quality */
     int no_hw_decode;                   /* (set for a second try when the hardware decoder refused the file) */
+    int no_hw;                          /* (set for a second try when the VideoCore had no memory: all on the ARM) */
     char from[16], to[16];              /* trim, as typed ("" = start / end) */
     char extra[256];                    /* more ffmpeg options for the output, as typed ("" = none) */
 } ConvSettings;
@@ -45,6 +46,7 @@ typedef struct {                        /* ffmpeg's -progress lines, and its err
     int exited, exit_code;              /* ffmpeg's exit status, when the Obey file could echo it */
     char error[160];
     int hw_decode_failed;               /* a message from the hardware decoder (or opening the decoder) */
+    int vc_full;                        /* the VideoCore had no memory for a decoder or the encoder */
 } ConvProgress;
 
 extern const ConvPreset conv_presets[CONV_PRESETS];
@@ -72,6 +74,8 @@ void conv_open(void);
 int conv_window(void);
 int conv_busy(void);
 void conv_quitting(void);
+int conv_stop_pending(void);
+void conv_null(void);
 int conv_click(const int *block);
 int conv_key(const int *block);
 int conv_close_request(const int *block);

@@ -24,9 +24,11 @@
 #include "../common/proginfo.h"   /* Info: the standard About this program window */
 
 #define OS_WriteC                0x00
+#define OS_ReadMonotonicTime     0x42
 #define Wimp_Initialise          0x400C0
 #define Wimp_CreateIcon          0x400C2
 #define Wimp_Poll                0x400C7
+#define Wimp_PollIdle            0x400E1
 #define Wimp_CreateMenu          0x400D4
 #define Wimp_GetPointerInfo      0x400CF
 #define Wimp_SendMessage         0x400E7
@@ -316,11 +318,22 @@ int fffront_main(void)
     conv_init(task, ffdir);
 
     for (;;) {
-        r.r[0] = 1 | (1 << 4) | (1 << 5);     /* no null or pointer events (the task windows' output comes as messages) */
+        /* no null or pointer events (the task windows' output comes as
+           messages); but while ffmpeg is being asked to stop, a null event
+           every half second, to end it if it doesn't (conv_null) */
+        int pending = conv_stop_pending();
+        if (pending) {
+            swi(OS_ReadMonotonicTime, &r);
+            r.r[2] = r.r[0] + 50;
+        }
+        r.r[0] = (pending ? 0 : 1) | (1 << 4) | (1 << 5);
         r.r[1] = (intptr_t)block;
-        if (swi(Wimp_Poll, &r))
+        if (swi(pending ? Wimp_PollIdle : Wimp_Poll, &r))
             continue;
         switch (r.r[0]) {
+        case 0:                               /* Null_Reason_Code */
+            conv_null();
+            break;
         case 2:                               /* Open_Window_Request */
             r.r[1] = (intptr_t)block;
             swi(0x400C5, &r);

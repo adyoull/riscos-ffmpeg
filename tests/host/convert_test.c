@@ -45,7 +45,7 @@ static char reported[8][260]; static int nreports, ask_answer = 3, hw_starts;
 static int menu_items; static char menu_title[16];
 static char drag_sprite[16]; static int drags;
 static int datasaves, datasave_type; static char datasave_leaf[64];
-static int morites, morite_to, acks, ack19, helps; static char help_text[240];
+static int morites, morite_to, escapes, escape_to, last_poll, last_mask, acks, ack19, helps; static char help_text[240];
 static int settype = -1, deleted; static char deleted_name[256];
 static int exists;                              /* OS_File 17's answer for the output */
 static int fake_cs;
@@ -193,8 +193,9 @@ static int script(int *b)
         CHECK(conv_test_fill() == 28 + 424, "bar to %d (want half: 452)", conv_test_fill());
         click(b, I_STOP, 4); return 6;
     case 19:
-        CHECK(morites == 1 && morite_to == 0x998 && !strcmp(conv_test_text(1), "Stopping..."), "Stop: %d Morite to %x, '%s'",
-              morites, morite_to, conv_test_text(1));
+        CHECK(escapes == 1 && escape_to == 0x998 && !morites && !strcmp(conv_test_text(1), "Stopping..."),
+              "Stop: %d Escapes to %x (ffmpeg asked: it closes its codecs), %d Morites, '%s'", escapes, escape_to, morites,
+              conv_test_text(1));
         msg(b, 0x808C3, 0x998, 20); return 17;
     case 20:
         CHECK(deleted == 1 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer_480/mp4") &&
@@ -240,7 +241,8 @@ static int script(int *b)
         CHECK(ack19 == 1, "PreQuit not objected to (%d)", ack19);
         ask_answer = 3; memset(b, 0, 20); b[0] = WINH; return 3;                /* close the window: Stop */
     case 36:
-        CHECK(morites == 2 && morite_to == 0x995 && !win_open, "close while converting: %d Morites, open %d", morites, win_open);
+        CHECK(escapes == 2 && escape_to == 0x995 && !morites && !win_open, "close while converting: %d Escapes, %d Morites, open %d",
+              escapes, morites, win_open);
         msg(b, 0x808C3, 0x995, 20); return 17;
     case 37:
         CHECK(conv_test_state() == CONV_STOPPED && deleted == 3, "after closing: state %d, deleted %d", conv_test_state(), deleted);
@@ -295,22 +297,75 @@ static int script(int *b)
         msg(b, 0x808C3, 0x990, 20); return 17;
     case 55:
         CHECK(conv_test_state() == CONV_DONE, "the next: state %d", conv_test_state());
+        click(b, I_CONVERT, 4); return 6;                                        /* the VideoCore full (left by a killed program) */
+    case 56: msg(b, 0x808C2, 0x98F, 24); b[5] = 0x434F4E56; return 17;
+    case 57:
+        tw_output(b, 0x98F, "[h264_vchiq @ 0x5678] Nothing from the decoder in 500 cs (the VideoCore has no memory left for it)\n"
+                  "[h264 @ 0x5678] Error while decoding stream #0:0: Input/output error\nout_time_us=1000000\nprogress=continue\n");
+        return 17;
+    case 58:   /* asked to stop at the first, rather than an error for every packet */
+        CHECK(escapes == 3 && escape_to == 0x98F && !morites && conv_test_state() == CONV_RUNNING &&
+              strstr(conv_test_text(1), "no memory left: stopping"), "VideoCore full: %d Escapes to %x, state %d, '%s'",
+              escapes, escape_to, conv_test_state(), conv_test_text(1));
+        /* (it ended before the Escape: exit 0, but made with the VideoCore failing, it isn't trusted) */
+        tw_output(b, 0x98F, "[h264_encvchiq @ 0x9] Input enable: ENOSPC\nprogress=end\nffmpeg-exit=0\n"); return 17;
+    case 59: msg(b, 0x808C3, 0x98F, 20); return 17;
+    case 60:   /* deleted, and again all on the ARM, saying why */
+        read_obey(started[(nstarted - 1) & 15]);
+        CHECK(nstarted == hw_starts + 5 && deleted == 5 && conv_test_state() == CONV_RUNNING &&
+              strstr(conv_test_text(1), "VideoCore has no memory left (restarting") && !strstr(obey, "vchiq") &&
+              strstr(obey, " -c:v libx264 "), "VideoCore full, the retry: started %d, deleted %d, state %d, '%s', %s",
+              nstarted - hw_starts, deleted, conv_test_state(), conv_test_text(1), obey);
+        msg(b, 0x808C2, 0x98E, 24); b[5] = 0x434F4E56; return 17;
+    case 61: tw_output(b, 0x98E, "out_time_us=90000000\ntotal_size=1048576\nprogress=end\nffmpeg-exit=0\n"); return 17;
+    case 62: msg(b, 0x808C3, 0x98E, 20); return 17;
+    case 63:
+        CHECK(conv_test_state() == CONV_DONE && deleted == 5, "after the ARM's retry: state %d, deleted %d", conv_test_state(), deleted);
+        click(b, I_CONVERT, 4); return 6;                                        /* the hardware again; then stopped, and slow to end */
+    case 64:
+        read_obey(started[(nstarted - 1) & 15]);
+        CHECK(nstarted == hw_starts + 6 && strstr(obey, " -c:v h264_vchiq -i ") && strstr(obey, " -c:v h264_encvchiq "),
+              "the next conversion uses the VideoCore again: %s", obey);
+        msg(b, 0x808C2, 0x98D, 24); b[5] = 0x434F4E56; return 17;
+    case 65: click(b, I_STOP, 4); return 6;
+    case 66:
+        CHECK(escapes == 4 && escape_to == 0x98D && !morites && last_poll == 0x400E1 && !(last_mask & 1),
+              "Stop: %d Escapes, %d Morites; null events while waiting (SWI %x, mask %x)", escapes, morites, last_poll, last_mask);
+        fake_cs += 400; memset(b, 0, 24); return 0;                              /* (a null event) */
+    case 67:
+        CHECK(!morites, "killed %d times, 4 s after asking (it has %d s)", morites, 8);
+        fake_cs += 400; memset(b, 0, 24); return 0;
+    case 68:
+        CHECK(morites == 1 && morite_to == 0x98D, "8 s after asking: %d Morites to %x", morites, morite_to);
+        msg(b, 0x808C3, 0x98D, 20); return 17;
+    case 69:
+        CHECK(conv_test_state() == CONV_STOPPED && deleted == 6 && strstr(conv_test_text(1), "restart the computer before using "
+              "hardware acceleration") && last_poll == 0x400C7 && (last_mask & 1),
+              "killed: state %d, deleted %d, '%s'; no null events after (SWI %x, mask %x)", conv_test_state(), deleted,
+              conv_test_text(1), last_poll, last_mask);
         iflags[I_HW] ^= 1 << 21;
         click(b, I_HW, 4); return 6;
-    case 56: click(b, I_FORMAT_B, 4); return 6;
-    case 57: b[0] = 2; b[1] = -1; return 9;                                      /* MP3 again */
-    case 58:
+    case 70: click(b, I_FORMAT_B, 4); return 6;
+    case 71: b[0] = 2; b[1] = -1; return 9;                                      /* MP3 again */
+    case 72:
         CHECK(!strcmp(conv_test_text(5), "MP3 sound") && !is_selected(I_HW), "MP3 again: '%s'", conv_test_text(5));
         click(b, I_CONVERT, 4); return 6;                                        /* again, then quit while converting */
-    case 59: msg(b, 0x808C2, 0x993, 24); b[5] = 0x434F4E56; return 17;
-    case 60: ask_answer = 3; msg(b, 8, 0x111, 20); return 18;                   /* PreQuit: Stop */
-    case 61:
-        CHECK(morites == 3 && morite_to == 0x993 && conv_test_state() == CONV_STOPPING,
-              "PreQuit, Stop: %d Morites to %x, state %d", morites, morite_to, conv_test_state());
+    case 73: msg(b, 0x808C2, 0x993, 24); b[5] = 0x434F4E56; return 17;
+    case 74: ask_answer = 3; msg(b, 8, 0x111, 20); return 18;                   /* PreQuit: Stop */
+    case 75:
+        CHECK(escapes == 5 && escape_to == 0x993 && morites == 1 && conv_test_state() == CONV_STOPPING,
+              "PreQuit, Stop: %d Escapes to %x, %d Morites, state %d", escapes, escape_to, morites, conv_test_state());
         msg(b, 0, 0x111, 20); return 17;                                         /* Message_Quit */
-    case 62:   /* (conv_quitting waiting for the task window to end) */
-        CHECK(deleted == 4 && conv_test_state() == CONV_STOPPING, "quitting: deleted %d before ffmpeg ended, state %d",
+    case 76:   /* (conv_quitting waiting for the task window to end) */
+        CHECK(deleted == 6 && conv_test_state() == CONV_STOPPING, "quitting: deleted %d before ffmpeg ended, state %d",
               deleted, conv_test_state());
+        fake_cs += 500; memset(b, 0, 24); return 0;
+    case 77:
+        CHECK(morites == 1, "quitting: killed %d times 5 s after asking", morites - 1);
+        fake_cs += 400; memset(b, 0, 24); return 0;
+    case 78:   /* 9 s: ended (its time's longer than the grace) */
+        CHECK(morites == 2 && morite_to == 0x993 && conv_test_state() == CONV_STOPPING, "quitting, 9 s: %d Morites to %x, state %d",
+              morites, morite_to, conv_test_state());
         msg(b, 0x808C3, 0x993, 20); return 17;
     default: msg(b, 0, 0x111, 20); return 17;                                   /* Message_Quit */
     }
@@ -374,7 +429,8 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
         if (b[4] == 1 && in->r[2] == FILER) {
             datasaves++; datasave_type = b[10]; snprintf(datasave_leaf, sizeof(datasave_leaf), "%s", (char *)&b[11]);
         }
-        if (b[4] == 0x808C4) { morites++; morite_to = in->r[2]; }
+        if (b[4] == 0x808C4) { morites++; morite_to = in->r[2]; }                /* TaskWindow_Morite: killed */
+        if (b[4] == 0x808C0 && b[0] >= 25 && b[5] == 1 && (b[6] & 0xFF) == 27) { escapes++; escape_to = in->r[2]; }   /* Input: Escape */
         if (b[4] == 0x503) { helps++; snprintf(help_text, sizeof(help_text), "%s", (char *)&b[5]); }
         return NULL;
     case 0x400DE:                                                                /* StartTask */
@@ -400,7 +456,9 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
                                   !strcmp((const char *)(intptr_t)in->r[2], "file_xxx")) ? NULL : &err;
     case 0x35: out->r[2] = in->r[1] == 11 ? 1919 : in->r[1] == 12 ? 1079 : 1; return NULL;
     case 0x400DD: return NULL;                                                   /* CloseDown */
-    case 0x400C7: case 0x400E1: out->r[0] = script(b); return NULL;              /* Wimp_Poll, Wimp_PollIdle */
+    case 0x400C7: case 0x400E1:                                                  /* Wimp_Poll, Wimp_PollIdle */
+        last_poll = swi; last_mask = in->r[0];
+        out->r[0] = script(b); return NULL;
     }
     return &err;
 }
@@ -416,7 +474,7 @@ int main(void)
     setenv("Wimp$ScrapDir", scrap, 1);
     setenv("FFmpeg$Dir", "<Obey$Dir>", 1);
     CHECK(fffront_main() == 0, "front end didn't end cleanly");
-    CHECK(step == 63 && deleted == 5 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer/mp3") && conv_test_state() == CONV_STOPPED,
+    CHECK(step == 79 && deleted == 7 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer/mp3") && conv_test_state() == CONV_STOPPED,
           "quit while converting: step %d, deleted %d '%s', state %d (stopped, and the unfinished file deleted)", step,
           deleted, deleted_name, conv_test_state());
     {   /* the Options field takes spaces ("-vf hflip"); the name doesn't */
@@ -518,7 +576,28 @@ int main(void)
             CHECK(!p.hw_decode_failed, "the encoder's message isn't the decoder's (no second try)");
             conv_parse_progress(&p, "[hevc_hwdec @ 0x2] the HEVC block isn't there");
             CHECK(p.hw_decode_failed, "the HEVC block's refusal");
+            CHECK(!p.vc_full, "a refusal isn't the VideoCore full");
+            {   /* the VideoCore full: each way it's said (devkit 0.2.15's words too) */
+                static const char *const full[] = {
+                    "[h264_vchiq @ 0x1] Nothing from the decoder in 500 cs (the VideoCore has 76 MB: 1080p needs gpu_mem=128)",
+                    "[h264_vchiq @ 0x1] the VideoCore has no memory left for it",
+                    "[h264_encvchiq @ 0x3] Input enable: ENOSPC", "[hevc_hwdec @ 0x2] Port enable: ENOMEM" };
+                for (int i = 0; i < 4; i++) {
+                    memset(&p, 0, sizeof(p));
+                    conv_parse_progress(&p, full[i]);
+                    CHECK(p.vc_full, "VideoCore full: %s", full[i]);
+                }
+                memset(&p, 0, sizeof(p));
+                conv_parse_progress(&p, "[h264_vchiq @ 0x1] Nothing from the decoder for 300 cs after the EOS");
+                CHECK(!p.vc_full, "the end of a stream isn't the VideoCore full");
+                conv_parse_progress(&p, "stream_0_0_q=-1.0");
+                CHECK(!strstr(p.error, "stream_0"), "a -progress line isn't a message: '%s'", p.error);
+            }
         }
+        s.no_hw = 1;                                                             /* the VideoCore full: all on the ARM */
+        conv_build_args(a, sizeof(a), &s, &in, "in", "out", e, sizeof(e));
+        CHECK(strstr(a, "-y -i in ") && !strstr(a, "vchiq") && strstr(a, " -c:v libx264 "), "no VideoCore at all: %s", a);
+        s.no_hw = 0;
         s.hw = 0;
     }
     in.width = 321;                                                            /* odd: made even */

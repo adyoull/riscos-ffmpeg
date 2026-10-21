@@ -64,6 +64,10 @@ Convert window. It works from the top down:
                    by a Pi 4's HEVC block. If the hardware won't decode
                    it (High 10 H.264, HEVC on an older Pi), the window
                    converts again at once with the ARM decoding it.
+                   If the VideoCore has no memory left (often a decoder
+                   left there by a program that was killed: restarting
+                   frees it), the window stops at once and converts
+                   again all on the ARM.
        From ... to             only part of the file (e.g. 1:30 to 2:45)
        Options     more ffmpeg options for the new file, as you'd type
                    them on the command line: e.g. -vf hflip (mirror),
@@ -83,8 +87,9 @@ Convert window. It works from the top down:
      new file's type, the file icon shows the Filer's usual "?" icon: it
      still drags.)
   4. A bar shows how far it has got, with how fast it's going (times real
-     time) and about how long is left. Stop ends it and deletes the
-     unfinished file. When it's done, Play plays the new file and Show
+     time) and about how long is left. Stop asks ffmpeg to end (as
+     Escape would), so it gives back the VideoCore's memory, and deletes
+     the unfinished file; if it hasn't ended in 8 seconds, it's killed. When it's done, Play plays the new file and Show
      opens its directory. If ffmpeg couldn't convert it, the window says
      why and Log shows ffmpeg's messages.
 
