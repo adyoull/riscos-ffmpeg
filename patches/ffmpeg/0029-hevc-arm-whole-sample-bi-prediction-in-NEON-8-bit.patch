@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Wed, 21 Oct 2026 18:55:00 +0100
+Subject: [PATCH] hevc: arm: whole-sample bi-prediction in NEON (8-bit)
+
+put_hevc_qpel_bi and put_hevc_epel_bi at [x][0][0] (luma and chroma at a
+whole-sample position, both blocks of a bi-predicted PU) were the C's
+put_hevc_pel_bi_pixels, a sample at a time: 11% of an 8-bit 1080p HEVC
+decode on the ARM. NEON intrinsics, 16 and 8 samples at a time, the
+rest (widths 2, 4, 6, and 12's last 4) as the C. The add saturates where
+the C's int sum can pass 32767; both then clip to 255.
+
+The same pictures as before (framemd5 of three clips: x265 1080p with
+B-frames, hevc_640_360, mv_hevc), and 2.1 million samples against the
+C's formula, at every width and at the extremes. Under QEMU, that
+function 349 to 68 million instructions over 50 1080p pictures.
+
+---
+ libavcodec/arm/hevcdsp_init_neon.c | 39 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 39 insertions(+)
+
+diff --git a/libavcodec/arm/hevcdsp_init_neon.c b/libavcodec/arm/hevcdsp_init_neon.c
+index 9b7f72d..c99c31a 100644
+--- a/libavcodec/arm/hevcdsp_init_neon.c
++++ b/libavcodec/arm/hevcdsp_init_neon.c
+@@ -24,6 +24,9 @@
+ #include "libavcodec/hevcdsp.h"
+ #include "libavcodec/avcodec.h"
+ #include "hevcdsp_arm.h"
++#if HAVE_INTRINSICS_NEON
++#include <arm_neon.h>
++#endif
+ 
+ void ff_hevc_sao_band_filter_neon_8_wrapper(uint8_t *_dst, uint8_t *_src,
+                                   ptrdiff_t stride_dst, ptrdiff_t stride_src,
+@@ -292,6 +295,38 @@ static void epel_bi_hv_neon(uint8_t *dst, ptrdiff_t dststride, uint8_t *src, ptr
+                               ff_hevc_epel_filters[my - 1], width, src2);
+ }
+ 
++#if HAVE_INTRINSICS_NEON
++/* Bi-prediction at a whole-sample position (put_hevc_qpel_bi and
++   put_hevc_epel_bi [x][0][0], luma and chroma): each sample is
++   ((src << 6) + src2 + 64) >> 7, clipped to 8 bits, as the C's
++   put_hevc_pel_bi_pixels, which did it a sample at a time (11% of an 8-bit
++   1080p HEVC decode). 16 and 8 at a time; the rest (widths 2, 4 and 6,
++   and 12's last 4) as the C does. The sum can pass 32767 (255 << 6 plus a
++   large src2): the add saturates, which clips to 255 all the same. */
++static void pel_bi_pixels_neon(uint8_t *dst, ptrdiff_t dststride, uint8_t *src, ptrdiff_t srcstride,
++                               int16_t *src2, int height, intptr_t mx, intptr_t my, int width)
++{
++    for (int y = 0; y < height; y++) {
++        int x = 0;
++        for (; x + 16 <= width; x += 16) {
++            uint8x16_t s = vld1q_u8(src + x);
++            int16x8_t lo = vqaddq_s16(vreinterpretq_s16_u16(vshll_n_u8(vget_low_u8(s), 6)), vld1q_s16(src2 + x));
++            int16x8_t hi = vqaddq_s16(vreinterpretq_s16_u16(vshll_n_u8(vget_high_u8(s), 6)), vld1q_s16(src2 + x + 8));
++            vst1q_u8(dst + x, vcombine_u8(vqrshrun_n_s16(lo, 7), vqrshrun_n_s16(hi, 7)));
++        }
++        for (; x + 8 <= width; x += 8) {
++            int16x8_t v = vqaddq_s16(vreinterpretq_s16_u16(vshll_n_u8(vld1_u8(src + x), 6)), vld1q_s16(src2 + x));
++            vst1_u8(dst + x, vqrshrun_n_s16(v, 7));
++        }
++        for (; x < width; x++)
++            dst[x] = av_clip_uint8(((src[x] << 6) + src2[x] + 64) >> 7);
++        src  += srcstride;
++        dst  += dststride;
++        src2 += MAX_PB_SIZE;
++    }
++}
++#endif
++
+ av_cold void ff_hevc_dsp_init_neon(HEVCDSPContext *c, const int bit_depth)
+ {
+     if (bit_depth == 8) {
+@@ -365,6 +400,10 @@ av_cold void ff_hevc_dsp_init_neon(HEVCDSPContext *c, const int bit_depth)
+             c->put_hevc_qpel_bi[x][0][1]      = ff_hevc_put_qpel_bi_neon_wrapper;
+             c->put_hevc_qpel_bi[x][1][1]      = ff_hevc_put_qpel_bi_neon_wrapper;
+         }
++#if HAVE_INTRINSICS_NEON
++        for (x = 0; x < 10; x++)                /* (chroma's are set to these below) */
++            c->put_hevc_qpel_bi[x][0][0]  = pel_bi_pixels_neon;
++#endif
+         c->put_hevc_qpel[0][0][0]  = ff_hevc_put_pixels_w2_neon_8;
+         c->put_hevc_qpel[1][0][0]  = ff_hevc_put_pixels_w4_neon_8;
+         c->put_hevc_qpel[2][0][0]  = ff_hevc_put_pixels_w6_neon_8;
+-- 
+2.43.0
+

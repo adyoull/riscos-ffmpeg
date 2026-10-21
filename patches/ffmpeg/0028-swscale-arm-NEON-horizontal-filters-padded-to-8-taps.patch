@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Wed, 21 Oct 2026 18:40:00 +0100
+Subject: [PATCH] swscale: 32-bit ARM: horizontal filters padded to 8 taps
+ for NEON
+
+ff_hscale_8_to_15_neon (arm/swscale.c) is used only when both
+horizontal filters are a multiple of 8 taps, but filters were padded to
+a multiple of 4 on NEON. So filters of 4 or 12 taps (bilinear,
+upscaling, bicubic shrinking by more than 2x: 1080 lines to 480 is 12)
+were scaled by the C hScale8To15, 3 to 4 times slower. Pad them to 8 on
+32-bit ARM: the extra taps are zero, so the result is the same.
+Measured under QEMU: 1080p to 480 lines, the same bytes out, 8.78 to
+5.53 thousand million instructions (the horizontal scaling 5.38 to 2.13).
+
+---
+ libswscale/utils.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/libswscale/utils.c b/libswscale/utils.c
+--- a/libswscale/utils.c
++++ b/libswscale/utils.c
+@@ -1839,9 +1839,13 @@
+         } else
+ #endif /* HAVE_MMXEXT_INLINE */
+         {
++            /* 32-bit ARM: the NEON horizontal scaler takes only filters of
++               a multiple of 8 taps, so pad them to that (zero taps don't
++               change the result): at 4 or 12 (bilinear, upscaling, bicubic
++               shrinking past 2x) it was the C one, 3 to 4 times slower. */
+             const int filterAlign = X86_MMX(cpu_flags)     ? 4 :
+                                     PPC_ALTIVEC(cpu_flags) ? 8 :
+-                                    have_neon(cpu_flags)   ? 4 : 1;
++                                    have_neon(cpu_flags)   ? (ARCH_ARM ? 8 : 4) : 1;
+ 
+             if ((ret = initFilter(&c->hLumFilter, &c->hLumFilterPos,
+                            &c->hLumFilterSize, c->lumXInc,
+-- 
+2.43.0
+

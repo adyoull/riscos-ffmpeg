@@ -5,6 +5,24 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Reel (not yet released)
 
+- **Speed-ups from instruction profiles** (new: `tools/profile`, a QEMU
+  plugin and a reelcore player for counting where the instructions go;
+  `QEMU_PLUGINS=1 tests/qemu/build-qemu.sh` builds the QEMU for it):
+  - **Subtitle outlines drawn in two passes** (row maxima, then down the
+    columns) instead of testing the whole disc around every pixel: about
+    120 million instructions a new 1080p subtitle line to about 20, the
+    same pixels. Each change of subtitle was a hitch of 50-80 ms on a Pi 4.
+  - **swscale on 32-bit ARM pads horizontal filters to 8 taps** (patch
+    0028): the NEON scaler takes only multiples of 8, so filters of 4 or 12
+    taps (bilinear, upscaling, bicubic shrinking past 2x, such as the
+    Convert window's 480 lines) ran in C. 1080p to 480 lines: the same
+    bytes, 37% fewer instructions in all.
+  - **HEVC 8-bit whole-sample bi-prediction in NEON** (patch 0029,
+    intrinsics): the C did it a sample at a time, 11% of a 1080p decode on
+    the ARM; now 5 times less. The same pictures (framemd5), and 2.1
+    million samples against the C's formula at every width and extreme.
+    (Matters where the Pi 4's HEVC block isn't used.)
+
 - **Builds on GitHub** (riscos-crossdev 1.8.1's container image and
   workflows; riscos-crossdev's handoff):
   - `.riscos-deps` pins riscos-crossdev v1.8.1, riscos-mesa v20.3.5-16 and

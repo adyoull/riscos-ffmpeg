@@ -2,6 +2,8 @@
 # Builds the test rig's qemu-arm: QEMU 8.2.2 (Ubuntu's orig tarball) with
 # qemu-8.2.2-align-trap.patch, linux-user ARM only. Result: $OUT/qemu-arm.
 # Needs: build-essential, ninja, python3-venv, libglib2.0-dev.
+# QEMU_PLUGINS=1: with TCG plugins, for tools/profile (its source is kept in
+# OUT_DIR/qemu-8.2.2 for the plugin header).
 # Usage: tests/qemu/build-qemu.sh [OUT_DIR]     (default ~/qemu-aligntrap)
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -14,7 +16,8 @@ cd qemu-8.2.2
 patch -p1 < "$HERE/qemu-8.2.2-align-trap.patch"
 mkdir build && cd build
 ../configure --target-list=arm-linux-user --disable-system --disable-docs \
-  --disable-tools --disable-werror --disable-install-blobs >/dev/null
+  --disable-tools --disable-werror --disable-install-blobs \
+  $([ -n "${QEMU_PLUGINS:-}" ] && echo --enable-plugins) >/dev/null
 ninja qemu-arm >/dev/null
 cp qemu-arm "$OUT/qemu-arm"
 echo "$OUT/qemu-arm"

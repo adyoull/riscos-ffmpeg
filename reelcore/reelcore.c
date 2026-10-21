@@ -4264,6 +4264,60 @@ static int sub_decode(unsigned *out, int max, const char *in)
 
 /* Text into the subtitle layer: white with a black outline, each line
    centred, long lines wrapped at spaces to fit dw */
+/* The outline: cov spread by r, round (every pixel within dx² + dy² <=
+   r² + r), into dil. In two passes rather than (2r + 1)² taps a pixel:
+   row by row, the maxima over x - k .. x + k for k = 0 .. r (each from the
+   last: two more taps), then for each pixel the maximum down its column of
+   those, k being the disc's half-width on that row (Reel 0.1.28 took about
+   120 M instructions over a 1080p subtitle line: a hitch at each change). */
+static int sub_outline(const uint8_t *cov, uint8_t *dil, int w, int h, int r)
+{
+    size_t n = (size_t)w * h;
+    uint8_t *hm = av_malloc(n * (r + 1));      /* hm + k * n: the row maxima over x ± k */
+    int kw[64];                                /* the half-width on row dy: floor(sqrt(r² + r - dy²)) */
+    if (!hm || r >= 64) {
+        av_free(hm);
+        return -1;
+    }
+    memcpy(hm, cov, n);
+    for (int k = 1; k <= r; k++) {
+        const uint8_t *p = hm + (k - 1) * n;
+        uint8_t *q = hm + k * n;
+        for (int y = 0; y < h; y++) {
+            const uint8_t *c = cov + (size_t)y * w, *pr = p + (size_t)y * w;
+            uint8_t *qr = q + (size_t)y * w;
+            for (int x = 0; x < w; x++) {
+                uint8_t m = pr[x];
+                if (x - k >= 0 && c[x - k] > m)
+                    m = c[x - k];
+                if (x + k < w && c[x + k] > m)
+                    m = c[x + k];
+                qr[x] = m;
+            }
+        }
+    }
+    for (int dy = 0; dy <= r; dy++) {
+        int k = 0;
+        while ((k + 1) * (k + 1) <= r * r + r - dy * dy)
+            k++;
+        kw[dy] = k;
+    }
+    memset(dil, 0, n);
+    for (int y = 0; y < h; y++) {
+        uint8_t *d = dil + (size_t)y * w;
+        for (int dy = -r; dy <= r; dy++) {
+            const uint8_t *s;
+            if (y + dy < 0 || y + dy >= h)
+                continue;
+            s = hm + kw[dy < 0 ? -dy : dy] * n + (size_t)(y + dy) * w;
+            for (int x = 0; x < w; x++)
+                d[x] = d[x] > s[x] ? d[x] : s[x];
+        }
+    }
+    av_free(hm);
+    return 0;
+}
+
 static void sub_render_text(ReelCore *v, const char *utext, int dw, int dh)
 {
     const SubFont *f = &sub_fonts[0];
@@ -4339,21 +4393,8 @@ static void sub_render_text(ReelCore *v, const char *utext, int dw, int dh)
             x += g->adv;
         }
     }
-    for (int y = 0; y < h; y++)                /* the outline: coverage spread by r, round */
-        for (int x = 0; x < w; x++) {
-            int m = 0;
-            for (int dy = -r; dy <= r && m < 255; dy++) {
-                int yy = y + dy;
-                if (yy < 0 || yy >= h)
-                    continue;
-                for (int dx = -r; dx <= r; dx++) {
-                    int xx = x + dx;
-                    if (xx >= 0 && xx < w && dx * dx + dy * dy <= r * r + r && cov[yy * w + xx] > m)
-                        m = cov[yy * w + xx];
-                }
-            }
-            dil[y * w + x] = (uint8_t)m;
-        }
+    if (sub_outline(cov, dil, w, h, r) < 0)
+        memcpy(dil, cov, (size_t)w * h);        /* (no memory for it: no outline) */
     for (int i = 0; i < w * h; i++) {          /* white over black: premultiplied */
         uint8_t *d = v->sub_layer.rgba + (size_t)i * 4;
         d[0] = d[1] = d[2] = cov[i];
