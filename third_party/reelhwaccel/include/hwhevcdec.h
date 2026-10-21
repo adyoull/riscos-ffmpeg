@@ -49,7 +49,7 @@
 #include <stdint.h>
 #include "hevc_ctrls.h"
 
-#define HEVCDEC_VERSION "0.1.13"
+#define HEVCDEC_VERSION "0.1.14"
 
 #define HEVCDEC_OK           0
 #define HEVCDEC_ERROR       -1   /* hevcdec_error says why */
@@ -194,5 +194,12 @@ int hevcdec_convert_benchmark(hevcdec *d, const hevcdec_frame *f, void *const pl
 const char *hevcdec_error(const hevcdec *d);
 void hevcdec_get_stats(const hevcdec *d, hevcdec_stats *s);
 void hevcdec_close(hevcdec *d);
+
+/* (0.1.14) The decoder still open, if any, closed with its frames.
+   Registered with atexit by the first hevcdec_open, so a program that
+   exits without closing doesn't leave the block's memory and interrupt
+   claimed. UnixLib doesn't run atexit's when a signal ends a program: a
+   program can call this from its own handler. */
+void hevcdec_close_all(void);
 
 #endif

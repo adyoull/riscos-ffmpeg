@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Andrew Youll <andrewyoull86@gmail.com>
+Date: Wed, 21 Oct 2026 20:10:00 +0100
+Subject: [PATCH] fftools/ffmpeg: RISC OS: hardware codecs closed on a crash
+
+RISC OS doesn't free what a program leaves open on the Pi's VideoCore or
+the Pi 4's HEVC block: a decoder or encoder left by a crash holds the
+VideoCore's memory, and every later hardware conversion fails until a
+restart. riscos-reelhwaccel (devkit 0.2.16) closes them at exit with
+atexit, but UnixLib runs no atexit's when a signal ends a program. So on
+SIGSEGV, SIGBUS, SIGILL, SIGFPE and SIGABRT, vcdec_close_all,
+vcenc_close_all and hevcdec_close_all (those built in), then the signal
+as before. Escape (SIGINT) already ends ffmpeg normally.
+
+---
+  fftools/ffmpeg.c | 39 +++++++++++++++++++++++++++++++++++++++
+  1 file changed, 39 insertions(+)
+
+diff --git a/fftools/ffmpeg.c b/fftools/ffmpeg.c
+index 960c3d2..79e6e97 100644
+--- a/fftools/ffmpeg.c
++++ b/fftools/ffmpeg.c
+@@ -346,6 +346,38 @@ static volatile int ffmpeg_exited = 0;
+ int main_return_code = 0;
+ static int64_t copy_ts_first_pts = AV_NOPTS_VALUE;
+ 
++#ifdef __riscos__
++#include "config_components.h"
++#if CONFIG_H264_VCHIQ_DECODER
++#include <vcdec.h>
++#endif
++#if CONFIG_H264_ENCVCHIQ_ENCODER
++#include <vcenc.h>
++#endif
++#if CONFIG_HEVC_HWDEC_DECODER
++#include <hwhevcdec.h>
++#endif
++/* RISC OS doesn't free the hardware decoders and encoders a program leaves
++   open (the Pi's VideoCore, the Pi 4's HEVC block): one left by a crash
++   holds the VideoCore's memory, and every later hardware conversion fails,
++   until a restart. So a crash closes them, then goes on as before. (A
++   normal end, Escape included, closes them: riscos-reelhwaccel's atexit.) */
++static void riscos_crash(int sig)
++{
++#if CONFIG_H264_VCHIQ_DECODER
++    vcdec_close_all();
++#endif
++#if CONFIG_H264_ENCVCHIQ_ENCODER
++    vcenc_close_all();
++#endif
++#if CONFIG_HEVC_HWDEC_DECODER
++    hevcdec_close_all();
++#endif
++    signal(sig, SIG_DFL);
++    raise(sig);
++}
++#endif
++
+ static void
+ sigterm_handler(int sig)
+ {
+@@ -447,6 +479,13 @@ void term_init(void)
+ #ifdef SIGPIPE
+     signal(SIGPIPE, SIG_IGN); /* Broken pipe (POSIX). */
+ #endif
++#ifdef __riscos__
++    signal(SIGSEGV, riscos_crash);
++    signal(SIGBUS,  riscos_crash);
++    signal(SIGILL,  riscos_crash);
++    signal(SIGFPE,  riscos_crash);
++    signal(SIGABRT, riscos_crash);
++#endif
+ #if HAVE_SETCONSOLECTRLHANDLER
+     SetConsoleCtrlHandler((PHANDLER_ROUTINE) CtrlHandler, TRUE);
+ #endif
+-- 
+2.43.0
+

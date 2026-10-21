@@ -34,7 +34,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define VCENC_VERSION "0.1.3"
+#define VCENC_VERSION "0.1.5"
 
 /* results (as vcdec's) */
 #define VCENC_OK           0
@@ -127,5 +127,12 @@ int vcenc_poll(vcenc *e);
 
 void vcenc_get_stats(const vcenc *e, vcenc_stats *s);
 void vcenc_close(vcenc *e);
+
+/* (0.1.4) Every encoder still open closed. Registered with atexit by the
+   first vcenc_open, so a program that exits without closing doesn't leave
+   an encoder holding the VideoCore's memory until a restart. UnixLib
+   doesn't run atexit's when a signal ends a program: a program can call
+   this from its own handler. */
+void vcenc_close_all(void);
 
 #endif

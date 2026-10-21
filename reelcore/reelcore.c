@@ -23,6 +23,9 @@
 #ifdef REELCORE_HEVCDEC
 #include <hwhevcdec.h>                     /* the HEVC block's frames, converted when shown */
 #endif
+#ifdef REELCORE_VCDEC
+#include <vcdec.h>                         /* (vcdec_close_all) */
+#endif
 #include "reelcore.h"
 static void cur_changed(ReelCore *v);
 #include "libavutil/avstring.h"
@@ -5671,3 +5674,13 @@ void reelcore_attach(ReelCore *v, void *data, void (*release)(void *data))
 }
 
 void *reelcore_attachment(const ReelCore *v) { return v->attach; }
+
+void reelcore_hw_close_all(void)
+{
+#ifdef REELCORE_VCDEC
+    vcdec_close_all();
+#endif
+#ifdef REELCORE_HEVCDEC
+    hevcdec_close_all();
+#endif
+}

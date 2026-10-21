@@ -106,6 +106,13 @@ static void to_hw(AVFrame *f)
     hw_live++;
 }
 
+/* hevcdec_close_all (devkit 0.2.16): counted, for reelcore_hw_close_all */
+static int hb_closed_all;
+void hevcdec_close_all(void)
+{
+    hb_closed_all++;
+}
+
 hevcdec *hevcdec_frame_decoder(const hevcdec_frame *f)
 {
     return f ? (hevcdec *)1 : NULL;
@@ -912,6 +919,12 @@ int main(int argc, char **argv)
     fail_after = -1;
     fail_in_send = 0;
 
+#ifdef REELCORE_HEVCDEC
+    /* a crash handler's reelcore_hw_close_all: the HEVC block's decoders
+       closed (RISC OS doesn't free them) */
+    reelcore_hw_close_all();
+    CHECK(hb_closed_all == 1, "reelcore_hw_close_all: hevcdec_close_all called %d times (want 1)", hb_closed_all);
+#endif
     printf(fails ? "vc_test: %d failures\n" : "vc_test: all passed\n", fails);
     return fails != 0;
 }

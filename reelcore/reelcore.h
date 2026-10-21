@@ -420,6 +420,14 @@ int reelcore_step_back(ReelCore *v);
 void reelcore_attach(ReelCore *v, void *data, void (*release)(void *data));
 void *reelcore_attachment(const ReelCore *v);
 
+/* Closes every hardware decoder the program has open (the Pi's VideoCore,
+   the Pi 4's HEVC block), with the pictures they still hold. For a handler
+   of a signal that ends the program (a crash): RISC OS doesn't free them,
+   so one left open holds the VideoCore's memory, and every later hardware
+   decode fails, until a restart. (They're closed at a normal exit anyway.)
+   Nothing to do in a build without them. */
+void reelcore_hw_close_all(void);
+
 #ifdef __cplusplus
 }
 #endif

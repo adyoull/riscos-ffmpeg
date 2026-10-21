@@ -5,6 +5,24 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Reel (not yet released)
 
+- **riscos-reelhwaccel devkit 0.2.17** (0.2.16 too; `.riscos-deps` moved
+  to v0.2.17): a finished h264_vchiq stream gives the VideoCore's memory
+  back without being closed, and every hardware decoder or encoder still
+  open is closed when the program exits. The FFmpeg patches 0021, 0023 and
+  0027 are unchanged; the headers and libraries replaced.
+- **Hardware decoders closed on a crash.** RISC OS doesn't free them, so
+  one left open by a crash held the VideoCore's memory, and every later
+  hardware decode failed until a restart; UnixLib runs no atexit's when a
+  signal ends a program.
+  - Reel and ReelEGL: a crash handler always (it was only there with the
+    log on) calls the new `reelcore_hw_close_all()`, then goes on as
+    before.
+  - ffmpeg (patch 0030): the same on SIGSEGV, SIGBUS, SIGILL, SIGFPE and
+    SIGABRT, for the VideoCore's decoder and encoder and the HEVC block.
+    Escape already ends it normally.
+  - `vc_test` checks reelcore_hw_close_all reaches the HEVC block's
+    close_all.
+
 - **Speed-ups from instruction profiles** (new: `tools/profile`, a QEMU
   plugin and a reelcore player for counting where the instructions go;
   `QEMU_PLUGINS=1 tests/qemu/build-qemu.sh` builds the QEMU for it):

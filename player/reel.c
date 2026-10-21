@@ -352,14 +352,24 @@ static void lg_soon(const char *fmt, ...)    /* flushed within a second */
     va_end(ap);
 }
 
-/* A crash (a damaged stream that trips a decoder up, say): the warnings
-   before it, written at last; then as before */
-static void log_crash(int sig)
+/* A crash (a damaged stream that trips a decoder up, say): the hardware
+   decoders closed (RISC OS doesn't free them: one left open holds the
+   VideoCore's memory until a restart, and every later hardware decode
+   fails), and the warnings before it written at last; then as before */
+static void on_crash(int sig)
 {
+    reelcore_hw_close_all();
     if (logf)
         fflush(logf);
     signal(sig, SIG_DFL);
     raise(sig);
+}
+
+static void catch_crashes(void)
+{
+    static const int sigs[] = { SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT };
+    for (unsigned i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++)
+        signal(sigs[i], on_crash);
 }
 
 /* FFmpeg's warnings and the like, which a damaged stream can give several
@@ -450,11 +460,6 @@ static void log_open(void)
         _kernel_swi(0x08, &r, &r);
     }
     log_t0 = now_cs();
-    signal(SIGSEGV, log_crash);
-    signal(SIGBUS, log_crash);
-    signal(SIGILL, log_crash);
-    signal(SIGFPE, log_crash);
-    signal(SIGABRT, log_crash);
     lg("%s log (built " __DATE__ " " __TIME__ "), times in seconds", APP);
     log_module("SharedSound");
     log_module("StreamManager");
@@ -5149,6 +5154,7 @@ int reel_main(int argc, char **argv)
             return 0;
         }
     }
+    catch_crashes();                    /* (with the log or without) */
     log_open();
     choices_load();
     ftypes_setup();

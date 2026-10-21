@@ -14,6 +14,18 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
+- Devkit 0.2.17, `riscos-reelhwaccel-devkit-0.2.17.tgz` (sha256
+  8c7b853a0eeca7b4093baa5df65ad1d3755418422661c5edf02864489025d75c, the
+  release v0.2.17; includes 0.2.16): vcdec 0.4.4, vcenc 0.1.5, hevcdec
+  0.1.14. A finished h264_vchiq stream gives the VideoCore's memory back
+  without being closed; every decoder or encoder still open is closed at
+  exit (atexit), and `vcdec_close_all`, `vcenc_close_all` and
+  `hevcdec_close_all` do the same from a signal handler (UnixLib runs no
+  atexit's when a signal ends a program): Reel and ffmpeg call them on a
+  crash. `libvcdec.a` has one more object (vcmmal.o, the connection code
+  vcdec and vcenc now share). The patches 0001-0003 are as in 0.2.15, so
+  0021, 0023 and 0027 are unchanged; the headers (vcdec_stats is bigger)
+  and libraries replaced.
 - Devkit 0.2.15, `riscos-reelhwaccel-devkit-0.2.15.tgz` (sha256
   fd21f2af8765ea1759a11de6d40e4f4b63dad79577f90f7f0fcca9de1e57ac9e;
   includes 0.2.14): hevcdec 0.1.13 and its hevc_hwdec patch (our 0023,

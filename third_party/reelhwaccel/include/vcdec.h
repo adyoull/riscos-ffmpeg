@@ -32,7 +32,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define VCDEC_VERSION "0.4.2"
+#define VCDEC_VERSION "0.4.4"
 
 /* results */
 #define VCDEC_OK           0
@@ -106,6 +106,9 @@ typedef struct {
        &8000 to another physical page: should be 0 (ARMEABISupport finds
        the program by that page) */
     unsigned app_page_moves;
+    /* (0.4.3) times the decoder was destroyed at the end of the stream (its
+       VideoCore memory given back; a flush creates it again) */
+    unsigned freed_at_end;
 } vcdec_stats;
 
 void vcdec_config_init(vcdec_config *c);
@@ -161,6 +164,14 @@ int vcdec_flush(vcdec *d);
 
 /* Pictures still held stay valid until released. */
 void vcdec_close(vcdec *d);
+
+/* (0.4.3) Every decoder still open closed, and pictures still held freed
+   with it. Registered with atexit by the first vcdec_open, so a program
+   that exits without closing doesn't leave decoders holding the
+   VideoCore's memory until a restart (RISC OS doesn't free them). UnixLib
+   doesn't run atexit's when a signal ends a program (Escape, a crash): a
+   program can call this from its own handler. */
+void vcdec_close_all(void);
 
 /* Why the last call failed ("" if none). */
 const char *vcdec_error(const vcdec *d);

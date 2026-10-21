@@ -22,6 +22,8 @@ FF="-lavfilter -lpostproc -lavformat -lavcodec $VC -lswresample -lswscale -lavut
 # the libraries
 # the HEVC block's frames converted when shown (devkit 0.2.8 and later)
 HB=$([ -f "$STAGE/lib/libhevcdec.a" ] && grep -q hevcdec_frame_to_i420_half "$STAGE/include/hwhevcdec.h" && echo -DREELCORE_HEVCDEC || true)
+# h264_vchiq's decoders closed on a crash (reelcore_hw_close_all; devkit 0.2.16 and later)
+HB="$HB $([ -f "$STAGE/lib/libvcdec.a" ] && grep -q vcdec_close_all "$STAGE/include/vcdec.h" && echo -DREELCORE_VCDEC || true)"
 $CC $HB -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore.o"
 $CC -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl.o"
 $CC -DFFEGL_NO_TEXTURE -c "$TOP/ffegl/ffegl.c" -o "$O/ffegl_notex.o"
