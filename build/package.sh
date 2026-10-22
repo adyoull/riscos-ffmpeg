@@ -7,11 +7,11 @@
 #   dist/riscos-ffmpeg-devkit-VERSION.tgz  static libraries (and libreelcore, libffegl) + headers + .pc
 # Filetypes go in the zip's Acorn extra fields (tools/mkrozip.py), so SparkFS
 # and RISC OS unzip give the files their real types.
-# Usage: build/package.sh [VERSION]      (default 5.1.10-riscos22)
+# Usage: build/package.sh [VERSION]      (default 5.1.10-riscos23)
 #        ELF2AIF=path/to/elf2aif        (host elf2aif; see tools/elf2aif)
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
-V=${1:-5.1.10-riscos22}
+V=${1:-5.1.10-riscos23}
 # elf2aif: ours (tools/elf2aif, built), else the toolchain's (riscos-crossdev's
 # has the same large image fix)
 if [ -z "${ELF2AIF:-}" ]; then
@@ -106,7 +106,7 @@ rm -f "$DIST/FFmpeg-EGL-examples-$V.zip"
 ( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-EGL-examples-$V.zip" EGLExamples )
 
 # --- !Reel and !ReelEGL, the video player (sprite / EGL drawing) ---------
-RV=${REEL_VERSION:-0.1.28}
+RV=${REEL_VERSION:-0.1.29}
 RT=$TMP/Reel
 mkdir -p "$RT"
 for app in Reel ReelEGL; do

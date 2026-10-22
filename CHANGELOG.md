@@ -3,7 +3,7 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Reel (not yet released)
+## 5.1.10-riscos23 and Reel 0.1.29 (2026-10-22): devkit 0.2.18, the VideoCore's memory given back, Stop that asks, speed-ups, live streams, GitHub builds
 
 - **riscos-reelhwaccel devkit 0.2.18** (`.riscos-deps` moved to
   v0.2.18): h264_vchiq's pictures are written by the VideoCore straight
