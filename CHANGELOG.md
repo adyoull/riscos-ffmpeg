@@ -3,6 +3,18 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Not yet released
+
+- **riscos-mesa 20.3.5-17** (`.riscos-deps`, `build/SOURCES` and
+  `build/SHA256SUMS` moved to it): ffplay's `-f egl` window and the EGL
+  examples copy only what changed into an overlay's buffers, and
+  `*Show EGL$OverlayStatus` says how the last overlay-capable surface was
+  shown or why it was plotted (RDPServer's `EGL$Overlay off` included).
+  Rendering is as in 20.3.5-16. Reel drives VideoOverlay itself and
+  ReelEGL's picture is a work area surface, so neither changes. (ffplay's
+  SDL2 is built from our own copy of riscos-mesa's SDL patches, without
+  20.3.5-17's SDL additions: not needed for ffplay's Wimp window.)
+
 ## 5.1.10-riscos23 and Reel 0.1.29 (2026-10-22): devkit 0.2.18, the VideoCore's memory given back, Stop that asks, speed-ups, live streams, GitHub builds
 
 - **riscos-reelhwaccel devkit 0.2.18** (`.riscos-deps` moved to

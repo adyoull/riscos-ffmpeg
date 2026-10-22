@@ -14,4 +14,4 @@ libvorbis_1.3.7.orig.tar.gz http://archive.ubuntu.com/ubuntu/pool/main/libv/libv
 opus_1.5.2.orig.tar.gz http://archive.ubuntu.com/ubuntu/pool/main/o/opus/opus_1.5.2.orig.tar.gz
 SDL-2.26.0.tgz https://github.com/libsdl-org/SDL/archive/refs/tags/release-2.26.0.tar.gz
 meson-1.5.2.tar.gz https://files.pythonhosted.org/packages/source/m/meson/meson-1.5.2.tar.gz
-riscos-mesa-devkit-20.3.5-16.tgz https://github.com/adyoull/riscos-mesa/releases/download/v20.3.5-16/riscos-mesa-devkit-20.3.5-16.tgz
+riscos-mesa-devkit-20.3.5-17.tgz https://github.com/adyoull/riscos-mesa/releases/download/v20.3.5-17/riscos-mesa-devkit-20.3.5-17.tgz
