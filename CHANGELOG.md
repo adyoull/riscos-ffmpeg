@@ -5,6 +5,20 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Not yet released
 
+- **GitHub builds check and test too** (riscos-crossdev 1.8.2's workflows;
+  `.riscos-deps` moved to v1.8.2): after the build, `make check` runs
+  riscos-crossdev's checks (static, stack probes, FPU level, UnixLib) on
+  every program the zips carry, then `make test-build test` builds the
+  same code for ARM Linux and runs the whole test rig under the image's
+  qemu-arm-aligntrap: FFmpeg's, dav1d's and x264's asm tests, the decode,
+  encode and scale jobs (NEON against C), faststart, and tests/host's
+  scripted desktops. The host's ffmpeg (`PACKAGES`) makes the clips.
+  - `tests/qemu/run-all.sh` finds qemu-arm-aligntrap on the PATH when
+    `QEMU` isn't set.
+  - `tests/qemu/run.sh`: the clips with AAC sound whose names don't start
+    with it (chunky_, twoaudio_) are compared loosely, like the others with
+    AAC (its decoder is float); they were reported as DIFF.
+
 - **riscos-mesa 20.3.5-17** (`.riscos-deps`, `build/SOURCES` and
   `build/SHA256SUMS` moved to it): ffplay's `-f egl` window and the EGL
   examples copy only what changed into an overlay's buffers, and

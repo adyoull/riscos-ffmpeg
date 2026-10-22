@@ -18,8 +18,8 @@
 # it's run as `ci/riscos-deps-hook.sh NAME OLD_TAG NEW_TAG` from the top of
 # the repository, before .riscos-deps is changed, to update those files.
 #
-# Copy to .github/workflows/riscos-deps-update.yml; set BUILD as in
-# riscos-build.yml. Needs, in Settings > Actions > General: "Workflow
+# Copy to .github/workflows/riscos-deps-update.yml; set BUILD and PACKAGES
+# as in riscos-build.yml. Needs, in Settings > Actions > General: "Workflow
 # permissions: Read and write" and "Allow GitHub Actions to create and
 # approve pull requests".
 #
@@ -36,7 +36,8 @@ permissions:
   pull-requests: write
 
 env:
-  BUILD: make sources deps ffmpeg apps package   # the same as in riscos-build.yml
+  BUILD: make sources deps ffmpeg apps package check test-build test   # the same as in riscos-build.yml
+  PACKAGES: "ffmpeg gdb-multiarch"                                      # the same as in riscos-build.yml
 
 jobs:
   update:
@@ -83,8 +84,14 @@ jobs:
           IMAGE: ghcr.io/adyoull/riscos-crossdev:${{ steps.deps.outputs.crossdev }}
         run: |
           cp -a . "$RUNNER_TEMP/build"
-          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$RUNNER_TEMP/build":/src "$IMAGE" \
-            sh -c "$BUILD" 2>&1 | tee "$RUNNER_TEMP/build.log"
+          # As root only to install PACKAGES; the build runs as the runner's user.
+          docker run --rm -e HOME=/tmp -e BUILD -e PACKAGES -e U="$(id -u)" -e G="$(id -g)" \
+            -v "$RUNNER_TEMP/build":/src "$IMAGE" sh -c '
+              if [ -n "$PACKAGES" ]; then
+                apt-get update -qq && apt-get install -y -qq --no-install-recommends $PACKAGES || exit 1
+              fi
+              exec setpriv --reuid="$U" --regid="$G" --clear-groups sh -c "$BUILD"' \
+            2>&1 | tee "$RUNNER_TEMP/build.log"
 
       - name: The pull request's text
         if: steps.deps.outputs.new == 'true'
