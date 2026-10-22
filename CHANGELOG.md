@@ -5,6 +5,13 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Reel (not yet released)
 
+- **riscos-reelhwaccel devkit 0.2.18** (`.riscos-deps` moved to
+  v0.2.18): h264_vchiq's pictures are written by the VideoCore straight
+  into the decoder's memory instead of copied out, a little quicker (82
+  against 80 1080p pictures a second on a Pi 4) and with no copy kept in
+  the VideoCore's memory, so up to three 1080p hardware decoders fit at
+  gpu_mem=128 (one filled it). The last picture of a stream is no longer
+  lost. Patches and code unchanged; vcdec.h and the libraries replaced.
 - **riscos-reelhwaccel devkit 0.2.17** (0.2.16 too; `.riscos-deps` moved
   to v0.2.17): a finished h264_vchiq stream gives the VideoCore's memory
   back without being closed, and every hardware decoder or encoder still

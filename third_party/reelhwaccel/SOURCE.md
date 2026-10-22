@@ -14,6 +14,17 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
+- Devkit 0.2.18, `riscos-reelhwaccel-devkit-0.2.18.tgz` (sha256
+  33c65937382b9d92cdfa80d1416025c68a42f2a1f11955cfa5121ef4bb8c09e1, the
+  release v0.2.18): vcdec 0.4.7 (vcenc 0.1.5 and hevcdec 0.1.14 as
+  before). Direct output: the VideoCore writes decoded H.264 pictures
+  straight into vcdec's buffers through the firmware's shared-memory
+  service (bulk transfers if it's missing), keeping no copy in gpu_mem, so
+  up to three 1080p h264_vchiq decoders fit at gpu_mem=128; the last
+  picture before the end of a stream is no longer lost. The patches
+  0001-0003 are as in 0.2.17, so 0021, 0023 and 0027 are unchanged;
+  vcdec.h (vcdec_stats is bigger: `direct_on`, `direct`, `after_eos`) and
+  the libraries replaced.
 - Devkit 0.2.17, `riscos-reelhwaccel-devkit-0.2.17.tgz` (sha256
   8c7b853a0eeca7b4093baa5df65ad1d3755418422661c5edf02864489025d75c, the
   release v0.2.17; includes 0.2.16): vcdec 0.4.4, vcenc 0.1.5, hevcdec

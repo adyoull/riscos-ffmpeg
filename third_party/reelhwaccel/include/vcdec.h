@@ -32,7 +32,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define VCDEC_VERSION "0.4.4"
+#define VCDEC_VERSION "0.4.7"
 
 /* results */
 #define VCDEC_OK           0
@@ -63,6 +63,8 @@
 #define VCDEC_OUT_UNCACHED    64u   /* the pool not cacheable (bufferable) */
 #define VCDEC_OUT_PCI        128u   /* PCI_RAMAlloc memory (uncachable, privileged: copied in
                                        SVC mode), the default before 0.4 */
+#define VCDEC_NO_DIRECT      512u   /* (0.4.5) no direct output: every picture by bulk transfer,
+                                       as before 0.4.5 */
 
 /* vcdec_send's flags */
 #define VCDEC_KEYFRAME      1u
@@ -109,6 +111,13 @@ typedef struct {
     /* (0.4.3) times the decoder was destroyed at the end of the stream (its
        VideoCore memory given back; a flush creates it again) */
     unsigned freed_at_end;
+    /* (0.4.5) direct output: the decoder writes its pictures straight into
+       vcdec's buffers (through the VideoCore's shared memory service), so
+       no bulk transfer and no copy in gpu_mem. direct_on: it's set up;
+       direct: the pictures that came that way */
+    unsigned direct_on, direct;
+    /* (0.4.7) pictures that came after the (empty) EOS buffer, taken before it */
+    unsigned after_eos;
 } vcdec_stats;
 
 void vcdec_config_init(vcdec_config *c);
