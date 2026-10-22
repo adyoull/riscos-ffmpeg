@@ -1269,12 +1269,30 @@ static struct {
     int placed[9];
 } ov;
 
+/* Why overlays aren't used, said in Media info and the log (NULL: they
+   may be). EGL$Overlay is one switch for every program's overlays: RDPServer
+   sets it "off" while a client is connected (the client can't see an
+   overlay), and puts it back afterwards. */
+static const char *ov_off_reason(void)
+{
+    const char *e = getenv("EGL$Overlay");
+    if (!S.hw_accel)
+        return "hardware acceleration off";
+    if (getenv(APP "$NoOverlay"))
+        return APP "$NoOverlay set";
+    if (e && (!strcasecmp(e, "off") || !strcasecmp(e, "no") || !strcmp(e, "0")))
+        return "EGL$Overlay off (RDPServer sets it while connected)";
+    return NULL;
+}
+
 static int ov_allowed(void)
 {
-    const char *e = getenv("EGL$Overlay");      /* one switch for every program's overlays */
-    if (!S.hw_accel || getenv(APP "$NoOverlay"))
-        return 0;
-    return !(e && (!strcasecmp(e, "off") || !strcasecmp(e, "no") || !strcmp(e, "0")));
+    static const char *said;            /* (the reason last logged: each change once) */
+    const char *why = ov_off_reason();
+    if (why != said && (why || said))
+        lg("overlay: %s", why ? why : "allowed again");
+    said = why;
+    return !why;
 }
 
 /* Is VideoOverlay loaded? (Looked for again each time until it is: it may be loaded later.) */
@@ -3027,8 +3045,12 @@ static void info_stats(void)
         snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (hardware overlay, %s, %d buffers); %u waited, %u replaced",
                  (S.draw_cs - info_prev_draw_cs) * 10.0 / draws, ov.type == 1 ? "Basic" : "Z-Order", ov.banks,
                  S.ov_waited - info_prev_waited, S.ov_replaced - info_prev_replaced);
-    else if (draws)
-        snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (%s%s)",
+    else if (draws) {
+        const char *why = ov_off_reason();      /* why not through an overlay */
+        if (!why)
+            why = !ov_available() ? "no VideoOverlay module" : ov.failed ? "the overlay wasn't possible" :
+                  ov.id ? "overlay hidden: something is over the picture" : NULL;
+        snprintf(r[8].value, sizeof(r[8].value), "%.1f ms a picture (%s%s%s)",
                  (S.draw_cs - info_prev_draw_cs) * 10.0 / draws,
 #ifdef REEL_EGL
                  S.fullscreen ? (!S.vsync ? "EGL screen surface, direct" : "EGL screen surface, vsync")
@@ -3036,8 +3058,8 @@ static void info_stats(void)
 #else
                  "OS_SpriteOp, with converting"
 #endif
-                 , !S.hw_accel ? "; hardware acceleration off" : !ov_available() ? "; no VideoOverlay module" :
-                 ov.failed ? "; the overlay wasn't possible" : ov.id ? "; overlay hidden: something is over the picture" : "");
+                 , why ? "; " : "", why ? why : "");
+    }
     snprintf(r[9].value, sizeof(r[9].value), "%d pictures, %d packets (%u KB)",
              st.pictures_waiting, st.packets_waiting, st.packet_bytes >> 10);
     if (st.sound == 0)

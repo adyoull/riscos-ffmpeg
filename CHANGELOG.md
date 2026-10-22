@@ -22,6 +22,11 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
     Escape already ends it normally.
   - `vc_test` checks reelcore_hw_close_all reaches the HEVC block's
     close_all.
+- **Reel and ReelEGL say why the picture isn't through an overlay**:
+  Media info's Drawing line and the log now name EGL$Overlay off (which
+  RDPServer sets while a client is connected) or Reel$NoOverlay, as they
+  already named Hardware acceleration off or a missing module (playback
+  watched through RDPServer is drawn the slower way).
 - **The Convert window's Stop asks ffmpeg to stop** instead of killing
   it. Killed (Message_TaskWindow_Morite), ffmpeg closed nothing, and with
   hardware acceleration its VideoCore decoder and encoder kept the

@@ -305,8 +305,12 @@ Whenever an overlay isn't possible, the picture is drawn exactly as
 before, with no message: the option off, no VideoOverlay module, the
 display refusing the size or running short of memory, any error from the
 module. To turn it off: untick Hardware acceleration on the window menu,
-or *Set Reel$NoOverlay 1 (or *Set EGL$Overlay off, which turns overlays
-off for every program) before starting Reel.
+or *Set Reel$NoOverlay 1 before starting Reel, or *Set EGL$Overlay off,
+which turns overlays off for every program and takes effect at the next
+picture. RDPServer sets EGL$Overlay off while a client is connected (a
+remote desktop can't see an overlay), so watching through it, or on the
+Pi's own screen while someone is connected, the picture is drawn the
+slower way: Media info's Drawing line says so.
 
 Subtitles
 ---------

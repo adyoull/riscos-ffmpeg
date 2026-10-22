@@ -215,7 +215,7 @@ enum { P_PLAY1, P_VOLUME, P_SPEED, P_SPEEDPLAY, P_SPEEDBACK, P_PICFILL, P_PICFIT
        P_INFO, P_INFOPLAY, P_INFOCLOSE, P_PANEL, P_PANELOFF, P_PAUSE, P_PAUSED, P_RESUME, P_PLAY2, P_SEEKBAR, P_PLAY3, P_FULL, P_PLAYFULL, P_PTRHIDE,
        P_FULLWAIT, P_LOGFLUSH, P_VSYNCOFF, P_UNFULL, P_RESIZE, P_GRIP, P_SIZEHALF, P_SIZEFIT, P_SIZEACTUAL, P_SIZE180, P_PLAY4, P_DROP2, P_PLAY5, P_LIST,
        P_MINI, P_MINIPLAY, P_ONTOP, P_MINIMOVE, P_MINIGRIP, P_MINIBACK, P_DIR, P_OPEN_OTHER, P_OPEN_VIDEO, P_PLAY6, P_SUBDROP, P_SUBHIDE, P_SUBSHOW, P_SUBNEXT, P_STEP, P_STEPPLAY, P_OVLREFUSE, P_OVLMODE, P_OVLPLAY, P_OVLWAIT, P_OVLREDRAW, P_OVLCOVER, P_OVLUNCOVER,
-       P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
+       P_OVLPAUSE, P_OVLRESUME, P_OVLFEWER, P_OVLEGLOFF, P_OVLOFF, P_URL, P_URLOPENING, P_URLPLAY, P_CLOSE, P_URLFILE,
        P_URLFILEOPENING, P_URLFILEPLAY, P_URLBAD, P_HLSREL, P_HLSRELOPENING, P_ARGURL, P_CLOSE2, P_SOUNDKEY, P_TYPES, P_VOLKEYS, P_FULLSTART,
        P_SUBSBESIDE, P_SUBCS, P_SUBCSAUTO, P_QUIT };
 static int phase = -1, phase_step;
@@ -227,7 +227,7 @@ static int next_is_null(void)
            phase == P_ABPLAY || phase == P_MINIPLAY || phase == P_ONTOP || phase == P_URLPLAY || phase == P_URLFILEPLAY ||
            phase == P_URLOPENING || phase == P_URLFILEOPENING || phase == P_HLSRELOPENING || phase == P_OVLREFUSE || phase == P_OVLPLAY || phase == P_OVLWAIT ||
            phase == P_OVLCOVER || phase == P_OVLUNCOVER || phase == P_OVLRESUME || phase == P_OVLFEWER ||
-           phase == P_OVLOFF || phase == P_OVLMODE;
+           phase == P_OVLOFF || phase == P_OVLMODE || phase == P_OVLEGLOFF;
 }
 
 /* The picture (sprite or surface) holds the current frame as reelcore
@@ -1186,6 +1186,31 @@ static int next_event(int *b)
             CHECK(ovl_id && ovl_banks == 2 && ovl_shown >= 0 && ovl_destroys >= 2,
                   "short of GPU memory: id %d, %d buffers, shown %d, %d destroyed", ovl_id, ovl_banks, ovl_shown, ovl_destroys);
             break;
+        case P_OVLEGLOFF: {                                           /* EGL$Overlay off (as RDPServer sets it): drawn */
+            static int draws0;                                        /* as before, and Media info says why */
+            if (phase_step == 0) {
+                phase_step++;
+                setenv("EGL$Overlay", "off", 1);
+                draws0 = FRAMES_DRAWN;
+                key_event(b, WIN, 'i');
+                return 8;
+            }
+            if (phase_step == 1) info_seen[0] = 0;
+            if (phase_step++ < 70) { fake_time += 0.02; return 0; }
+            if (phase_step == 71) {
+                CHECK(!ovl_id && ovl_shown == -1 && FRAMES_DRAWN > draws0 + 20, "EGL$Overlay off: overlay %d, shown %d, %d drawn",
+                      ovl_id, ovl_shown, FRAMES_DRAWN - draws0);
+                CHECK(strstr(info_seen, "with converting; EGL$Overlay off (RDPServer") != NULL,
+                      "EGL$Overlay off: Media info doesn't say so: %.400s", info_seen);
+                check_picture("EGL$Overlay off");
+                unsetenv("EGL$Overlay");
+                memset(b, 0, 4); b[0] = INFO; return 3;               /* (closed again) */
+            }
+            if (phase_step < 85) { fake_time += 0.02; return 0; }
+            CHECK(ovl_id && ovl_shown >= 0 && !info_open, "EGL$Overlay unset again: overlay %d, shown %d, info open %d",
+                  ovl_id, ovl_shown, info_open);
+            break;
+        }
         case P_OVLOFF: {                                              /* Hardware acceleration off: drawn as before */
             static int draws0;
             MENU_PICK(WIN, M_HWACCEL, -1);
