@@ -12,4 +12,12 @@ export QEMU_ARM_ALIGN_TRAP=1
 export QEMU_ARM_ALIGN_IGNORE=$(printf '0-%x,%x-ffffffff' $lo $hi)
 export QEMU_LD_PREFIX=${QEMU_LD_PREFIX:-/usr/arm-linux-gnueabihf}
 # QEMU_ARGS: extra qemu options, e.g. "-g 1234" to wait for gdb
-exec "${QEMU:-qemu-arm}" ${QEMU_ARGS:-} "$prog" "$@"
+# QEMU unset: riscos-crossdev's qemu-arm-aligntrap on the PATH, else
+# tests/qemu/build-qemu.sh's; never a distribution's qemu-arm, which would
+# run everything without trapping and so check nothing.
+if [ -z "${QEMU:-}" ]; then
+  QEMU=$(command -v qemu-arm-aligntrap || true)
+  [ -n "$QEMU" ] || [ ! -x "$HOME/qemu-aligntrap/qemu-arm" ] || QEMU=$HOME/qemu-aligntrap/qemu-arm
+  [ -n "$QEMU" ] || { echo "aligntrap.sh: no trapping qemu-arm (set QEMU; tests/qemu/build-qemu.sh)" >&2; exit 2; }
+fi
+exec "$QEMU" ${QEMU_ARGS:-} "$prog" "$@"

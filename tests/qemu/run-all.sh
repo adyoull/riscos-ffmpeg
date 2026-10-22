@@ -5,14 +5,12 @@
 #   swscale, swresample through the ffmpeg command), then tests/host (the
 #   egl output device, reelcore and ffegl with fake RISC OS, EGL, SDL and GL).
 # Usage: QEMU=path/to/patched/qemu-arm tests/qemu/run-all.sh
-#   (QEMU unset: riscos-crossdev's qemu-arm-aligntrap, on the PATH in its
-#   container image; the same patch as tests/qemu/build-qemu.sh's)
+#   (QEMU unset: aligntrap.sh takes riscos-crossdev's qemu-arm-aligntrap,
+#   on the PATH in its container image, else build-qemu.sh's; the same patch)
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 S=$(cd "$HERE/../.." && pwd)/src-linuxarm
-: "${QEMU:=$(command -v qemu-arm-aligntrap || true)}"
-: "${QEMU:?set QEMU to the patched qemu-arm (tests/qemu/build-qemu.sh)}"
-export QEMU
+export QEMU=${QEMU:-}
 bad=0
 step() { echo "== $1"; shift; "$@" || { echo "FAILED: $*"; bad=1; }; }
 step "FFmpeg checkasm" "$HERE/aligntrap.sh" "$S/ffmpeg-5.1.10/tests/checkasm/checkasm"

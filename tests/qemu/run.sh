@@ -13,7 +13,7 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 TOP=$(cd "$HERE/../.." && pwd)
-export QEMU=${QEMU:-qemu-arm}
+export QEMU=${QEMU:-}           # (unset: aligntrap.sh finds the trapping one)
 FF=${FF:-$TOP/src-linuxarm/ffmpeg-5.1.10/ffmpeg_g}
 WORK=${WORK:-$HERE/out}
 PATTERN=${1:-}

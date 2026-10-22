@@ -161,7 +161,7 @@ mkdir -p "$O/nonum.d" && cp "$O/nonum.srt" "$O/nonum.d/srt"         # (named as 
 #  riscos-reelhwaccel, with their host tests)
 
 # tools/eabiprobe: ARMEABISupport's versions loaded and on disc, its programs, Iris's copies
-arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/eabiprobe_test" "$TOP/tools/eabiprobe/eabiprobe.c" "$HERE/eabiprobe_test.c"
+arm-linux-gnueabihf-gcc -O1 -marm -mno-unaligned-access -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/eabiprobe_test" "$TOP/tools/eabiprobe/eabiprobe.c" "$HERE/eabiprobe_test.c"
 echo "== eabiprobe_test (ARMEABISupport loaded vs the copies a !Run would load; the verdict)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/eabiprobe_test" | grep "FAIL\|eabiprobe_test:" || bad=1
 

@@ -13,8 +13,14 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   qemu-arm-aligntrap: FFmpeg's, dav1d's and x264's asm tests, the decode,
   encode and scale jobs (NEON against C), faststart, and tests/host's
   scripted desktops. The host's ffmpeg (`PACKAGES`) makes the clips.
-  - `tests/qemu/run-all.sh` finds qemu-arm-aligntrap on the PATH when
-    `QEMU` isn't set.
+  - **`tests/qemu/aligntrap.sh` no longer falls back to the system's
+    qemu-arm**, which doesn't trap: `tests/host/run.sh` run by itself
+    (without `QEMU`) had been checking nothing about alignment. With `QEMU`
+    unset it takes qemu-arm-aligntrap from the PATH (riscos-crossdev's),
+    else `~/qemu-aligntrap/qemu-arm` (build-qemu.sh's), else stops. Run
+    under the trap, every host test passes; eabiprobe_test needed the same
+    `-marm -mno-unaligned-access` as the others (RISC OS's GCC never makes
+    unaligned accesses; the arm-linux one did, in the test build only).
   - `tests/qemu/run.sh`: the clips with AAC sound whose names don't start
     with it (chunky_, twoaudio_) are compared loosely, like the others with
     AAC (its decoder is float); they were reported as DIFF.
