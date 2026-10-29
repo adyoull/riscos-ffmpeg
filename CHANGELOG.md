@@ -5,6 +5,12 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Not yet released
 
+- **riscos-reelhwaccel devkit 0.2.21** (0.2.19 and 0.2.20 too): an
+  h264_vchiq video starts without the 2 s wait some clips had (the first
+  picture 1-5 cs after the first packet on a Pi 4); a seek starts a new
+  VideoCore decoder, so no picture from before the seek can turn up after
+  it; a decoder that stops answering holds a close up 3 s rather than 9.
+  Patches and code unchanged; vcdec.h and the libraries replaced.
 - **Reel: the sound no longer stops for good after buffering** (TubeSearch's
   handoff: Chris Hughes, a CM4, YouTube through TubeSearch, the picture and
   the sound as two inputs).
