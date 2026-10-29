@@ -185,13 +185,23 @@ ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=12 -f lavfi
   -c:v libx264 -preset ultrafast -g 25 -c:a aac -f hls -hls_time 1 -hls_list_size 0 \
   -hls_segment_filename "$NS/live_slow%03d.ts" "$NS/live.m3u8"
 sed -i '/#EXT-X-ENDLIST/d;/#EXT-X-PLAYLIST-TYPE/d' "$NS/live.m3u8"
+# a live stream as two playlists: the picture in 2 s segments, the sound in
+# 1 s ones (6 back: the picture from 0 s, the sound from 6 s)
+ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=12 -c:v libx264 -preset ultrafast -g 25 \
+  -f hls -hls_time 2 -hls_list_size 0 -hls_segment_filename "$NS/livev%03d.ts" "$NS/livev.m3u8"
+ffmpeg -v error -y -f lavfi -i sine=d=12:sample_rate=44100 -c:a aac \
+  -f hls -hls_time 1 -hls_list_size 0 -hls_segment_filename "$NS/livea%03d.ts" "$NS/livea.m3u8"
+sed -i '/#EXT-X-ENDLIST/d;/#EXT-X-PLAYLIST-TYPE/d' "$NS/livev.m3u8" "$NS/livea.m3u8"
+# 80 s, picture and sound apart (more than the read-ahead)
+ffmpeg -v error -y -f lavfi -i testsrc2=size=96x54:rate=10:duration=80 -c:v libx264 -preset ultrafast -g 10 "$NS/long_video_only.mp4"
+ffmpeg -v error -y -f lavfi -i sine=d=80:sample_rate=48000 -ac 2 -c:a aac -b:a 32k "$NS/long_sound_only.m4a"
 NP=$((20000 + RANDOM % 20000)); : > "$O/net_headers.log"
 python3 "$HERE/httpserve.py" "$NP" "$NS" "$O/net_headers.log" >/dev/null 2>&1 & NS1=$!
 python3 "$HERE/httpserve.py" $((NP + 1)) --silent >/dev/null 2>&1 & NS2=$!
 for i in $(seq 50); do curl -s -o /dev/null "http://127.0.0.1:$NP/" && break; sleep 0.1; done   # (up)
 : > "$O/net_headers.log"
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/net_test.c" -o "$O/net_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/net_test" "$O/reelcore.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcodec_receive_frame -o "$O/net_test" "$O/reelcore.o" \
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/net_test.o" $LIBS -lm 2>/dev/null
 echo "== net_test (reelcore: addresses read by a thread; video and sound apart)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/net_test" "http://127.0.0.1:$NP" "http://127.0.0.1:$((NP + 1))/x.mp4" "$NS" \

@@ -29,6 +29,27 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 - `tests/host/run.sh` takes riscos-mesa's OpenGL headers from the devkit,
   as it does its EGL ones (a host without ARM OpenGL headers couldn't
   build ffegl_test).
+- **Reel: live streams with the picture and sound apart play** (Chris's
+  log: YouTube's Heathrow Airport live stream from TubeSearch, on a CM4:
+  one picture, then none, the sound on its own for 40 s, then no sound).
+  - Each playlist starts 6 segments back, but the sound's segments were
+    shorter, so the sound started 5 s after the picture: by the sound's
+    clock every picture was late, and the VideoCore gave every one back.
+    The input that starts earlier is now dropped up to where the other
+    starts (the picture from a keyframe there), and the sound's packets
+    are timed on the picture's timeline (each was measured from its own
+    input's start).
+  - The reader counted its read-ahead from the last picture shown, which
+    stood still while none were: it looked 10 s ahead with nothing in
+    hand, so on RISC OS (one core, threads run only while Reel gives them
+    time) it was hardly given time, the picture never caught up and the
+    sound ran dry. It counts from the clock when that's further on, and
+    an empty queue always gets the reader time. The log's net figures say
+    where from (`ahead of N`).
+  - net_test: a live stream as two playlists, the sound starting 7 s
+    later (the first picture where the sound starts); 40 s of every
+    picture thrown away (the reader counts from the clock). Both
+    mutation-checked.
 - **Reel reads further ahead from the network:** 30 seconds (or 48MB),
   not 10 (or 32MB), so a connection that comes in bursts has more in hand.
 

@@ -209,6 +209,7 @@ struct ReelCore {
     unsigned pace_seq;                 /* n_shown + dropped then: the next must follow it */
     double pace_sum;
     unsigned pace_n;
+    double clock_seen;                 /* the clock when reelcore_update last looked (-1e9: not yet) */
     double stall_clock;                /* the sound clock when it last moved ... */
     int64_t stall_since;               /* ... and when that was */
     int64_t live_wait_t0;              /* a live stream: when its first picture began waiting for NET_LIVE_START */
@@ -972,6 +973,11 @@ struct Net {
     AVFormatContext *old_afmt[NET_REOPENS];
     int reopens;
     double skip_sound_to;              /* after reopening: sound already read, dropped */
+    /* a live stream's picture and sound from two inputs that start at
+       different points: the one that starts earlier dropped up to where
+       the other starts (the picture up to a keyframe there) */
+    int align_video, align_sound;
+    double align_to;
 };
 
 int reelcore_is_network(const char *url)
@@ -1178,17 +1184,23 @@ static double net_ahead(const ReelCore *v)
     return a;
 }
 
-/* Seconds of a packet from the start of its input */
-static double pkt_time(AVFormatContext *fc, const AVPacket *p)
+/* Seconds of a packet from the start of the video's input. The sound from
+   another input is on the same timeline (its packets are played by their
+   own times): a live stream's two playlists start at different points
+   (YouTube: the sound's 6 segments back can be seconds after the
+   picture's), and measured from its own start the sound looked seconds
+   behind where it was. */
+static double pkt_time(const ReelCore *v, AVFormatContext *fc, const AVPacket *p)
 {
     AVStream *st = fc->streams[p->stream_index];
     int64_t t = p->pts != AV_NOPTS_VALUE ? p->pts : p->dts;
+    int64_t start = v->fmt && v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time : fc->start_time;
     double s;
     if (t == AV_NOPTS_VALUE)
         return AV_NOPTS_VALUE;
     s = t * av_q2d(st->time_base);
-    if (fc->start_time != AV_NOPTS_VALUE)
-        s -= fc->start_time / (double)AV_TIME_BASE;
+    if (start != AV_NOPTS_VALUE)
+        s -= start / (double)AV_TIME_BASE;
     return s;
 }
 
@@ -1202,6 +1214,17 @@ static int pkt_kind(const ReelCore *v, AVFormatContext *fc, const AVPacket *p)
     if (fc == v->fmt && p->stream_index == v->sub_stream && v->sub_stream >= 0)
         return 2;
     return -1;
+}
+
+static void seek_input(AVFormatContext *fc, double seconds);
+
+/* Seeks the sound's own input to SECONDS from the start of the video's
+   (pkt_time's timeline) */
+static void seek_sound(const ReelCore *v, AVFormatContext *fc, double seconds)
+{
+    if (v->fmt->start_time != AV_NOPTS_VALUE && fc->start_time != AV_NOPTS_VALUE)
+        seconds += (v->fmt->start_time - fc->start_time) / (double)AV_TIME_BASE;
+    seek_input(fc, seconds);
 }
 
 static void seek_input(AVFormatContext *fc, double seconds)
@@ -1245,7 +1268,7 @@ static int net_reopen_sound(ReelCore *v, const ReelCoreSource *src, int err)
         for (unsigned i = 0; i < nf->nb_streams; i++)
             nf->streams[i]->discard = (int)i == v->as ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
         if (len > 0)
-            seek_input(nf, at);
+            seek_sound(v, nf, at);
     }
     pthread_mutex_lock(&n->lock);
     if (ret < 0 || serial != n->serial || n->quit) {
@@ -1286,6 +1309,16 @@ static void *net_thread(void *arg)
     else if (select_streams(v) < 0)
         ret = -1;
     pthread_mutex_lock(&n->lock);
+    if (ret >= 0 && v->afmt && v->fmt->start_time != AV_NOPTS_VALUE && v->afmt->start_time != AV_NOPTS_VALUE) {
+        double d = (v->afmt->start_time - v->fmt->start_time) / (double)AV_TIME_BASE;   /* the sound starts later by */
+        if (d > 0.2 || d < -0.2) {
+            n->align_video = d > 0;
+            n->align_sound = d < 0;
+            n->align_to = d > 0 ? d : 0;
+            av_log(NULL, AV_LOG_INFO, "reelcore: the sound's input starts %.2f s %s the picture's: %s\n", fabs(d),
+                   d > 0 ? "after" : "before", d > 0 ? "the picture from a keyframe there" : "the sound from the picture's start");
+        }
+    }
     n->state = ret < 0 || !pkt ? -1 : 1;
     if (n->state < 0)
         snprintf(n->error, sizeof(n->error), "%s", n->quit ? "stopped" : last_error);
@@ -1306,12 +1339,13 @@ static void *net_thread(void *arg)
             pthread_mutex_unlock(&n->lock);
             seek_input(v->fmt, to);
             if (v->afmt)
-                seek_input(v->afmt, to);
+                seek_sound(v, v->afmt, to);
             pthread_mutex_lock(&n->lock);
             if (serial == n->serial) {
                 net_flush(n);
                 n->eof[0] = n->eof[1] = n->eof_all = 0;
                 n->skip_sound_to = -1e9;
+                n->align_video = n->align_sound = 0;
             }
             continue;
         }
@@ -1353,9 +1387,21 @@ static void *net_thread(void *arg)
         n->bytes_read += pkt->size;
         {
             int kind = pkt_kind(v, fc, pkt);
-            double t = pkt_time(fc, pkt);
+            double t = pkt_time(v, fc, pkt);
             if (kind == 1 && t != AV_NOPTS_VALUE && t <= n->skip_sound_to)
                 kind = -1;                 /* (read before the sound was opened again) */
+            if (kind == 0 && n->align_video) {  /* (up to a second before the sound: late, decoded and passed over) */
+                if (t != AV_NOPTS_VALUE && t >= n->align_to - 1.0 && (pkt->flags & AV_PKT_FLAG_KEY))
+                    n->align_video = 0;
+                else
+                    kind = -1;
+            }
+            if (kind == 1 && n->align_sound) {
+                if (t != AV_NOPTS_VALUE && t >= -0.05)
+                    n->align_sound = 0;
+                else
+                    kind = -1;
+            }
             if (kind >= 0)
                 net_push(n, pkt, kind, t);
             av_packet_unref(pkt);
@@ -1375,7 +1421,7 @@ static void net_give_time(ReelCore *v, int ms)
     for (;;) {
         int enough;
         pthread_mutex_lock(&v->net->lock);
-        enough = v->net->state && (v->net->eof_all || net_ahead(v) >= NET_LOW);
+        enough = v->net->state && (v->net->eof_all || (v->net->n && net_ahead(v) >= NET_LOW));
         pthread_mutex_unlock(&v->net->lock);
         if (enough || av_gettime_relative() >= end)
             break;
@@ -1398,6 +1444,7 @@ static ReelCore *core_alloc(int flags)
     v->audio_end = -1;
     v->seek_target = v->aseek_target = -1;
     v->need_first = 1;
+    v->clock_seen = -1e9;
     v->volume = SDL_MIX_MAXVOLUME;
     v->vol = 1;
     v->speed = 1;
@@ -1516,10 +1563,28 @@ int reelcore_net(const ReelCore *v, ReelCoreNet *st)
     st->bytes_ahead = (unsigned)n->bytes;
     st->bytes_read = n->bytes_read;
     st->ended = n->eof_all;
+    st->from = n->play_pos;
     st->buffering = v->ready && !n->eof_all && (n->n == 0 || v->live_hold) && !v->paused;
     snprintf(st->error, sizeof(st->error), "%s", n->state < 0 ? n->error : n->read_error);
     pthread_mutex_unlock(&n->lock);
     return 1;
+}
+
+/* Where playback has got to, for the reader's read-ahead (seconds from
+   the start): the picture shown, or the clock if that's further on (no
+   picture shown for a while: all of them late, or the decoder slow). By
+   the picture alone, a video behind its sound looked read far ahead, the
+   reader all but stopped, and the picture never caught up (a YouTube live
+   stream on a CM4: no picture, then no sound either). */
+static double play_position(const ReelCore *v)
+{
+    double p = reelcore_position(v);
+    if (v->ready && v->cur && !v->paused && v->clock_seen > -1e8) {
+        double c = v->clock_seen - (v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time / (double)AV_TIME_BASE : 0);
+        if (c > p)
+            p = c;
+    }
+    return p;
 }
 
 /* The next packet to decode: 0 with *kind (0 video, 1 sound, -1 not
@@ -1531,7 +1596,7 @@ static int next_packet(ReelCore *v, AVPacket *pkt, int *kind)
         struct Net *n = v->net;
         int ret;
         pthread_mutex_lock(&n->lock);
-        n->play_pos = reelcore_position(v);
+        n->play_pos = play_position(v);
         if (n->n) {
             NetPkt *e = &n->q[n->head];
             av_packet_move_ref(pkt, e->pkt);
@@ -1562,7 +1627,7 @@ static int next_packet(ReelCore *v, AVPacket *pkt, int *kind)
                 continue;
             }
             {
-                double t = pkt_time(fc, pkt);
+                double t = pkt_time(v, fc, pkt);
                 if (t != AV_NOPTS_VALUE && t > v->lpts[k])
                     v->lpts[k] = t;
             }
@@ -1690,8 +1755,8 @@ int reelcore_debug(const ReelCore *v, char *buf, int size)
     if (v->net) {
         ReelCoreNet ns;
         reelcore_net(v, &ns);
-        n += snprintf(buf + n, size - n, "; net %s%.1f s ahead (%u KB), %lld KB read%s%s",
-                      ns.opening ? "opening, " : ns.buffering ? "BUFFERING, " : "", ns.ahead,
+        n += snprintf(buf + n, size - n, "; net %s%.1f s ahead of %.2f (%u KB), %lld KB read%s%s",
+                      ns.opening ? "opening, " : ns.buffering ? "BUFFERING, " : "", ns.ahead, ns.from,
                       ns.bytes_ahead >> 10, ns.bytes_read >> 10, ns.ended ? ", all read" : "",
                       ns.error[0] ? ", " : "");
         if (ns.error[0] && n < size)
@@ -3196,8 +3261,8 @@ int reelcore_update(ReelCore *v)
     if (v->net) {
         int low;
         pthread_mutex_lock(&v->net->lock);
-        v->net->play_pos = reelcore_position(v);
-        low = !v->net->eof_all && net_ahead(v) < NET_LOW;
+        v->net->play_pos = play_position(v);
+        low = !v->net->eof_all && (v->net->n == 0 || net_ahead(v) < NET_LOW);   /* (nothing in hand: the picture and sound wait) */
         pthread_mutex_unlock(&v->net->lock);
         if (low)
             net_give_time(v, 8);
@@ -3246,6 +3311,7 @@ int reelcore_update(ReelCore *v)
     now = clock_now(v);
     slip_check(v, now);
     now = clock_now(v);
+    v->clock_seen = now;
     if (v->qn && v->qpts[0] <= now + 0.005) {
         /* skip the frames that are already late: those whose next is due
            more than a picture's time ago. A picture that took longer than
@@ -3378,6 +3444,7 @@ int reelcore_seek(ReelCore *v, double seconds)
     int ret;
     if (!v->ready)
         return AVERROR(EAGAIN);
+    v->clock_seen = -1e9;
     if (v->fmt->start_time != AV_NOPTS_VALUE)
         ts += v->fmt->start_time;
     if (v->net) {                          /* the reader seeks; its queue is from before */
@@ -3387,6 +3454,7 @@ int reelcore_seek(ReelCore *v, double seconds)
         v->net->seek_to = seconds;
         net_flush(v->net);
         v->net->eof[0] = v->net->eof[1] = v->net->eof_all = 0;
+        v->net->align_video = v->net->align_sound = 0;
         v->net->play_pos = seconds;
         pthread_cond_signal(&v->net->cond);
         pthread_mutex_unlock(&v->net->lock);
@@ -3395,7 +3463,7 @@ int reelcore_seek(ReelCore *v, double seconds)
         if (ret < 0)
             return ret;
         if (v->afmt) {
-            seek_input(v->afmt, seconds);
+            seek_sound(v, v->afmt, seconds);
             v->lpts[0] = v->lpts[1] = -1e9;
             v->leof[0] = v->leof[1] = 0;
         }

@@ -102,6 +102,8 @@ typedef struct ReelCoreNet {
     unsigned bytes_ahead;              /* ... in bytes */
     long long bytes_read;              /* in all */
     char error[200];                   /* why it failed, or reading stopped; "" */
+    double from;                       /* where the read-ahead counts from: the picture shown, or the
+                                          clock when that's further on (no picture for a while) */
 } ReelCoreNet;
 /* 0 (st cleared) for a file; 1 for an address */
 int reelcore_net(const ReelCore *v, ReelCoreNet *st);

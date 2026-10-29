@@ -11,7 +11,14 @@
  *   3. the HTTP headers and user agent reach the server;
  *   4. an address that isn't there: REELCORE_FAILED with the reason;
  *   5. a server that never answers: closing while opening returns at once;
- *   6. reelcore_is_network.
+ *   6. reelcore_is_network;
+ *   7. subtitles from an address; 8. a live HLS stream; 9. the sound's own
+ *      address cut half way;
+ *  10. a live stream as two playlists, the sound's starting 6 s after the
+ *      picture's: the picture starts where the sound does;
+ *  11. the sound and picture apart with every picture thrown away for 40 s
+ *      (as when all are late): the reader keeps reading by the clock, so
+ *      the sound doesn't run dry.
  *
  *   net_test BASE_URL SILENT_URL SAMPLES_DIR HEADER_LOG
  *   (BASE_URL serves SAMPLES_DIR, which has long_h264_aac_322_184.mp4 and
@@ -24,10 +31,25 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <time.h>
+#include <libavcodec/avcodec.h>
 #include "reelcore.h"
 #include "fake_sdl_gl.h"
 
 static int fails;
+
+/* case 11: pictures decoded and thrown away (a hardware decoder's
+   drop_before, every picture late) */
+static int drop_pictures;
+int __real_avcodec_receive_frame(AVCodecContext *c, AVFrame *f);
+int __wrap_avcodec_receive_frame(AVCodecContext *c, AVFrame *f)
+{
+    int r = __real_avcodec_receive_frame(c, f);
+    while (r >= 0 && drop_pictures && c->codec_type == AVMEDIA_TYPE_VIDEO) {
+        av_frame_unref(f);
+        r = __real_avcodec_receive_frame(c, f);
+    }
+    return r;
+}
 #define CHECK(c, ...) do { if (!(c)) { printf("FAIL: " __VA_ARGS__); printf("\n"); fails++; } } while (0)
 
 static double real_now(void)
@@ -349,6 +371,87 @@ int main(int argc, char **argv)
                   (fake_queued_total - q0) / (48000 * 4.0), dur);
             reelcore_close(v);
         }
+    }
+
+    /* 10. a live stream as two playlists (TubeSearch's YouTube live: the
+       picture's variant and the sound's AUDIO playlist), each started 6
+       segments back: the sound's segments are shorter, so it starts 6 s
+       after the picture. Before, the picture started 6 s behind the sound
+       and stayed behind (on a CM4, every picture given back late) */
+    snprintf(vfile, sizeof(vfile), "%s/livev.m3u8", base);
+    snprintf(afile, sizeof(afile), "%s/livea.m3u8", base);
+    memset(&src, 0, sizeof(src));
+    src.url = vfile;
+    src.audio_url = afile;
+    v = reelcore_open_source(&src, REELCORE_ASYNC);
+    CHECK(v != NULL, "live, two playlists: open");
+    if (v) {
+        double first = -1;
+        unsigned late0;
+        ReelCoreStats st;
+        r = pump(v, REELCORE_READY, 20, NULL);
+        CHECK(r == REELCORE_READY, "live, two playlists: %d (want READY), %s", r, reelcore_last_error());
+        r = pump(v, -1, 30, NULL);
+        if (r == REELCORE_NEW_FRAME)
+            first = reelcore_position(v);
+        reelcore_stats(v, &st);
+        late0 = st.late;
+        for (double end = fake_time + 2.0; fake_time < end; ) {
+            reelcore_update(v);
+            fake_time += 0.01;
+            usleep(1000);
+        }
+        reelcore_stats(v, &st);
+        printf("  live, two playlists (the sound 6 s later): first picture at %.2f s, the clock from the %s, "
+               "%u pictures late in the 2 s after\n", first, st.clock_source == 1 ? "sound" : "timer", st.late - late0);
+        CHECK(first >= 4.9 && first <= 7.6, "live, two playlists: the first picture at %.2f s (want 5-7.5: where the sound "
+              "starts)", first);
+        CHECK(st.clock_source == 1 && st.late - late0 < 5, "live, two playlists: clock %d, %u pictures late",
+              st.clock_source, st.late - late0);
+        reelcore_close(v);
+    }
+
+    /* 11. picture and sound apart, every picture thrown away for 40 s: the
+       reader goes by the clock (the sound playing on), not the last
+       picture shown, so it keeps reading and the sound never runs dry */
+    snprintf(vfile, sizeof(vfile), "%s/long_video_only.mp4", base);
+    snprintf(afile, sizeof(afile), "%s/long_sound_only.m4a", base);
+    memset(&src, 0, sizeof(src));
+    src.url = vfile;
+    src.audio_url = afile;
+    v = reelcore_open_source(&src, 0);
+    CHECK(v != NULL, "no pictures for 40 s: open: %s", reelcore_last_error());
+    if (v) {
+        ReelCoreStats st;
+        double t0, dry = 0, p0, pos0, from = 0;
+        pump(v, -1, 10, NULL);
+        reelcore_stats(v, &st);
+        p0 = st.clock;
+        pos0 = reelcore_position(v);
+        drop_pictures = 1;
+        t0 = fake_time;
+        while (fake_time < t0 + 40) {
+            reelcore_update(v);
+            reelcore_stats(v, &st);
+            if (fake_time > t0 + 1 && st.sound_queued <= 0)
+                dry += 0.01;
+            if (fake_time < t0 + 20) {
+                reelcore_net(v, &ns);
+                from = ns.from;
+            }
+            fake_time += 0.01;
+            usleep(1500);
+        }
+        drop_pictures = 0;
+        reelcore_stats(v, &st);
+        reelcore_net(v, &ns);
+        printf("  no pictures for 40 s: the clock went %.1f s on, the sound ran dry for %.1f s; 20 s in, the reader "
+               "counted from %.1f s (the picture at %.1f s)\n", st.clock - p0, dry, from - pos0, st.position - pos0);
+        CHECK(st.clock - p0 > 38 && dry < 0.5 && reelcore_has_audio(v),
+              "no pictures for 40 s: the clock %.1f s on, the sound dry for %.1f s", st.clock - p0, dry);
+        CHECK(from - pos0 > 19 && from - pos0 < 21, "no pictures for 40 s: 20 s in, the reader counted from %.1f s "
+              "(want the clock's 20 s, not the picture's %.1f s)", from - pos0, st.position - pos0);
+        reelcore_close(v);
     }
 
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
