@@ -5,4 +5,4 @@
 # (ci/riscos-deps-hook.sh moves those with these lines).
 riscos-crossdev v1.8.2
 riscos-mesa v20.3.5-17
-riscos-reelhwaccel v0.2.18
+riscos-reelhwaccel v0.2.21
