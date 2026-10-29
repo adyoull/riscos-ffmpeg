@@ -41,6 +41,13 @@ static void cur_changed(ReelCore *v);
 #include <arm_neon.h>                 /* reelcore_halve: 2x2 averages, 8 at a time */
 #define REELCORE_NEON 1
 #endif
+/* Subtitles and the stats panel blended into the picture: NEON, columns
+   worked out once a placing, and the layer's colours only for new pixels.
+   REELCORE_PLAIN_LAYERS: the plain C for all of it (blend_test draws with
+   both and compares). */
+#if defined(REELCORE_NEON) && !defined(REELCORE_PLAIN_LAYERS)
+#define LAYER_NEON 1
+#endif
 
 /* On RISC OS the sound goes straight to SharedSoundBuffer/StreamManager
    from this (the caller's) thread: StreamManager plays it from interrupts,
@@ -98,9 +105,10 @@ static void cur_changed(ReelCore *v);
 #define FAST_PROBE    10.0
 #define FAST_PROBE_MAX 160.0
 #define FAST_REGRET   8.0    /* off again this soon after a try: the try failed */
-#define NET_AHEAD     10.0   /* network: seconds read ahead of the picture shown */
-#define NET_MAX_BYTES (32 << 20)  /* ... and at most this much */
+#define NET_AHEAD     30.0   /* network: seconds read ahead of the picture shown (a slow or bursty connection rides out more) */
+#define NET_MAX_BYTES (48 << 20)  /* ... and at most this much */
 #define NET_LOW       3.0    /* below this, reelcore_update gives the reader time */
+#define NET_REOPENS   5      /* tries at opening the sound's own address again after it stopped early */
 #define NET_LIVE_START 4.0   /* a live stream: seconds read before its first picture is shown ... */
 #define NET_LIVE_WAIT  10.0  /* ... waiting at most this long for them */
 #define NET_LIVE_INDEX "-6"  /* live HLS: started this many segments behind the newest (FFmpeg: -3) */
@@ -208,6 +216,7 @@ struct ReelCore {
     unsigned pace_seq;                 /* n_shown + dropped then: the next must follow it */
     double pace_sum;
     unsigned pace_n;
+    double clock_seen;                 /* the clock when reelcore_update last looked (-1e9: not yet) */
     double stall_clock;                /* the sound clock when it last moved ... */
     int64_t stall_since;               /* ... and when that was */
     int64_t live_wait_t0;              /* a live stream: when its first picture began waiting for NET_LIVE_START */
@@ -286,6 +295,8 @@ struct ReelCore {
     unsigned pend_len, pend_size;
     unsigned added_bytes, added_blocks;
     unsigned ssb_refused, ssb_stat_added, ssb_stat_played;   /* for reelcore_debug */
+    int ssb_restarts;                  /* the stream started again after it stopped playing ... */
+    int64_t ssb_restart_t;             /* ... the last time */
 #endif
 
     /* timer clock (no sound, or after the sound ended) */
@@ -655,6 +666,19 @@ static double queued_audio(const ReelCore *v)
     return v->dev && !v->stalled ? aud_queued((ReelCore *)v) / (double)v->bytes_per_sec : 0;
 }
 
+/* The sound the device itself holds, not yet played. With SharedSoundBuffer
+   that leaves out the bit still waiting to make a whole block: run dry (the
+   sound from the network late, while the picture buffered), StreamManager
+   has nothing to play and rightly plays nothing, and that isn't a stall. */
+static double device_audio(const ReelCore *v)
+{
+#ifdef USE_SSB
+    if (v->ssb)
+        return v->dev && !v->stalled ? ssb_unplayed((ReelCore *)v) / (double)v->bytes_per_sec : 0;
+#endif
+    return queued_audio(v);
+}
+
 /* If the sound device takes none of the queued sound for this long while
    playing, it isn't playing (e.g. no SharedSoundBuffer on RISC OS): stop
    sending it sound and let the timer drive the pictures, which would
@@ -663,13 +687,35 @@ static double queued_audio(const ReelCore *v)
 
 static void timer_set(ReelCore *v, double pts);
 
+/* SharedSoundBuffer streams that stop playing (after running dry, say)
+   are started afresh, up to this many times a minute, before going on
+   without sound */
+#define SSB_RESTARTS 3
+
 static void audio_stalled(ReelCore *v, double c)
 {
-    {
-        char d[200];
-        reelcore_debug(v, d, sizeof(d));
-        av_log(NULL, AV_LOG_WARNING, "reelcore: the sound device isn't playing; carrying on without sound (%s)\n", d);
+    char d[200];
+    reelcore_debug(v, d, sizeof(d));
+#ifdef USE_SSB
+    if (v->ssb && v->ssb_started && av_gettime_relative() - v->ssb_restart_t > 60 * 1000000LL)
+        v->ssb_restarts = 0;
+    if (v->ssb && v->ssb_started && v->ssb_restarts < SSB_RESTARTS) {
+        /* it played before: a new stream, rather than no sound from here
+           on (the sound it held is lost; the clock moves on past it) */
+        v->ssb_restarts++;
+        v->ssb_restart_t = av_gettime_relative();
+        av_log(NULL, AV_LOG_WARNING, "reelcore: the sound stopped playing; starting it again (%d of %d; %s)\n",
+               v->ssb_restarts, SSB_RESTARTS, d);
+        aud_clear(v);
+        if (!v->stalled) {
+            aud_pause(v, v->paused);
+            v->stall_since = 0;
+            v->sm_valid = 0;
+            return;
+        }
     }
+#endif
+    av_log(NULL, AV_LOG_WARNING, "reelcore: the sound device isn't playing; carrying on without sound (%s)\n", d);
     v->stalled = 1;
     aud_clear(v);
     aud_pause(v, 1);
@@ -756,7 +802,7 @@ static double clock_now(ReelCore *v)
                as much of the file */
             double c = v->audio_end - (q + v->latency) * v->speed;
             int64_t now = av_gettime_relative();
-            if (c > v->stall_clock + 0.001 || q <= 0 || !v->stall_since) {
+            if (c > v->stall_clock + 0.001 || device_audio(v) <= 0 || !v->stall_since) {
                 v->stall_clock = c;
                 v->stall_since = now;
             } else if (now - v->stall_since > (int64_t)(STALL_SECONDS * 1e6)) {
@@ -927,6 +973,18 @@ struct Net {
     double play_pos;                   /* the picture shown now (from the caller) */
     int64_t bytes_read;
     char read_error[160];              /* the connection failed while reading */
+    /* an input opened again after it stopped early (net_reopen); the
+       inputs replaced, kept until the close (the caller may still be using
+       their streams) */
+    AVFormatContext *old_fmt[2][NET_REOPENS];   /* [0] the picture's input, [1] the sound's */
+    int reopens[2];
+    AVFormatContext *vread;            /* the picture's input being read (v->fmt, or one opened again) */
+    double skip_sound_to, skip_video_to;   /* after reopening: what was already read, dropped */
+    /* a live stream's picture and sound from two inputs that start at
+       different points: the one that starts earlier dropped up to where
+       the other starts (the picture up to a keyframe there) */
+    int align_video, align_sound;
+    double align_to;
 };
 
 int reelcore_is_network(const char *url)
@@ -1133,17 +1191,23 @@ static double net_ahead(const ReelCore *v)
     return a;
 }
 
-/* Seconds of a packet from the start of its input */
-static double pkt_time(AVFormatContext *fc, const AVPacket *p)
+/* Seconds of a packet from the start of the video's input. The sound from
+   another input is on the same timeline (its packets are played by their
+   own times): a live stream's two playlists start at different points
+   (YouTube: the sound's 6 segments back can be seconds after the
+   picture's), and measured from its own start the sound looked seconds
+   behind where it was. */
+static double pkt_time(const ReelCore *v, AVFormatContext *fc, const AVPacket *p)
 {
     AVStream *st = fc->streams[p->stream_index];
     int64_t t = p->pts != AV_NOPTS_VALUE ? p->pts : p->dts;
+    int64_t start = v->fmt && v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time : fc->start_time;
     double s;
     if (t == AV_NOPTS_VALUE)
         return AV_NOPTS_VALUE;
     s = t * av_q2d(st->time_base);
-    if (fc->start_time != AV_NOPTS_VALUE)
-        s -= fc->start_time / (double)AV_TIME_BASE;
+    if (start != AV_NOPTS_VALUE)
+        s -= start / (double)AV_TIME_BASE;
     return s;
 }
 
@@ -1159,12 +1223,120 @@ static int pkt_kind(const ReelCore *v, AVFormatContext *fc, const AVPacket *p)
     return -1;
 }
 
+/* The kind of a packet the reader read from input K (0 the picture's, 1
+   the sound's), by its stream: the same in an input opened again */
+static int net_kind(const ReelCore *v, int k, const AVPacket *p)
+{
+    if (k)
+        return p->stream_index == v->as ? 1 : -1;
+    if (p->stream_index == v->vs)
+        return 0;
+    if (!v->afmt && p->stream_index == v->as)
+        return 1;
+    if (v->sub_stream >= 0 && p->stream_index == v->sub_stream)
+        return 2;
+    return -1;
+}
+
+static void seek_input(AVFormatContext *fc, double seconds);
+
+/* Seeks the sound's own input to SECONDS from the start of the video's
+   (pkt_time's timeline) */
+static void seek_sound(const ReelCore *v, AVFormatContext *fc, double seconds)
+{
+    if (v->fmt->start_time != AV_NOPTS_VALUE && fc->start_time != AV_NOPTS_VALUE)
+        seconds += (v->fmt->start_time - fc->start_time) / (double)AV_TIME_BASE;
+    seek_input(fc, seconds);
+}
+
 static void seek_input(AVFormatContext *fc, double seconds)
 {
     int64_t ts = (int64_t)(seconds * AV_TIME_BASE);
     if (fc->start_time != AV_NOPTS_VALUE)
         ts += fc->start_time;
     avformat_seek_file(fc, -1, INT64_MIN, ts, ts, 0);
+}
+
+/* An input stopped early: opened again, to go on from where it got to,
+   rather than playing the rest without sound or ending.
+   - The sound from an address of its own (TubeSearch's YouTube videos: the
+     picture and the sound as two HLS playlists, or two DASH addresses):
+     its connection failed, or it ended long before its length, while the
+     picture goes on.
+   - A live stream's picture (or the one input of a live stream with both):
+     its playlist couldn't be reloaded (AcornSSL's connection dropped, as on
+     a CM4 after 28 minutes of YouTube's Heathrow live stream); a live
+     stream has no end to reach. It's joined again where its playlist now
+     starts, from a keyframe, after what was read.
+   K: 0 the picture's input, 1 the sound's. Returns 1, opened again; 2, it
+   couldn't be yet, try again (after a wait that grows with each try: a
+   server away for a while); 0, give up. Lock held, and dropped while
+   opening. */
+static int net_reopen(ReelCore *v, const ReelCoreSource *src, int err, int k)
+{
+    struct Net *n = v->net;
+    AVFormatContext *nf = NULL, *old = k ? v->afmt : n->vread;
+    const char *url = k ? n->audio_url : n->url, *what = k ? "the sound" : "the picture";
+    double at = n->last[k] > 0 ? n->last[k] : n->play_pos;
+    double len = old->duration > 0 ? old->duration / (double)AV_TIME_BASE : 0;
+    int serial = n->serial, ret, st = k ? v->as : v->vs, tries = n->reopens[k];
+    char e[AV_ERROR_MAX_STRING_SIZE] = "the end";
+    if (!url || n->quit || tries >= NET_REOPENS || st < 0 ||
+        (k ? n->eof[0] || (err == AVERROR_EOF && len > 0 && at >= len - 2)   /* (the real end; live: may be either) */
+           : len > 0))                     /* (the picture: only a live stream's) */
+        return 0;
+    if (err != AVERROR_EOF)
+        av_strerror(err, e, sizeof(e));
+    av_log(NULL, AV_LOG_WARNING, "reelcore: %s stopped at %.2f s (%s): opening it again (%d of %d)\n",
+           what, at, e, tries + 1, NET_REOPENS);
+    pthread_mutex_unlock(&n->lock);
+    ret = open_input(v, &nf, url, src);
+    /* the stream it had, with the same time base (its packets' times would
+       be wrong otherwise); and the sound too, if it's in this input */
+    if (ret >= 0 && ((int)nf->nb_streams <= st ||
+                     nf->streams[st]->codecpar->codec_type != old->streams[st]->codecpar->codec_type ||
+                     av_cmp_q(nf->streams[st]->time_base, old->streams[st]->time_base) ||
+                     (!k && !v->afmt && v->as >= 0 && ((int)nf->nb_streams <= v->as ||
+                      av_cmp_q(nf->streams[v->as]->time_base, old->streams[v->as]->time_base)))))
+        ret = AVERROR_STREAM_NOT_FOUND;
+    if (ret >= 0) {
+        for (unsigned i = 0; i < nf->nb_streams; i++)
+            nf->streams[i]->discard = old->streams[i < old->nb_streams ? i : 0]->discard;
+        if (k && len > 0)
+            seek_sound(v, nf, at);
+    }
+    pthread_mutex_lock(&n->lock);
+    if (ret < 0 || serial != n->serial || n->quit) {
+        avformat_close_input(&nf);
+        if (serial != n->serial || n->quit)
+            return !n->quit;               /* (a seek meanwhile: go on with the old one) */
+        av_strerror(ret, e, sizeof(e));
+        av_log(NULL, AV_LOG_WARNING, "reelcore: can't open %s again: %s\n", what, e);
+        if (++n->reopens[k] >= NET_REOPENS)
+            return 0;
+        {   /* 1, 2, 4, 8 s (or until a seek, or the close); the caller
+               signals the condition for every packet taken, so time it */
+            int64_t end = av_gettime_relative() + (1000000LL << (n->reopens[k] - 1 < 3 ? n->reopens[k] - 1 : 3));
+            while (!n->quit && serial == n->serial && !n->seek_req && av_gettime_relative() < end)
+                net_wait(n, 100);
+        }
+        return 2;
+    }
+    n->old_fmt[k][n->reopens[k]++] = old;
+    if (k) {
+        n->skip_sound_to = at;
+        v->afmt = nf;                      /* (the caller reads it only for Media info) */
+    } else {
+        /* the picture again from a keyframe after what was read (and the
+           sound, if it's in this input); v->fmt stays (the timeline) */
+        n->skip_video_to = at;
+        n->align_video = 1;
+        n->align_to = at;
+        if (!v->afmt)
+            n->skip_sound_to = n->last[1];
+        n->vread = nf;
+    }
+    return 1;
 }
 
 static void *net_thread(void *arg)
@@ -1183,6 +1355,17 @@ static void *net_thread(void *arg)
     else if (select_streams(v) < 0)
         ret = -1;
     pthread_mutex_lock(&n->lock);
+    n->vread = v->fmt;
+    if (ret >= 0 && v->afmt && v->fmt->start_time != AV_NOPTS_VALUE && v->afmt->start_time != AV_NOPTS_VALUE) {
+        double d = (v->afmt->start_time - v->fmt->start_time) / (double)AV_TIME_BASE;   /* the sound starts later by */
+        if (d > 0.2 || d < -0.2) {
+            n->align_video = d > 0;
+            n->align_sound = d < 0;
+            n->align_to = d > 0 ? d : 0;
+            av_log(NULL, AV_LOG_INFO, "reelcore: the sound's input starts %.2f s %s the picture's: %s\n", fabs(d),
+                   d > 0 ? "after" : "before", d > 0 ? "the picture from a keyframe there" : "the sound from the picture's start");
+        }
+    }
     n->state = ret < 0 || !pkt ? -1 : 1;
     if (n->state < 0)
         snprintf(n->error, sizeof(n->error), "%s", n->quit ? "stopped" : last_error);
@@ -1201,13 +1384,15 @@ static void *net_thread(void *arg)
             serial = n->serial;
             n->seek_req = 0;
             pthread_mutex_unlock(&n->lock);
-            seek_input(v->fmt, to);
+            seek_input(n->vread, to);
             if (v->afmt)
-                seek_input(v->afmt, to);
+                seek_sound(v, v->afmt, to);
             pthread_mutex_lock(&n->lock);
             if (serial == n->serial) {
                 net_flush(n);
                 n->eof[0] = n->eof[1] = n->eof_all = 0;
+                n->skip_sound_to = n->skip_video_to = -1e9;
+                n->align_video = n->align_sound = 0;
             }
             continue;
         }
@@ -1218,7 +1403,7 @@ static void *net_thread(void *arg)
         }
         /* from the input that's behind */
         k = v->afmt && !n->eof[1] && (n->eof[0] || n->last[1] < n->last[0]) ? 1 : 0;
-        fc = k ? v->afmt : v->fmt;
+        fc = k ? v->afmt : n->vread;
         serial = n->serial;
         pthread_mutex_unlock(&n->lock);
         ret = av_read_frame(fc, pkt);
@@ -1238,15 +1423,34 @@ static void *net_thread(void *arg)
                 snprintf(n->read_error, sizeof(n->read_error), "reading stopped: %s", e);
                 av_log(NULL, AV_LOG_WARNING, "reelcore: %s\n", n->read_error);
             }
+            if (ret != AVERROR_EXIT && net_reopen(v, &src, ret, k)) {
+                n->read_error[0] = 0;
+                continue;
+            }
             n->eof[k] = 1;
             n->eof_all = n->eof[0] && (!v->afmt || n->eof[1]);
             continue;
         }
         n->bytes_read += pkt->size;
         {
-            int kind = pkt_kind(v, fc, pkt);
+            int kind = net_kind(v, k, pkt);
+            double t = pkt_time(v, fc, pkt);
+            if (t != AV_NOPTS_VALUE && ((kind == 1 && t <= n->skip_sound_to) || (kind == 0 && t <= n->skip_video_to)))
+                kind = -1;                 /* (read before its input was opened again) */
+            if (kind == 0 && n->align_video) {  /* (up to a second before the sound: late, decoded and passed over) */
+                if (t != AV_NOPTS_VALUE && t >= n->align_to - 1.0 && (pkt->flags & AV_PKT_FLAG_KEY))
+                    n->align_video = 0;
+                else
+                    kind = -1;
+            }
+            if (kind == 1 && n->align_sound) {
+                if (t != AV_NOPTS_VALUE && t >= -0.05)
+                    n->align_sound = 0;
+                else
+                    kind = -1;
+            }
             if (kind >= 0)
-                net_push(n, pkt, kind, pkt_time(fc, pkt));
+                net_push(n, pkt, kind, t);
             av_packet_unref(pkt);
         }
     }
@@ -1264,7 +1468,7 @@ static void net_give_time(ReelCore *v, int ms)
     for (;;) {
         int enough;
         pthread_mutex_lock(&v->net->lock);
-        enough = v->net->state && (v->net->eof_all || net_ahead(v) >= NET_LOW);
+        enough = v->net->state && (v->net->eof_all || (v->net->n && net_ahead(v) >= NET_LOW));
         pthread_mutex_unlock(&v->net->lock);
         if (enough || av_gettime_relative() >= end)
             break;
@@ -1287,6 +1491,7 @@ static ReelCore *core_alloc(int flags)
     v->audio_end = -1;
     v->seek_target = v->aseek_target = -1;
     v->need_first = 1;
+    v->clock_seen = -1e9;
     v->volume = SDL_MIX_MAXVOLUME;
     v->vol = 1;
     v->speed = 1;
@@ -1316,6 +1521,7 @@ ReelCore *reelcore_open_source(const ReelCoreSource *src, int flags)
         pthread_mutex_init(&n->lock, NULL);
         pthread_cond_init(&n->cond, NULL);
         n->last[0] = n->last[1] = n->last[2] = -1e9;
+        n->skip_sound_to = n->skip_video_to = -1e9;
         n->url = av_strdup(src->url);
         n->audio_url = src->audio_url ? av_strdup(src->audio_url) : NULL;
         n->headers = src->headers ? av_strdup(src->headers) : NULL;
@@ -1404,10 +1610,28 @@ int reelcore_net(const ReelCore *v, ReelCoreNet *st)
     st->bytes_ahead = (unsigned)n->bytes;
     st->bytes_read = n->bytes_read;
     st->ended = n->eof_all;
+    st->from = n->play_pos;
     st->buffering = v->ready && !n->eof_all && (n->n == 0 || v->live_hold) && !v->paused;
     snprintf(st->error, sizeof(st->error), "%s", n->state < 0 ? n->error : n->read_error);
     pthread_mutex_unlock(&n->lock);
     return 1;
+}
+
+/* Where playback has got to, for the reader's read-ahead (seconds from
+   the start): the picture shown, or the clock if that's further on (no
+   picture shown for a while: all of them late, or the decoder slow). By
+   the picture alone, a video behind its sound looked read far ahead, the
+   reader all but stopped, and the picture never caught up (a YouTube live
+   stream on a CM4: no picture, then no sound either). */
+static double play_position(const ReelCore *v)
+{
+    double p = reelcore_position(v);
+    if (v->ready && v->cur && !v->paused && v->clock_seen > -1e8) {
+        double c = v->clock_seen - (v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time / (double)AV_TIME_BASE : 0);
+        if (c > p)
+            p = c;
+    }
+    return p;
 }
 
 /* The next packet to decode: 0 with *kind (0 video, 1 sound, -1 not
@@ -1419,7 +1643,7 @@ static int next_packet(ReelCore *v, AVPacket *pkt, int *kind)
         struct Net *n = v->net;
         int ret;
         pthread_mutex_lock(&n->lock);
-        n->play_pos = reelcore_position(v);
+        n->play_pos = play_position(v);
         if (n->n) {
             NetPkt *e = &n->q[n->head];
             av_packet_move_ref(pkt, e->pkt);
@@ -1450,7 +1674,7 @@ static int next_packet(ReelCore *v, AVPacket *pkt, int *kind)
                 continue;
             }
             {
-                double t = pkt_time(fc, pkt);
+                double t = pkt_time(v, fc, pkt);
                 if (t != AV_NOPTS_VALUE && t > v->lpts[k])
                     v->lpts[k] = t;
             }
@@ -1492,6 +1716,12 @@ void reelcore_close(ReelCore *v)
             pthread_join(n->th, NULL);
         }
         net_flush(n);
+        for (int k = 0; k < 2; k++)
+            for (int i = 0; i < NET_REOPENS; i++)
+                if (n->old_fmt[k][i] != v->fmt)
+                    avformat_close_input(&n->old_fmt[k][i]);
+        if (n->vread != v->fmt)
+            avformat_close_input(&n->vread);
         av_free(n->q);
         av_free(n->url);
         av_free(n->audio_url);
@@ -1576,8 +1806,8 @@ int reelcore_debug(const ReelCore *v, char *buf, int size)
     if (v->net) {
         ReelCoreNet ns;
         reelcore_net(v, &ns);
-        n += snprintf(buf + n, size - n, "; net %s%.1f s ahead (%u KB), %lld KB read%s%s",
-                      ns.opening ? "opening, " : ns.buffering ? "BUFFERING, " : "", ns.ahead,
+        n += snprintf(buf + n, size - n, "; net %s%.1f s ahead of %.2f (%u KB), %lld KB read%s%s",
+                      ns.opening ? "opening, " : ns.buffering ? "BUFFERING, " : "", ns.ahead, ns.from,
                       ns.bytes_ahead >> 10, ns.bytes_read >> 10, ns.ended ? ", all read" : "",
                       ns.error[0] ? ", " : "");
         if (ns.error[0] && n < size)
@@ -3082,8 +3312,8 @@ int reelcore_update(ReelCore *v)
     if (v->net) {
         int low;
         pthread_mutex_lock(&v->net->lock);
-        v->net->play_pos = reelcore_position(v);
-        low = !v->net->eof_all && net_ahead(v) < NET_LOW;
+        v->net->play_pos = play_position(v);
+        low = !v->net->eof_all && (v->net->n == 0 || net_ahead(v) < NET_LOW);   /* (nothing in hand: the picture and sound wait) */
         pthread_mutex_unlock(&v->net->lock);
         if (low)
             net_give_time(v, 8);
@@ -3132,6 +3362,7 @@ int reelcore_update(ReelCore *v)
     now = clock_now(v);
     slip_check(v, now);
     now = clock_now(v);
+    v->clock_seen = now;
     if (v->qn && v->qpts[0] <= now + 0.005) {
         /* skip the frames that are already late: those whose next is due
            more than a picture's time ago. A picture that took longer than
@@ -3264,6 +3495,7 @@ int reelcore_seek(ReelCore *v, double seconds)
     int ret;
     if (!v->ready)
         return AVERROR(EAGAIN);
+    v->clock_seen = -1e9;
     if (v->fmt->start_time != AV_NOPTS_VALUE)
         ts += v->fmt->start_time;
     if (v->net) {                          /* the reader seeks; its queue is from before */
@@ -3273,6 +3505,7 @@ int reelcore_seek(ReelCore *v, double seconds)
         v->net->seek_to = seconds;
         net_flush(v->net);
         v->net->eof[0] = v->net->eof[1] = v->net->eof_all = 0;
+        v->net->align_video = v->net->align_sound = 0;
         v->net->play_pos = seconds;
         pthread_cond_signal(&v->net->cond);
         pthread_mutex_unlock(&v->net->lock);
@@ -3281,7 +3514,7 @@ int reelcore_seek(ReelCore *v, double seconds)
         if (ret < 0)
             return ret;
         if (v->afmt) {
-            seek_input(v->afmt, seconds);
+            seek_sound(v, v->afmt, seconds);
             v->lpts[0] = v->lpts[1] = -1e9;
             v->leof[0] = v->leof[1] = 0;
         }
@@ -3574,6 +3807,97 @@ static void layer_box(Layer *L, int x, int y, int w, int h, int r, int g, int b,
 /* 16.16 fixed point: layer pixels per destination pixel */
 static int layer_step(double s) { return s > 0 ? (int)(65536 / s) : 65536; }
 
+/* The layer pixels a run of destination pixels takes, worked out once
+   rather than for every pixel of every row: lx[i] for destination x =
+   xa + i, while lx < lw. Kept for later calls with the same placing (a
+   subtitle and the panel are drawn the same way picture after picture,
+   row after row, into each plane: a few placings at once). Returns n, or
+   -1 without memory. */
+#define COLS_KEPT 4
+static int layer_columns(int x0, int ix, int sub, int xa, int xb, int lw, const int **lx)
+{
+    static struct { int key[6], *t, cap, n; } kept[COLS_KEPT];
+    static int next;
+    int key[6] = { x0, ix, sub, xa, xb, lw }, k;
+    for (k = 0; k < COLS_KEPT; k++)
+#ifndef REELCORE_PLAIN_LAYERS
+        if (kept[k].t && !memcmp(kept[k].key, key, sizeof(key))) {
+#else
+        if (0) {
+#endif
+            *lx = kept[k].t;
+            return kept[k].n;
+        }
+    k = next;
+    next = (next + 1) % COLS_KEPT;
+    if (xb - xa > kept[k].cap) {
+        int *b = av_realloc_array(kept[k].t, xb - xa, sizeof(*b));
+        if (!b)
+            return -1;
+        kept[k].t = b;
+        kept[k].cap = xb - xa;
+    }
+    kept[k].n = 0;
+    for (int x = xa; x < xb; x++) {
+        int c = (int)(((int64_t)(x * sub - x0) * ix) >> 16);
+        if (c >= lw)
+            break;
+        kept[k].t[kept[k].n++] = c;
+    }
+    memcpy(kept[k].key, key, sizeof(key));
+    *lx = kept[k].t;
+    return kept[k].n;
+}
+
+/* d (32bpp: R,G,B,x, or B,G,R,x with bgr) = s + d * (255 - s's alpha) / 255
+   for n pixels; s is the layer's premultiplied RGBA, pixel lx[i] of row
+   (or row's own n pixels in turn, lx NULL); where s's alpha is 0, d is left
+   as it was. Not static: blend_test checks it against the C. */
+void reelcore_blend_rgb_run(uint8_t *d, const uint8_t *row, const int *lx, int n, int bgr);
+void reelcore_blend_rgb_run(uint8_t *d, const uint8_t *row, const int *lx, int n, int bgr)
+{
+    int i = 0;
+#ifdef LAYER_NEON
+    for (; i + 8 <= n; i += 8, d += 32) {
+        uint8x8x4_t sv, dv;
+        uint8x8_t a, keep;
+        if (!lx)
+            sv = vld4_u8(row + i * 4);
+        else {
+            sv.val[0] = sv.val[1] = sv.val[2] = sv.val[3] = vdup_n_u8(0);
+            sv = vld4_lane_u8(row + lx[i] * 4, sv, 0);     /* (bytes: no alignment needed) */
+            sv = vld4_lane_u8(row + lx[i + 1] * 4, sv, 1);
+            sv = vld4_lane_u8(row + lx[i + 2] * 4, sv, 2);
+            sv = vld4_lane_u8(row + lx[i + 3] * 4, sv, 3);
+            sv = vld4_lane_u8(row + lx[i + 4] * 4, sv, 4);
+            sv = vld4_lane_u8(row + lx[i + 5] * 4, sv, 5);
+            sv = vld4_lane_u8(row + lx[i + 6] * 4, sv, 6);
+            sv = vld4_lane_u8(row + lx[i + 7] * 4, sv, 7);
+        }
+        dv = vld4_u8(d);
+        a = vmvn_u8(sv.val[3]);                            /* 255 - alpha */
+        keep = vceq_u8(sv.val[3], vdup_n_u8(0));
+        for (int c = 0; c < 3; c++) {
+            uint8x8_t sc = sv.val[c == 1 ? 1 : (c == 0) == !bgr ? 0 : 2];
+            uint16x8_t m = vmull_u8(dv.val[c], a);          /* <= 65025 */
+            m = vsraq_n_u16(vaddq_u16(m, vdupq_n_u16(1)), m, 8);   /* m + 1 + (m >> 8): DIV255 */
+            dv.val[c] = vbsl_u8(keep, dv.val[c], vadd_u8(sc, vshrn_n_u16(m, 8)));
+        }
+        vst4_u8(d, dv);
+    }
+#endif
+    for (; i < n; i++, d += 4) {
+        const uint8_t *s = row + (lx ? lx[i] : i) * 4;
+        int a;
+        if (!s[3])
+            continue;
+        a = 255 - s[3];
+        d[0] = (uint8_t)(s[bgr ? 2 : 0] + DIV255(d[0] * a));
+        d[1] = (uint8_t)(s[1] + DIV255(d[1] * a));
+        d[2] = (uint8_t)(s[bgr ? 0 : 2] + DIV255(d[2] * a));
+    }
+}
+
 /* Over 32bpp pixels (R,G,B,x, or B,G,R,x with bgr), w x h */
 static void layer_blend_rgb(const Place *pl, uint8_t *p, int pitch, int w, int h, int bgr)
 {
@@ -3581,27 +3905,21 @@ static void layer_blend_rgb(const Place *pl, uint8_t *p, int pitch, int w, int h
     int x0 = pl->x0, y0 = pl->y0, ix = layer_step(pl->sx), iy = layer_step(pl->sy);
     int xa = FFMAX(0, x0), ya = FFMAX(0, y0);
     int xb = FFMIN(w, x0 + (int)(L->w * pl->sx + 0.5)), yb = FFMIN(h, y0 + (int)(L->h * pl->sy + 0.5));
-    for (int y = ya; y < yb; y++) {
+    const int *lx = NULL;
+    int n;
+    if (xa >= xb)
+        return;
+    if (ix == 65536 && xa - x0 >= 0)           /* 1:1 (text subtitles, the panel): a run of the layer's row */
+        n = FFMIN(xb - xa, L->w - (xa - x0));
+    else if ((n = layer_columns(x0, ix, 1, xa, xb, L->w, &lx)) < 0)
+        return;
+    for (int y = ya; y < yb && n > 0; y++) {
         int ly = (int)(((int64_t)(y - y0) * iy) >> 16);
         const uint8_t *row;
-        uint8_t *d = p + (size_t)y * pitch + (size_t)xa * 4;
         if (ly >= L->h)
             break;
         row = L->rgba + (size_t)ly * L->w * 4;
-        for (int x = xa; x < xb; x++, d += 4) {
-            int lx = (int)(((int64_t)(x - x0) * ix) >> 16);
-            const uint8_t *s;
-            int a;
-            if (lx >= L->w)
-                break;
-            s = row + lx * 4;
-            if (!s[3])
-                continue;
-            a = 255 - s[3];
-            d[0] = (uint8_t)(s[bgr ? 2 : 0] + DIV255(d[0] * a));
-            d[1] = (uint8_t)(s[1] + DIV255(d[1] * a));
-            d[2] = (uint8_t)(s[bgr ? 0 : 2] + DIV255(d[2] * a));
-        }
+        reelcore_blend_rgb_run(p + (size_t)y * pitch + (size_t)xa * 4, lx ? row : row + (xa - x0) * 4, lx, n, bgr);
     }
 }
 
@@ -3633,18 +3951,46 @@ static int layer_yuv(Layer *L, int c)
         av_freep(&L->pm);
         return AVERROR(ENOMEM);
     }
-    for (size_t i = (size_t)y0 * L->w; i < (size_t)y1 * L->w; i++) {
-        const uint8_t *s = L->rgba + i * 4;
-        int a = s[3], Y, U, V;
-        int64_t r = (int64_t)s[0] * rc[a], g = (int64_t)s[1] * rc[a], b = (int64_t)s[2] * rc[a];   /* 0..65536 (a 0: 0) */
-        int64_t yy = (KR * r + KG * g + KB * b + 32768) >> 16;
-        Y = av_clip((int)(YO + ((yy * YS + ((int64_t)1 << 31)) >> 32)), 0, 255);
-        U = av_clip((int)(128 + (((b - yy) * CBS + ((int64_t)1 << 31)) >> 32)), 0, 255);
-        V = av_clip((int)(128 + (((r - yy) * CRS + ((int64_t)1 << 31)) >> 32)), 0, 255);
-        L->pm[i] = (uint16_t)(Y * a);
-        L->pm[n + i] = (uint16_t)(U * a);
-        L->pm[2 * n + i] = (uint16_t)(V * a);
-        L->ia[i] = (uint8_t)(255 - a);
+    {
+        /* Most of a subtitle's layer is clear (alpha 0: nothing to add, the
+           picture kept), and the rest mostly runs of the same colour (the
+           text, its outline): those two cases skip the 64-bit sums, giving
+           exactly what they would. */
+        uint32_t last = 0;
+        uint16_t lY = 0, lU = 0, lV = 0;
+        int have = 0;
+        for (size_t i = (size_t)y0 * L->w; i < (size_t)y1 * L->w; i++) {
+            const uint8_t *s = L->rgba + i * 4;
+            int a = s[3], Y, U, V;
+            uint32_t px;
+#ifndef REELCORE_PLAIN_LAYERS
+            if (!a) {
+                L->pm[i] = L->pm[n + i] = L->pm[2 * n + i] = 0;
+                L->ia[i] = 255;
+                continue;
+            }
+#endif
+            memcpy(&px, s, 4);
+#ifdef REELCORE_PLAIN_LAYERS
+            have = 0;
+#endif
+            if (!have || px != last) {
+                int64_t r = (int64_t)s[0] * rc[a], g = (int64_t)s[1] * rc[a], b = (int64_t)s[2] * rc[a];   /* 0..65536 */
+                int64_t yy = (KR * r + KG * g + KB * b + 32768) >> 16;
+                Y = av_clip((int)(YO + ((yy * YS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+                U = av_clip((int)(128 + (((b - yy) * CBS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+                V = av_clip((int)(128 + (((r - yy) * CRS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+                lY = (uint16_t)(Y * a);
+                lU = (uint16_t)(U * a);
+                lV = (uint16_t)(V * a);
+                last = px;
+                have = 1;
+            }
+            L->pm[i] = lY;
+            L->pm[n + i] = lU;
+            L->pm[2 * n + i] = lV;
+            L->ia[i] = (uint8_t)(255 - a);
+        }
     }
     L->yuv_c = c;
     L->dirty0 = L->dirty1 = 0;
@@ -3657,7 +4003,7 @@ void reelcore_blend_run(uint8_t *d, const uint16_t *pm, const uint8_t *ia, int n
 void reelcore_blend_run(uint8_t *d, const uint16_t *pm, const uint8_t *ia, int n, int k)
 {
     int i = 0;
-#ifdef REELCORE_NEON
+#ifdef LAYER_NEON
     for (; i + 8 + (k - 1) <= n; i += 8) {      /* (k 2: vld2's last load stays in the run) */
         uint8x8_t a = k == 1 ? vld1_u8(ia + i) : vld2_u8(ia + 2 * i).val[0];
         uint16x8_t m = k == 1 ? vld1q_u16(pm + i) : vld2q_u16(pm + 2 * i).val[0];
@@ -3668,6 +4014,35 @@ void reelcore_blend_run(uint8_t *d, const uint16_t *pm, const uint8_t *ia, int n
 #endif
     for (; i < n; i++)
         d[i] = (uint8_t)DIV255(pm[k * i] + d[i] * ia[k * i]);
+}
+
+/* d[i] = (pm[lx[i]] + d[i] * ia[lx[i]]) / 255 for i < n: a layer scaled
+   onto a plane's row (DVD, Blu-ray and DVB subtitles' pictures). Not
+   static: blend_test checks it against the C. */
+void reelcore_blend_cols(uint8_t *d, const uint16_t *pm, const uint8_t *ia, const int *lx, int n);
+void reelcore_blend_cols(uint8_t *d, const uint16_t *pm, const uint8_t *ia, const int *lx, int n)
+{
+    int i = 0;
+#ifdef LAYER_NEON
+    for (; i + 8 <= n; i += 8) {
+        uint16x8_t m = vdupq_n_u16(0);
+        uint8x8_t a = vdup_n_u8(0);
+        /* (lanes of 16 bits from a uint16_t array: always 2-aligned) */
+        m = vld1q_lane_u16(pm + lx[i], m, 0);     a = vld1_lane_u8(ia + lx[i], a, 0);
+        m = vld1q_lane_u16(pm + lx[i + 1], m, 1); a = vld1_lane_u8(ia + lx[i + 1], a, 1);
+        m = vld1q_lane_u16(pm + lx[i + 2], m, 2); a = vld1_lane_u8(ia + lx[i + 2], a, 2);
+        m = vld1q_lane_u16(pm + lx[i + 3], m, 3); a = vld1_lane_u8(ia + lx[i + 3], a, 3);
+        m = vld1q_lane_u16(pm + lx[i + 4], m, 4); a = vld1_lane_u8(ia + lx[i + 4], a, 4);
+        m = vld1q_lane_u16(pm + lx[i + 5], m, 5); a = vld1_lane_u8(ia + lx[i + 5], a, 5);
+        m = vld1q_lane_u16(pm + lx[i + 6], m, 6); a = vld1_lane_u8(ia + lx[i + 6], a, 6);
+        m = vld1q_lane_u16(pm + lx[i + 7], m, 7); a = vld1_lane_u8(ia + lx[i + 7], a, 7);
+        m = vmlal_u8(m, vld1_u8(d + i), a);                  /* <= 65025 */
+        m = vsraq_n_u16(vaddq_u16(m, vdupq_n_u16(1)), m, 8); /* m + 1 + (m >> 8) */
+        vst1_u8(d + i, vshrn_n_u16(m, 8));
+    }
+#endif
+    for (; i < n; i++)
+        d[i] = (uint8_t)DIV255(pm[lx[i]] + d[i] * ia[lx[i]]);
 }
 
 /* Does the layer touch row y of plane p (0 Y, 1 Cb, 2 Cr) of a 4:2:0 picture? */
@@ -3698,15 +4073,14 @@ static void layer_blend_row(const Place *pl, uint8_t *row, int p, int y, int w)
             reelcore_blend_run(row + xa, pm + (size_t)ly * L->w + lx, L->ia + (size_t)ly * L->w + lx, n, sub);
         return;
     }
-    for (int x = xa; x < xb; x++) {
-        int lx = (int)(((int64_t)(x * sub - pl->x0) * ix) >> 16);
-        size_t s;
-        if (lx < 0)
-            continue;
-        if (lx >= L->w)
-            break;
-        s = (size_t)ly * L->w + lx;
-        row[x] = (uint8_t)DIV255(pm[s] + row[x] * L->ia[s]);   /* (a 0: row[x] as it was) */
+    {   /* scaled: the layer's columns for this placing, once */
+        const int *lx;
+        int n;
+        while (xa < xb && (int)(((int64_t)(xa * sub - pl->x0) * ix) >> 16) < 0)
+            xa++;                              /* (left of the layer) */
+        if (xa >= xb || (n = layer_columns(pl->x0, ix, sub, xa, xb, L->w, &lx)) <= 0)
+            return;
+        reelcore_blend_cols(row + xa, pm + (size_t)ly * L->w, L->ia + (size_t)ly * L->w, lx, n);
     }
 }
 

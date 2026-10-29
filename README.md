@@ -148,11 +148,13 @@ and the ARM assembly in FFmpeg, dav1d and x264 relies on that.
 
 The simplest way is riscos-crossdev's container image, which has the
 toolchain (GCCSDK GCC 10.2 with UnixLib 5.0.3.3); everything else is
-fetched by checksum:
+fetched by checksum (`check`, `test-build` and `test` are the checks
+and the Linux tests below; the image has the test rig's qemu, and the
+tests want the host's `ffmpeg` to make their clips):
 
 ```
-docker run --rm -v "$PWD":/src ghcr.io/adyoull/riscos-crossdev:1.8.1 \
-  sh -c 'make sources deps ffmpeg apps package'
+docker run --rm -v "$PWD":/src ghcr.io/adyoull/riscos-crossdev:1.8.2 \
+  sh -c 'make sources deps ffmpeg apps package check test-build test'
 ```
 
 Or on an x86-64 Linux with a GCCSDK GCC 10.2 toolchain: riscos-crossdev's
@@ -164,7 +166,9 @@ make deps         # SDL2 (riscos-mesa overlay, no GL), x264, dav1d, LAME, ...
 make ffmpeg       # FFmpeg 5.1.10 + patches/ffmpeg + the NEON rewrite
 make apps         # libreelcore, libffegl, !Reel, !ReelEGL, videowin, videocube, the icon bar front end
 make package      # dist/: the FFmpeg, EGL examples and Reel zips, the devkit
-make test         # the same code for arm-linux, run under the trapping qemu
+make check        # riscos-crossdev's checks on every program (RCD_DIR)
+make test-build   # the same code built for arm-linux (src-linuxarm)
+make test         # run under the trapping qemu (QEMU, or qemu-arm-aligntrap)
 ```
 
 The riscos-mesa devkit is the release `.riscos-deps` names, fetched into
@@ -172,7 +176,8 @@ The riscos-mesa devkit is the release `.riscos-deps` names, fetched into
 `third_party/reelhwaccel`.
 
 **On GitHub:** `.github/workflows/riscos-build.yml` builds every push in
-the image, and keeps the zips and devkit as the run's download.
+the image, checks the programs, runs the Linux tests, and keeps the zips
+and devkit as the run's download.
 `riscos-deps-update.yml` checks each day for newer releases of what
 `.riscos-deps` names (riscos-crossdev, riscos-mesa, riscos-reelhwaccel),
 moves the pins (`ci/riscos-deps-hook.sh` moves the devkit's checksum and
@@ -194,7 +199,7 @@ riscos-crossdev's `docs/CI.md` has the details.
 
 ```
 build/      env.sh, build-deps.sh, build-ffmpeg.sh, build-apps.sh, package.sh, SHA256SUMS, SOURCES, fetch-sources.sh
-ci/         riscos-deps-hook.sh (the GitHub workflows' pins outside .riscos-deps)
+ci/         riscos-deps-hook.sh (the GitHub workflows' pins outside .riscos-deps), check-programs.sh (make check)
 patches/    ffmpeg/ (git format-patch series), dav1d/, x264/, lame/, sdl2/ (riscos-mesa overlay copy)
 reelcore/   the player core (reelcore.h, reelcore.c): no EGL
 ffegl/      the EGL layer on reelcore (ffegl.h, ffegl.c) and the videowin/videocube examples

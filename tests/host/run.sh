@@ -16,10 +16,12 @@ F=$TOP/src-linuxarm/ffmpeg-5.1.10              # patched source (riscos_egl.c, i
 DEVKIT=${DEVKIT:-$TOP/devkit/riscos-mesa-devkit-$(awk '$1 == "riscos-mesa" {sub(/^v/, "", $2); print $2}' "$TOP/.riscos-deps")}   # (.riscos-deps)
 O=$TOP/src-linuxarm/host-tests
 SAMPLES=$TOP/tests/qemu/samples
-mkdir -p "$O" "$HERE/fake/EGL" "$HERE/fake/KHR"
-# riscos-mesa's EGL headers (RISC OS additions and lock_surface)
+mkdir -p "$O" "$HERE/fake/EGL" "$HERE/fake/KHR" "$HERE/fake/GL"
+# riscos-mesa's EGL headers (RISC OS additions and lock_surface), and its
+# OpenGL ones (ffegl.c's; the host may have none for ARM)
 cp "$DEVKIT"/include/EGL/*.h "$HERE/fake/EGL/"
 cp "$DEVKIT"/include/KHR/*.h "$HERE/fake/KHR/"
+cp "$DEVKIT"/include/GL/*.h "$HERE/fake/GL/"
 CC="arm-linux-gnueabihf-gcc -O1 -g -marm -mno-unaligned-access -mfpu=neon-vfpv3 -DEGL_NO_X11 -I$HERE/fake -I$HERE"
 LIBS="-L$S/lib -lavfilter -lpostproc -lavformat -lavcodec -lswscale -lswresample -lavutil -ldav1d -lx264 -lmp3lame \
   -lopus -lvorbisenc -lvorbis -logg -lm -lpthread"
@@ -156,12 +158,28 @@ mkdir -p "$O/nonum.d" && cp "$O/nonum.srt" "$O/nonum.d/srt"         # (named as 
 "$TOP/tests/qemu/aligntrap.sh" "$O/sub_test" "$O/subs.mkv" "$O/plain.mp4" "$O/subs.srt" "$O/turned.mp4" "$O/subs.ass" "$O/gop.mp4" \
   "$O/long21.mp4" "$O/pics.sup" "$O/greek.srt" "$O/cyr.srt" "$O/west.srt" "$O/turk.srt" "$O/nonum.srt" "$O/nonum1253.srt" "$O/nonum.d/srt" 2>&1 | grep -v "reelcore: " || bad=1
 
+# subtitles and the panel blended with NEON (and their columns and colours
+# worked out once): against the C, and every picture drawn the same as with
+# the plain C throughout (-DREELCORE_PLAIN_LAYERS)
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/blend_test.c" -o "$O/blend_test.o"
+$CC -DREELCORE_PLAIN_LAYERS -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore_plain.o" 2>/dev/null
+for k in "" _plain; do
+  arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/blend_test$k" "$O/reelcore$k.o" \
+    "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/blend_test.o" $LIBS -lm 2>/dev/null
+done
+echo "== blend_test (subtitles and the panel blended: NEON against the C, and every picture as with the plain C)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/blend_test" || bad=1
+b1=$("$TOP/tests/qemu/aligntrap.sh" "$O/blend_test" --frames "$O/long21.mp4" "$O/subs.srt" "$O/pics.sup" "$O/subs.ass" 2>/dev/null | grep MD5)
+b2=$("$TOP/tests/qemu/aligntrap.sh" "$O/blend_test_plain" --frames "$O/long21.mp4" "$O/subs.srt" "$O/pics.sup" "$O/subs.ass" 2>/dev/null | grep MD5)
+echo "$b1"
+[ -n "$b1" ] && [ "$b1" = "$b2" ] || { echo "FAIL: blend_test: the pictures differ from the plain C's ($b2)"; bad=1; }
+
 # RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
 # (the hardware decoding test tools and the HEVCHW module moved to
 #  riscos-reelhwaccel, with their host tests)
 
 # tools/eabiprobe: ARMEABISupport's versions loaded and on disc, its programs, Iris's copies
-arm-linux-gnueabihf-gcc -O1 -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/eabiprobe_test" "$TOP/tools/eabiprobe/eabiprobe.c" "$HERE/eabiprobe_test.c"
+arm-linux-gnueabihf-gcc -O1 -marm -mno-unaligned-access -DPROBE_TEST -I$HERE/fake -Wall -no-pie -o "$O/eabiprobe_test" "$TOP/tools/eabiprobe/eabiprobe.c" "$HERE/eabiprobe_test.c"
 echo "== eabiprobe_test (ARMEABISupport loaded vs the copies a !Run would load; the verdict)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/eabiprobe_test" | grep "FAIL\|eabiprobe_test:" || bad=1
 
@@ -174,6 +192,7 @@ NS=$O/netsamples; mkdir -p "$NS"
 cp "$SAMPLES/long_h264_aac_322_184.mp4" "$NS/"
 ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -map 0:v -c copy "$NS/net_video_only.mp4"
 ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -map 0:a -c copy "$NS/net_sound_only.m4a"
+ffmpeg -v error -y -i "$NS/long_h264_aac_322_184.mp4" -map 0:a -c copy -movflags +faststart "$NS/net_sound_cutonce.m4a"
 for i in $(seq 0 39); do printf '%d\n00:00:%02d,123 --> 00:00:%02d,800\nLine %d\n\n' $((i + 1)) $i $i $i; done > "$NS/net_subs.srt"   # (times that aren't whole seconds)
 ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=40 -i "$NS/net_subs.srt" -map 0:v -map 1 \
   -c:v libx264 -preset ultrafast -g 25 -c:s srt -disposition:s:0 default "$NS/net_subs.mkv"   # (longer than the read-ahead)
@@ -182,13 +201,24 @@ ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=12 -f lavfi
   -c:v libx264 -preset ultrafast -g 25 -c:a aac -f hls -hls_time 1 -hls_list_size 0 \
   -hls_segment_filename "$NS/live_slow%03d.ts" "$NS/live.m3u8"
 sed -i '/#EXT-X-ENDLIST/d;/#EXT-X-PLAYLIST-TYPE/d' "$NS/live.m3u8"
+cp "$NS/live.m3u8" "$NS/live_failmid.m3u8"   # (the same live stream; its playlist can't be reloaded for a while)
+# a live stream as two playlists: the picture in 2 s segments, the sound in
+# 1 s ones (6 back: the picture from 0 s, the sound from 6 s)
+ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=12 -c:v libx264 -preset ultrafast -g 25 \
+  -f hls -hls_time 2 -hls_list_size 0 -hls_segment_filename "$NS/livev%03d.ts" "$NS/livev.m3u8"
+ffmpeg -v error -y -f lavfi -i sine=d=12:sample_rate=44100 -c:a aac \
+  -f hls -hls_time 1 -hls_list_size 0 -hls_segment_filename "$NS/livea%03d.ts" "$NS/livea.m3u8"
+sed -i '/#EXT-X-ENDLIST/d;/#EXT-X-PLAYLIST-TYPE/d' "$NS/livev.m3u8" "$NS/livea.m3u8"
+# 80 s, picture and sound apart (more than the read-ahead)
+ffmpeg -v error -y -f lavfi -i testsrc2=size=96x54:rate=10:duration=80 -c:v libx264 -preset ultrafast -g 10 "$NS/long_video_only.mp4"
+ffmpeg -v error -y -f lavfi -i sine=d=80:sample_rate=48000 -ac 2 -c:a aac -b:a 32k "$NS/long_sound_only.m4a"
 NP=$((20000 + RANDOM % 20000)); : > "$O/net_headers.log"
 python3 "$HERE/httpserve.py" "$NP" "$NS" "$O/net_headers.log" >/dev/null 2>&1 & NS1=$!
 python3 "$HERE/httpserve.py" $((NP + 1)) --silent >/dev/null 2>&1 & NS2=$!
 for i in $(seq 50); do curl -s -o /dev/null "http://127.0.0.1:$NP/" && break; sleep 0.1; done   # (up)
 : > "$O/net_headers.log"
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/net_test.c" -o "$O/net_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/net_test" "$O/reelcore.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=avcodec_receive_frame -o "$O/net_test" "$O/reelcore.o" \
   "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/net_test.o" $LIBS -lm 2>/dev/null
 echo "== net_test (reelcore: addresses read by a thread; video and sound apart)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/net_test" "http://127.0.0.1:$NP" "http://127.0.0.1:$((NP + 1))/x.mp4" "$NS" \
@@ -368,6 +398,14 @@ grep -q "ReelTest-UA/1.0" "$O/net_headers.log" ||
 
 # Reel again with the sound going straight to (fake) SharedSoundBuffer, as on RISC OS
 $CC -DREELCORE_SSB -I$HERE/fake -I$S/include -I$DEVKIT/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore_ssb.o"
+# the sound from an input of its own going quiet for 3 s (the network buffering)
+ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=8 -c:v libx264 -preset ultrafast -g 25 "$O/gap_video.mp4"
+ffmpeg -v error -y -f lavfi -i sine=d=8:sample_rate=48000 -ac 2 -c:a libopus "$O/gap_sound.mka"
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/sound_gap_test.c" -o "$O/sound_gap_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=av_read_frame -o "$O/sound_gap_test" \
+  "$O/sound_gap_test.o" "$O/reelcore_ssb.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
+echo "== sound_gap_test (SharedSoundBuffer: the sound from its own input late for 3 s)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/sound_gap_test" "$O/gap_video.mp4" "$O/gap_sound.mka" 8 2>&1 | grep -v "reelcore: " || bad=1
 $CC -DFAKE_SSB -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reel_ssb_test.o"
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=fflush -o "$O/reel_ssb_test" "$O/reel_ssb_test.o" "$O/reel.o" "$O/sources.o" \
   "$O/reelcore_ssb.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null

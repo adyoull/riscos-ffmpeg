@@ -3,7 +3,9 @@
 # is the one for the riscos-crossdev release named in .riscos-deps at the
 # top of the repository (a line `riscos-crossdev v1.8`; see
 # riscos-deps-update.yml). Change BUILD to your build and test command, and
-# ARTIFACTS to what it makes.
+# ARTIFACTS to what it makes. PACKAGES: Ubuntu packages your build needs
+# that the image hasn't (docker/Dockerfile lists what it has); set the same
+# in riscos-deps-update.yml.
 #
 # From riscos-crossdev's ci/ (docs/CI.md). MIT licence.
 name: RISC OS build
@@ -15,12 +17,17 @@ on:
 
 env:
   # riscos-ffmpeg: the sources (fetched by checksum), the libraries, FFmpeg,
-  # Reel and the front end, then the zips and the devkit. (The Linux tests,
-  # tests/host and tests/qemu, need FFmpeg and QEMU on the host: not yet.)
-  BUILD: make sources deps ffmpeg apps package
+  # Reel and the front end, then the zips and the devkit; riscos-crossdev's
+  # checks on every program; the same code built for ARM Linux and tested
+  # under the image's qemu-arm-aligntrap (FFmpeg's, dav1d's and x264's asm
+  # tests, decode/encode/scale jobs NEON against C, tests/host's fakes of
+  # the desktop). The host's ffmpeg makes the test clips; gdb-multiarch
+  # says where, if a test takes an alignment fault.
+  BUILD: make sources deps ffmpeg apps package check test-build test
   ARTIFACTS: |
     dist/*.zip
     dist/riscos-ffmpeg-devkit-*.tgz
+  PACKAGES: "ffmpeg gdb-multiarch"
 
 jobs:
   pin:
@@ -46,6 +53,11 @@ jobs:
           path: dl
           key: dl-${{ hashFiles('build/SHA256SUMS') }}
           restore-keys: dl-
+      - name: Packages this port needs
+        if: env.PACKAGES != ''
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends $PACKAGES
       - name: Build, check and test
         run: ${{ env.BUILD }}
       - uses: actions/upload-artifact@v7

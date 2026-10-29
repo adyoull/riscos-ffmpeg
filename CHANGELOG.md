@@ -3,6 +3,118 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Not yet released
+
+- **riscos-reelhwaccel devkit 0.2.21** (0.2.19 and 0.2.20 too): an
+  h264_vchiq video starts without the 2 s wait some clips had (the first
+  picture 1-5 cs after the first packet on a Pi 4); a seek starts a new
+  VideoCore decoder, so no picture from before the seek can turn up after
+  it; a decoder that stops answering holds a close up 3 s rather than 9.
+  Patches and code unchanged; vcdec.h and the libraries replaced.
+- **Reel: the sound no longer stops for good after buffering** (TubeSearch's
+  handoff: Chris Hughes, a CM4, YouTube through TubeSearch, the picture and
+  the sound as two inputs).
+  - When the sound ran dry while the network caught up, a bit of sound
+    short of one of StreamManager's blocks was still waiting in reelcore,
+    so the "sound device isn't playing" check saw sound queued, and the
+    clock not moving, and after a second turned the sound off for the rest
+    of the film. It now looks only at what StreamManager itself holds: run
+    dry isn't stalled.
+  - A SharedSoundBuffer stream that still won't play once it has sound is
+    started again (up to 3 times a minute) before Reel goes on without it.
+  - The sound from an address of its own (yt-dlp's best video and best
+    sound, TubeSearch's two HLS playlists or DASH addresses) that fails or
+    ends early while the picture goes on, once FFmpeg's own reconnecting
+    has given up, is opened again (up to 5 tries, waiting 1, 2, 4 and 8 s
+    between them) and carries on from where it got to; sound already read
+    is dropped.
+  - Tests, mutation-checked: `sound_gap_test` (the sound's input quiet for
+    3 s, with StreamManager playing again or needing a new stream), and
+    net_test's sound cut half way with its server then away for a while
+    (`httpserve.py`'s "cutonce" files).
+- `tests/host/run.sh` takes riscos-mesa's OpenGL headers from the devkit,
+  as it does its EGL ones (a host without ARM OpenGL headers couldn't
+  build ffegl_test).
+- **Reel: live streams with the picture and sound apart play** (Chris's
+  log: YouTube's Heathrow Airport live stream from TubeSearch, on a CM4:
+  one picture, then none, the sound on its own for 40 s, then no sound).
+  - Each playlist starts 6 segments back, but the sound's segments were
+    shorter, so the sound started 5 s after the picture: by the sound's
+    clock every picture was late, and the VideoCore gave every one back.
+    The input that starts earlier is now dropped up to where the other
+    starts (the picture from a keyframe there), and the sound's packets
+    are timed on the picture's timeline (each was measured from its own
+    input's start).
+  - The reader counted its read-ahead from the last picture shown, which
+    stood still while none were: it looked 10 s ahead with nothing in
+    hand, so on RISC OS (one core, threads run only while Reel gives them
+    time) it was hardly given time, the picture never caught up and the
+    sound ran dry. It counts from the clock when that's further on, and
+    an empty queue always gets the reader time. The log's net figures say
+    where from (`ahead of N`).
+  - net_test: a live stream as two playlists, the sound starting 7 s
+    later (the first picture where the sound starts); 40 s of every
+    picture thrown away (the reader counts from the clock). Both
+    mutation-checked.
+- **Reel: a live stream whose playlist can't be reloaded is opened again**
+  rather than taken for its end (the owner's log: AcornSSL's connections
+  failing after 28 minutes of YouTube's Heathrow live stream). The picture's
+  input (or the one input with both) is joined again where its playlist
+  now starts, from a keyframe after what was read, up to 5 tries waiting 1,
+  2, 4 and 8 s; the sound's own input already was. net_test: a live
+  playlist answered 503 three times (`httpserve.py`'s "failmid" files),
+  mutation-checked.
+- **Reel: subtitles and the stats panel blended with NEON** (instruction
+  profiles: a 1080p H.264 film with subtitles and the panel, 100 pictures).
+  - Into 32bpp (Reel's sprite path and ReelEGL, and whenever the overlay
+    is hidden): 8 pixels at a time, the layer's columns gathered for a
+    scaled one. 543 M instructions to 76 M: about 4.7 M a picture, a tenth
+    of all Reel's work there.
+  - A scaled layer (DVD, Blu-ray and DVB subtitles' pictures) into the
+    overlay's planes: the columns worked out once a placing (they were, for
+    every pixel of every row, in 64-bit sums), gathered 8 at a time.
+    PGS subtitles over 1080p: 51 M fewer over 100 pictures.
+  - A new subtitle's colours for the overlay: clear pixels (most of the
+    layer) and runs of one colour (the text, its outline) skip the 64-bit
+    sums, half the work of each new subtitle (about 12 M fewer each).
+  - The same pixels, exactly: `blend_test` checks both runs against the C,
+    and draws 1575 pictures (text, ASS and Blu-ray subtitles, the panel on
+    and off, into 32bpp at three sizes and 4:2:0 three ways) the same as a
+    build with the plain C throughout (`-DREELCORE_PLAIN_LAYERS`), and as
+    before the change. Mutation-checked.
+- **Reel reads further ahead from the network:** 30 seconds (or 48MB),
+  not 10 (or 32MB), so a connection that comes in bursts has more in hand.
+
+- **GitHub builds check and test too** (riscos-crossdev 1.8.2's workflows;
+  `.riscos-deps` moved to v1.8.2): after the build, `make check` runs
+  riscos-crossdev's checks (static, stack probes, FPU level, UnixLib) on
+  every program the zips carry, then `make test-build test` builds the
+  same code for ARM Linux and runs the whole test rig under the image's
+  qemu-arm-aligntrap: FFmpeg's, dav1d's and x264's asm tests, the decode,
+  encode and scale jobs (NEON against C), faststart, and tests/host's
+  scripted desktops. The host's ffmpeg (`PACKAGES`) makes the clips.
+  - **`tests/qemu/aligntrap.sh` no longer falls back to the system's
+    qemu-arm**, which doesn't trap: `tests/host/run.sh` run by itself
+    (without `QEMU`) had been checking nothing about alignment. With `QEMU`
+    unset it takes qemu-arm-aligntrap from the PATH (riscos-crossdev's),
+    else `~/qemu-aligntrap/qemu-arm` (build-qemu.sh's), else stops. Run
+    under the trap, every host test passes; eabiprobe_test needed the same
+    `-marm -mno-unaligned-access` as the others (RISC OS's GCC never makes
+    unaligned accesses; the arm-linux one did, in the test build only).
+  - `tests/qemu/run.sh`: the clips with AAC sound whose names don't start
+    with it (chunky_, twoaudio_) are compared loosely, like the others with
+    AAC (its decoder is float); they were reported as DIFF.
+
+- **riscos-mesa 20.3.5-17** (`.riscos-deps`, `build/SOURCES` and
+  `build/SHA256SUMS` moved to it): ffplay's `-f egl` window and the EGL
+  examples copy only what changed into an overlay's buffers, and
+  `*Show EGL$OverlayStatus` says how the last overlay-capable surface was
+  shown or why it was plotted (RDPServer's `EGL$Overlay off` included).
+  Rendering is as in 20.3.5-16. Reel drives VideoOverlay itself and
+  ReelEGL's picture is a work area surface, so neither changes. (ffplay's
+  SDL2 is built from our own copy of riscos-mesa's SDL patches, without
+  20.3.5-17's SDL additions: not needed for ffplay's Wimp window.)
+
 ## 5.1.10-riscos23 and Reel 0.1.29 (2026-10-22): devkit 0.2.18, the VideoCore's memory given back, Stop that asks, speed-ups, live streams, GitHub builds
 
 - **riscos-reelhwaccel devkit 0.2.18** (`.riscos-deps` moved to
