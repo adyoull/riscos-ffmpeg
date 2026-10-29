@@ -3,12 +3,16 @@
 serves the files in ROOT with Range requests (which FFmpeg uses to seek;
 python's own http.server has none), 404 for anything else, and writes each
 request's headers to LOG if given. A file whose name has "slow" in it is
-answered 0.3 s late (a live stream's segments from a slow server).
+answered 0.3 s late (a live stream's segments from a slow server). One with
+"cutonce" in it: the first request from its start sends half and closes the
+connection, and the next 6 requests for it get 503 (a server that goes away
+for a while, longer than FFmpeg's own reconnecting tries); after that it's
+answered whole.
 
   httpserve.py PORT ROOT [LOG]     serve
   httpserve.py PORT --silent       accept connections, never answer
 """
-import http.server, os, re, socket, sys, time
+import http.server, os, re, socket, sys, threading, time
 
 port = int(sys.argv[1])
 if sys.argv[2] == "--silent":
@@ -22,6 +26,8 @@ if sys.argv[2] == "--silent":
         conns.append(c)            # read nothing, answer nothing
 root = sys.argv[2]
 log = sys.argv[3] if len(sys.argv) > 3 else None
+cut = {}                       # the "cutonce" files already cut: 503s still to give
+cut_lock = threading.Lock()
 
 class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -32,6 +38,14 @@ class H(http.server.BaseHTTPRequestHandler):
         path = os.path.join(root, os.path.basename(self.path.split("?")[0]))
         if not os.path.isfile(path):
             self.send_error(404)
+            return
+        name = os.path.basename(path)
+        with cut_lock:
+            down = cut.get(name, 0) > 0
+            if down:
+                cut[name] -= 1
+        if down:
+            self.send_error(503)
             return
         if "slow" in os.path.basename(path):
             time.sleep(0.3)
@@ -49,7 +63,16 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(len(part)))
         self.end_headers()
+        with cut_lock:
+            hang = "cutonce" in name and name not in cut and (not m or int(m.group(1)) == 0)
+            if hang:
+                cut[name] = 6
         try:
+            if hang:
+                self.wfile.write(part[:len(part) // 2])
+                self.wfile.flush()
+                self.close_connection = True
+                return
             self.wfile.write(part)
         except (BrokenPipeError, ConnectionResetError):
             pass

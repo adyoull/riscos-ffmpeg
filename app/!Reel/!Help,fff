@@ -174,11 +174,15 @@ it leads nowhere. Drop one like that and Reel opens Open address asking
 and Reel plays the playlist with each name made whole from that address.
 A playlist that already names whole addresses plays as it is.
 
-Reel reads ahead in the background (up to 10 seconds, or 32MB), so a
-slow connection doesn't hold up the desktop. While an address opens,
+Reel reads ahead in the background (up to 30 seconds, or 48MB), so a
+slow connection doesn't hold up the desktop, and a connection that comes
+in bursts has more in hand. While an address opens,
 what was playing carries on (with nothing playing, the window opens and
 says "Opening"). If the connection can't keep up, the time says
-"Buffering" and the picture and sound wait. Seeking works whenever the
+"Buffering" and the picture and sound wait. With the sound from an
+address of its own (yt-dlp's best video and best sound, TubeSearch), a
+sound connection that fails part way is opened again, and the sound
+carries on from where it got to. Seeking works whenever the
 server allows it (most do). Media info's Reading line shows how much has
 been read ahead, and the Address and Sound from rows say where from.
 

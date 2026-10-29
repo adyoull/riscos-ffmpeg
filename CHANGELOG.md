@@ -5,6 +5,33 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Not yet released
 
+- **Reel: the sound no longer stops for good after buffering** (TubeSearch's
+  handoff: Chris Hughes, a CM4, YouTube through TubeSearch, the picture and
+  the sound as two inputs).
+  - When the sound ran dry while the network caught up, a bit of sound
+    short of one of StreamManager's blocks was still waiting in reelcore,
+    so the "sound device isn't playing" check saw sound queued, and the
+    clock not moving, and after a second turned the sound off for the rest
+    of the film. It now looks only at what StreamManager itself holds: run
+    dry isn't stalled.
+  - A SharedSoundBuffer stream that still won't play once it has sound is
+    started again (up to 3 times a minute) before Reel goes on without it.
+  - The sound from an address of its own (yt-dlp's best video and best
+    sound, TubeSearch's two HLS playlists or DASH addresses) that fails or
+    ends early while the picture goes on, once FFmpeg's own reconnecting
+    has given up, is opened again (up to 5 tries, waiting 1, 2, 4 and 8 s
+    between them) and carries on from where it got to; sound already read
+    is dropped.
+  - Tests, mutation-checked: `sound_gap_test` (the sound's input quiet for
+    3 s, with StreamManager playing again or needing a new stream), and
+    net_test's sound cut half way with its server then away for a while
+    (`httpserve.py`'s "cutonce" files).
+- `tests/host/run.sh` takes riscos-mesa's OpenGL headers from the devkit,
+  as it does its EGL ones (a host without ARM OpenGL headers couldn't
+  build ffegl_test).
+- **Reel reads further ahead from the network:** 30 seconds (or 48MB),
+  not 10 (or 32MB), so a connection that comes in bursts has more in hand.
+
 - **GitHub builds check and test too** (riscos-crossdev 1.8.2's workflows;
   `.riscos-deps` moved to v1.8.2): after the build, `make check` runs
   riscos-crossdev's checks (static, stack probes, FPU level, UnixLib) on

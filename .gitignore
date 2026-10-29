@@ -11,6 +11,7 @@
 *START-HERE*.md
 /tests/host/fake/EGL/
 /tests/host/fake/KHR/
+/tests/host/fake/GL/
 src-host/
 
 # Handoff notes to other ports live outside the repo (RiscOS/FFmpeg/handoffs)

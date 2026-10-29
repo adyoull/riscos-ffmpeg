@@ -98,9 +98,10 @@ static void cur_changed(ReelCore *v);
 #define FAST_PROBE    10.0
 #define FAST_PROBE_MAX 160.0
 #define FAST_REGRET   8.0    /* off again this soon after a try: the try failed */
-#define NET_AHEAD     10.0   /* network: seconds read ahead of the picture shown */
-#define NET_MAX_BYTES (32 << 20)  /* ... and at most this much */
+#define NET_AHEAD     30.0   /* network: seconds read ahead of the picture shown (a slow or bursty connection rides out more) */
+#define NET_MAX_BYTES (48 << 20)  /* ... and at most this much */
 #define NET_LOW       3.0    /* below this, reelcore_update gives the reader time */
+#define NET_REOPENS   5      /* tries at opening the sound's own address again after it stopped early */
 #define NET_LIVE_START 4.0   /* a live stream: seconds read before its first picture is shown ... */
 #define NET_LIVE_WAIT  10.0  /* ... waiting at most this long for them */
 #define NET_LIVE_INDEX "-6"  /* live HLS: started this many segments behind the newest (FFmpeg: -3) */
@@ -286,6 +287,8 @@ struct ReelCore {
     unsigned pend_len, pend_size;
     unsigned added_bytes, added_blocks;
     unsigned ssb_refused, ssb_stat_added, ssb_stat_played;   /* for reelcore_debug */
+    int ssb_restarts;                  /* the stream started again after it stopped playing ... */
+    int64_t ssb_restart_t;             /* ... the last time */
 #endif
 
     /* timer clock (no sound, or after the sound ended) */
@@ -655,6 +658,19 @@ static double queued_audio(const ReelCore *v)
     return v->dev && !v->stalled ? aud_queued((ReelCore *)v) / (double)v->bytes_per_sec : 0;
 }
 
+/* The sound the device itself holds, not yet played. With SharedSoundBuffer
+   that leaves out the bit still waiting to make a whole block: run dry (the
+   sound from the network late, while the picture buffered), StreamManager
+   has nothing to play and rightly plays nothing, and that isn't a stall. */
+static double device_audio(const ReelCore *v)
+{
+#ifdef USE_SSB
+    if (v->ssb)
+        return v->dev && !v->stalled ? ssb_unplayed((ReelCore *)v) / (double)v->bytes_per_sec : 0;
+#endif
+    return queued_audio(v);
+}
+
 /* If the sound device takes none of the queued sound for this long while
    playing, it isn't playing (e.g. no SharedSoundBuffer on RISC OS): stop
    sending it sound and let the timer drive the pictures, which would
@@ -663,13 +679,35 @@ static double queued_audio(const ReelCore *v)
 
 static void timer_set(ReelCore *v, double pts);
 
+/* SharedSoundBuffer streams that stop playing (after running dry, say)
+   are started afresh, up to this many times a minute, before going on
+   without sound */
+#define SSB_RESTARTS 3
+
 static void audio_stalled(ReelCore *v, double c)
 {
-    {
-        char d[200];
-        reelcore_debug(v, d, sizeof(d));
-        av_log(NULL, AV_LOG_WARNING, "reelcore: the sound device isn't playing; carrying on without sound (%s)\n", d);
+    char d[200];
+    reelcore_debug(v, d, sizeof(d));
+#ifdef USE_SSB
+    if (v->ssb && v->ssb_started && av_gettime_relative() - v->ssb_restart_t > 60 * 1000000LL)
+        v->ssb_restarts = 0;
+    if (v->ssb && v->ssb_started && v->ssb_restarts < SSB_RESTARTS) {
+        /* it played before: a new stream, rather than no sound from here
+           on (the sound it held is lost; the clock moves on past it) */
+        v->ssb_restarts++;
+        v->ssb_restart_t = av_gettime_relative();
+        av_log(NULL, AV_LOG_WARNING, "reelcore: the sound stopped playing; starting it again (%d of %d; %s)\n",
+               v->ssb_restarts, SSB_RESTARTS, d);
+        aud_clear(v);
+        if (!v->stalled) {
+            aud_pause(v, v->paused);
+            v->stall_since = 0;
+            v->sm_valid = 0;
+            return;
+        }
     }
+#endif
+    av_log(NULL, AV_LOG_WARNING, "reelcore: the sound device isn't playing; carrying on without sound (%s)\n", d);
     v->stalled = 1;
     aud_clear(v);
     aud_pause(v, 1);
@@ -756,7 +794,7 @@ static double clock_now(ReelCore *v)
                as much of the file */
             double c = v->audio_end - (q + v->latency) * v->speed;
             int64_t now = av_gettime_relative();
-            if (c > v->stall_clock + 0.001 || q <= 0 || !v->stall_since) {
+            if (c > v->stall_clock + 0.001 || device_audio(v) <= 0 || !v->stall_since) {
                 v->stall_clock = c;
                 v->stall_since = now;
             } else if (now - v->stall_since > (int64_t)(STALL_SECONDS * 1e6)) {
@@ -927,6 +965,13 @@ struct Net {
     double play_pos;                   /* the picture shown now (from the caller) */
     int64_t bytes_read;
     char read_error[160];              /* the connection failed while reading */
+    /* the sound's own address opened again after it stopped early (an
+       error, or its end long before the picture's); the inputs it
+       replaced, kept until the close (the caller may still be using their
+       streams) */
+    AVFormatContext *old_afmt[NET_REOPENS];
+    int reopens;
+    double skip_sound_to;              /* after reopening: sound already read, dropped */
 };
 
 int reelcore_is_network(const char *url)
@@ -1167,6 +1212,64 @@ static void seek_input(AVFormatContext *fc, double seconds)
     avformat_seek_file(fc, -1, INT64_MIN, ts, ts, 0);
 }
 
+/* The sound, from an address of its own, stopped while the picture goes
+   on (TubeSearch's YouTube videos: the picture and the sound are two HLS
+   playlists, or two DASH addresses): its connection failed, or it ended
+   long before its length. Opens it again and goes on from where it got to,
+   rather than playing the rest without sound: 1, opened again; 2, it
+   couldn't be yet, try again (after a wait that grows with each try: a
+   server away for a while); 0, give up. Lock held, and dropped while
+   opening. */
+static int net_reopen_sound(ReelCore *v, const ReelCoreSource *src, int err)
+{
+    struct Net *n = v->net;
+    AVFormatContext *nf = NULL, *old = v->afmt;
+    double at = n->last[1] > 0 ? n->last[1] : n->play_pos;
+    double len = old->duration > 0 ? old->duration / (double)AV_TIME_BASE : 0;
+    int serial = n->serial, ret;
+    char e[AV_ERROR_MAX_STRING_SIZE] = "the end";
+    if (!n->audio_url || n->eof[0] || n->quit || n->reopens >= NET_REOPENS || v->as < 0 ||
+        (err == AVERROR_EOF && (len <= 0 ? 0 : at >= len - 2)))   /* (the real end; live: may be either) */
+        return 0;
+    if (err != AVERROR_EOF)
+        av_strerror(err, e, sizeof(e));
+    av_log(NULL, AV_LOG_WARNING, "reelcore: the sound stopped at %.2f s (%s): opening it again (%d of %d)\n",
+           at, e, n->reopens + 1, NET_REOPENS);
+    pthread_mutex_unlock(&n->lock);
+    ret = open_input(v, &nf, n->audio_url, src);
+    if (ret >= 0 && ((int)nf->nb_streams <= v->as ||
+                     nf->streams[v->as]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO ||
+                     av_cmp_q(nf->streams[v->as]->time_base, old->streams[v->as]->time_base)))
+        ret = AVERROR_STREAM_NOT_FOUND;    /* (not the stream it had: its packets' times would be wrong) */
+    if (ret >= 0) {
+        for (unsigned i = 0; i < nf->nb_streams; i++)
+            nf->streams[i]->discard = (int)i == v->as ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
+        if (len > 0)
+            seek_input(nf, at);
+    }
+    pthread_mutex_lock(&n->lock);
+    if (ret < 0 || serial != n->serial || n->quit) {
+        avformat_close_input(&nf);
+        if (serial != n->serial || n->quit)
+            return !n->quit;               /* (a seek meanwhile: go on with the old one) */
+        av_strerror(ret, e, sizeof(e));
+        av_log(NULL, AV_LOG_WARNING, "reelcore: can't open the sound again: %s\n", e);
+        if (++n->reopens >= NET_REOPENS)
+            return 0;
+        {   /* 1, 2, 4, 8 s (or until a seek, or the close); the caller
+               signals the condition for every packet taken, so time it */
+            int64_t end = av_gettime_relative() + (1000000LL << (n->reopens - 1 < 3 ? n->reopens - 1 : 3));
+            while (!n->quit && serial == n->serial && !n->seek_req && av_gettime_relative() < end)
+                net_wait(n, 100);
+        }
+        return 2;
+    }
+    n->old_afmt[n->reopens++] = old;
+    n->skip_sound_to = at;
+    v->afmt = nf;                          /* (the caller reads it only for Media info) */
+    return 1;
+}
+
 static void *net_thread(void *arg)
 {
     ReelCore *v = arg;
@@ -1208,6 +1311,7 @@ static void *net_thread(void *arg)
             if (serial == n->serial) {
                 net_flush(n);
                 n->eof[0] = n->eof[1] = n->eof_all = 0;
+                n->skip_sound_to = -1e9;
             }
             continue;
         }
@@ -1238,6 +1342,10 @@ static void *net_thread(void *arg)
                 snprintf(n->read_error, sizeof(n->read_error), "reading stopped: %s", e);
                 av_log(NULL, AV_LOG_WARNING, "reelcore: %s\n", n->read_error);
             }
+            if (k == 1 && ret != AVERROR_EXIT && net_reopen_sound(v, &src, ret)) {
+                n->read_error[0] = 0;
+                continue;
+            }
             n->eof[k] = 1;
             n->eof_all = n->eof[0] && (!v->afmt || n->eof[1]);
             continue;
@@ -1245,8 +1353,11 @@ static void *net_thread(void *arg)
         n->bytes_read += pkt->size;
         {
             int kind = pkt_kind(v, fc, pkt);
+            double t = pkt_time(fc, pkt);
+            if (kind == 1 && t != AV_NOPTS_VALUE && t <= n->skip_sound_to)
+                kind = -1;                 /* (read before the sound was opened again) */
             if (kind >= 0)
-                net_push(n, pkt, kind, pkt_time(fc, pkt));
+                net_push(n, pkt, kind, t);
             av_packet_unref(pkt);
         }
     }
@@ -1316,6 +1427,7 @@ ReelCore *reelcore_open_source(const ReelCoreSource *src, int flags)
         pthread_mutex_init(&n->lock, NULL);
         pthread_cond_init(&n->cond, NULL);
         n->last[0] = n->last[1] = n->last[2] = -1e9;
+        n->skip_sound_to = -1e9;
         n->url = av_strdup(src->url);
         n->audio_url = src->audio_url ? av_strdup(src->audio_url) : NULL;
         n->headers = src->headers ? av_strdup(src->headers) : NULL;
@@ -1492,6 +1604,8 @@ void reelcore_close(ReelCore *v)
             pthread_join(n->th, NULL);
         }
         net_flush(n);
+        for (int i = 0; i < n->reopens && i < NET_REOPENS; i++)
+            avformat_close_input(&n->old_afmt[i]);
         av_free(n->q);
         av_free(n->url);
         av_free(n->audio_url);

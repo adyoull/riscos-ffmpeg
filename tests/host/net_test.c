@@ -308,6 +308,49 @@ int main(int argc, char **argv)
         }
     }
 
+    /* 9. the sound from an address of its own whose connection is cut half
+       way, its server then away for longer than FFmpeg's own reconnecting
+       tries (TubeSearch's YouTube videos, picture and sound apart): it's
+       opened again (waiting longer each try) and goes on from where it got
+       to, and the sound plays to the end (before: the picture went on
+       alone) */
+    {
+        FILE *lf = fopen(hlog, "w");
+        int gets = 0, n = 0;
+        double q0 = fake_queued_total, dur;
+        if (lf)
+            fclose(lf);
+        snprintf(vfile, sizeof(vfile), "%s/net_video_only.mp4", base);
+        snprintf(afile, sizeof(afile), "%s/net_sound_cutonce.m4a", base);
+        memset(&src, 0, sizeof(src));
+        src.url = vfile;
+        src.audio_url = afile;
+        v = reelcore_open_source(&src, 0);
+        CHECK(v != NULL, "sound cut half way: %s", reelcore_last_error());
+        if (v) {
+            ReelCoreStats st;
+            dur = reelcore_duration(v);
+            r = pump(v, REELCORE_END, 90, &n);
+            reelcore_stats(v, &st);
+            reelcore_net(v, &ns);
+            lf = fopen(hlog, "r");
+            if (lf) {
+                char line[300];
+                while (fgets(line, sizeof(line), lf))
+                    gets += !strncmp(line, "GET /net_sound_cutonce.m4a", 26);
+                fclose(lf);
+            }
+            printf("  sound cut half way: %d requests for it, %.2f s of %.2f s of sound, %d pictures, end %d%s%s\n",
+                   gets, (fake_queued_total - q0) / (48000 * 4.0), dur, n, r == REELCORE_END,
+                   ns.error[0] ? ", " : "", ns.error);
+            CHECK(r == REELCORE_END && gets >= 2 && reelcore_has_audio(v) &&
+                  (fake_queued_total - q0) / (48000 * 4.0) > dur - 0.5,
+                  "sound cut half way: end %d, %d requests, %.2f s of %.2f s of sound", r == REELCORE_END, gets,
+                  (fake_queued_total - q0) / (48000 * 4.0), dur);
+            reelcore_close(v);
+        }
+    }
+
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;
 }
