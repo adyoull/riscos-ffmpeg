@@ -41,6 +41,13 @@ static void cur_changed(ReelCore *v);
 #include <arm_neon.h>                 /* reelcore_halve: 2x2 averages, 8 at a time */
 #define REELCORE_NEON 1
 #endif
+/* Subtitles and the stats panel blended into the picture: NEON, columns
+   worked out once a placing, and the layer's colours only for new pixels.
+   REELCORE_PLAIN_LAYERS: the plain C for all of it (blend_test draws with
+   both and compares). */
+#if defined(REELCORE_NEON) && !defined(REELCORE_PLAIN_LAYERS)
+#define LAYER_NEON 1
+#endif
 
 /* On RISC OS the sound goes straight to SharedSoundBuffer/StreamManager
    from this (the caller's) thread: StreamManager plays it from interrupts,
@@ -3800,6 +3807,97 @@ static void layer_box(Layer *L, int x, int y, int w, int h, int r, int g, int b,
 /* 16.16 fixed point: layer pixels per destination pixel */
 static int layer_step(double s) { return s > 0 ? (int)(65536 / s) : 65536; }
 
+/* The layer pixels a run of destination pixels takes, worked out once
+   rather than for every pixel of every row: lx[i] for destination x =
+   xa + i, while lx < lw. Kept for later calls with the same placing (a
+   subtitle and the panel are drawn the same way picture after picture,
+   row after row, into each plane: a few placings at once). Returns n, or
+   -1 without memory. */
+#define COLS_KEPT 4
+static int layer_columns(int x0, int ix, int sub, int xa, int xb, int lw, const int **lx)
+{
+    static struct { int key[6], *t, cap, n; } kept[COLS_KEPT];
+    static int next;
+    int key[6] = { x0, ix, sub, xa, xb, lw }, k;
+    for (k = 0; k < COLS_KEPT; k++)
+#ifndef REELCORE_PLAIN_LAYERS
+        if (kept[k].t && !memcmp(kept[k].key, key, sizeof(key))) {
+#else
+        if (0) {
+#endif
+            *lx = kept[k].t;
+            return kept[k].n;
+        }
+    k = next;
+    next = (next + 1) % COLS_KEPT;
+    if (xb - xa > kept[k].cap) {
+        int *b = av_realloc_array(kept[k].t, xb - xa, sizeof(*b));
+        if (!b)
+            return -1;
+        kept[k].t = b;
+        kept[k].cap = xb - xa;
+    }
+    kept[k].n = 0;
+    for (int x = xa; x < xb; x++) {
+        int c = (int)(((int64_t)(x * sub - x0) * ix) >> 16);
+        if (c >= lw)
+            break;
+        kept[k].t[kept[k].n++] = c;
+    }
+    memcpy(kept[k].key, key, sizeof(key));
+    *lx = kept[k].t;
+    return kept[k].n;
+}
+
+/* d (32bpp: R,G,B,x, or B,G,R,x with bgr) = s + d * (255 - s's alpha) / 255
+   for n pixels; s is the layer's premultiplied RGBA, pixel lx[i] of row
+   (or row's own n pixels in turn, lx NULL); where s's alpha is 0, d is left
+   as it was. Not static: blend_test checks it against the C. */
+void reelcore_blend_rgb_run(uint8_t *d, const uint8_t *row, const int *lx, int n, int bgr);
+void reelcore_blend_rgb_run(uint8_t *d, const uint8_t *row, const int *lx, int n, int bgr)
+{
+    int i = 0;
+#ifdef LAYER_NEON
+    for (; i + 8 <= n; i += 8, d += 32) {
+        uint8x8x4_t sv, dv;
+        uint8x8_t a, keep;
+        if (!lx)
+            sv = vld4_u8(row + i * 4);
+        else {
+            sv.val[0] = sv.val[1] = sv.val[2] = sv.val[3] = vdup_n_u8(0);
+            sv = vld4_lane_u8(row + lx[i] * 4, sv, 0);     /* (bytes: no alignment needed) */
+            sv = vld4_lane_u8(row + lx[i + 1] * 4, sv, 1);
+            sv = vld4_lane_u8(row + lx[i + 2] * 4, sv, 2);
+            sv = vld4_lane_u8(row + lx[i + 3] * 4, sv, 3);
+            sv = vld4_lane_u8(row + lx[i + 4] * 4, sv, 4);
+            sv = vld4_lane_u8(row + lx[i + 5] * 4, sv, 5);
+            sv = vld4_lane_u8(row + lx[i + 6] * 4, sv, 6);
+            sv = vld4_lane_u8(row + lx[i + 7] * 4, sv, 7);
+        }
+        dv = vld4_u8(d);
+        a = vmvn_u8(sv.val[3]);                            /* 255 - alpha */
+        keep = vceq_u8(sv.val[3], vdup_n_u8(0));
+        for (int c = 0; c < 3; c++) {
+            uint8x8_t sc = sv.val[c == 1 ? 1 : (c == 0) == !bgr ? 0 : 2];
+            uint16x8_t m = vmull_u8(dv.val[c], a);          /* <= 65025 */
+            m = vsraq_n_u16(vaddq_u16(m, vdupq_n_u16(1)), m, 8);   /* m + 1 + (m >> 8): DIV255 */
+            dv.val[c] = vbsl_u8(keep, dv.val[c], vadd_u8(sc, vshrn_n_u16(m, 8)));
+        }
+        vst4_u8(d, dv);
+    }
+#endif
+    for (; i < n; i++, d += 4) {
+        const uint8_t *s = row + (lx ? lx[i] : i) * 4;
+        int a;
+        if (!s[3])
+            continue;
+        a = 255 - s[3];
+        d[0] = (uint8_t)(s[bgr ? 2 : 0] + DIV255(d[0] * a));
+        d[1] = (uint8_t)(s[1] + DIV255(d[1] * a));
+        d[2] = (uint8_t)(s[bgr ? 0 : 2] + DIV255(d[2] * a));
+    }
+}
+
 /* Over 32bpp pixels (R,G,B,x, or B,G,R,x with bgr), w x h */
 static void layer_blend_rgb(const Place *pl, uint8_t *p, int pitch, int w, int h, int bgr)
 {
@@ -3807,27 +3905,21 @@ static void layer_blend_rgb(const Place *pl, uint8_t *p, int pitch, int w, int h
     int x0 = pl->x0, y0 = pl->y0, ix = layer_step(pl->sx), iy = layer_step(pl->sy);
     int xa = FFMAX(0, x0), ya = FFMAX(0, y0);
     int xb = FFMIN(w, x0 + (int)(L->w * pl->sx + 0.5)), yb = FFMIN(h, y0 + (int)(L->h * pl->sy + 0.5));
-    for (int y = ya; y < yb; y++) {
+    const int *lx = NULL;
+    int n;
+    if (xa >= xb)
+        return;
+    if (ix == 65536 && xa - x0 >= 0)           /* 1:1 (text subtitles, the panel): a run of the layer's row */
+        n = FFMIN(xb - xa, L->w - (xa - x0));
+    else if ((n = layer_columns(x0, ix, 1, xa, xb, L->w, &lx)) < 0)
+        return;
+    for (int y = ya; y < yb && n > 0; y++) {
         int ly = (int)(((int64_t)(y - y0) * iy) >> 16);
         const uint8_t *row;
-        uint8_t *d = p + (size_t)y * pitch + (size_t)xa * 4;
         if (ly >= L->h)
             break;
         row = L->rgba + (size_t)ly * L->w * 4;
-        for (int x = xa; x < xb; x++, d += 4) {
-            int lx = (int)(((int64_t)(x - x0) * ix) >> 16);
-            const uint8_t *s;
-            int a;
-            if (lx >= L->w)
-                break;
-            s = row + lx * 4;
-            if (!s[3])
-                continue;
-            a = 255 - s[3];
-            d[0] = (uint8_t)(s[bgr ? 2 : 0] + DIV255(d[0] * a));
-            d[1] = (uint8_t)(s[1] + DIV255(d[1] * a));
-            d[2] = (uint8_t)(s[bgr ? 0 : 2] + DIV255(d[2] * a));
-        }
+        reelcore_blend_rgb_run(p + (size_t)y * pitch + (size_t)xa * 4, lx ? row : row + (xa - x0) * 4, lx, n, bgr);
     }
 }
 
@@ -3859,18 +3951,46 @@ static int layer_yuv(Layer *L, int c)
         av_freep(&L->pm);
         return AVERROR(ENOMEM);
     }
-    for (size_t i = (size_t)y0 * L->w; i < (size_t)y1 * L->w; i++) {
-        const uint8_t *s = L->rgba + i * 4;
-        int a = s[3], Y, U, V;
-        int64_t r = (int64_t)s[0] * rc[a], g = (int64_t)s[1] * rc[a], b = (int64_t)s[2] * rc[a];   /* 0..65536 (a 0: 0) */
-        int64_t yy = (KR * r + KG * g + KB * b + 32768) >> 16;
-        Y = av_clip((int)(YO + ((yy * YS + ((int64_t)1 << 31)) >> 32)), 0, 255);
-        U = av_clip((int)(128 + (((b - yy) * CBS + ((int64_t)1 << 31)) >> 32)), 0, 255);
-        V = av_clip((int)(128 + (((r - yy) * CRS + ((int64_t)1 << 31)) >> 32)), 0, 255);
-        L->pm[i] = (uint16_t)(Y * a);
-        L->pm[n + i] = (uint16_t)(U * a);
-        L->pm[2 * n + i] = (uint16_t)(V * a);
-        L->ia[i] = (uint8_t)(255 - a);
+    {
+        /* Most of a subtitle's layer is clear (alpha 0: nothing to add, the
+           picture kept), and the rest mostly runs of the same colour (the
+           text, its outline): those two cases skip the 64-bit sums, giving
+           exactly what they would. */
+        uint32_t last = 0;
+        uint16_t lY = 0, lU = 0, lV = 0;
+        int have = 0;
+        for (size_t i = (size_t)y0 * L->w; i < (size_t)y1 * L->w; i++) {
+            const uint8_t *s = L->rgba + i * 4;
+            int a = s[3], Y, U, V;
+            uint32_t px;
+#ifndef REELCORE_PLAIN_LAYERS
+            if (!a) {
+                L->pm[i] = L->pm[n + i] = L->pm[2 * n + i] = 0;
+                L->ia[i] = 255;
+                continue;
+            }
+#endif
+            memcpy(&px, s, 4);
+#ifdef REELCORE_PLAIN_LAYERS
+            have = 0;
+#endif
+            if (!have || px != last) {
+                int64_t r = (int64_t)s[0] * rc[a], g = (int64_t)s[1] * rc[a], b = (int64_t)s[2] * rc[a];   /* 0..65536 */
+                int64_t yy = (KR * r + KG * g + KB * b + 32768) >> 16;
+                Y = av_clip((int)(YO + ((yy * YS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+                U = av_clip((int)(128 + (((b - yy) * CBS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+                V = av_clip((int)(128 + (((r - yy) * CRS + ((int64_t)1 << 31)) >> 32)), 0, 255);
+                lY = (uint16_t)(Y * a);
+                lU = (uint16_t)(U * a);
+                lV = (uint16_t)(V * a);
+                last = px;
+                have = 1;
+            }
+            L->pm[i] = lY;
+            L->pm[n + i] = lU;
+            L->pm[2 * n + i] = lV;
+            L->ia[i] = (uint8_t)(255 - a);
+        }
     }
     L->yuv_c = c;
     L->dirty0 = L->dirty1 = 0;
@@ -3883,7 +4003,7 @@ void reelcore_blend_run(uint8_t *d, const uint16_t *pm, const uint8_t *ia, int n
 void reelcore_blend_run(uint8_t *d, const uint16_t *pm, const uint8_t *ia, int n, int k)
 {
     int i = 0;
-#ifdef REELCORE_NEON
+#ifdef LAYER_NEON
     for (; i + 8 + (k - 1) <= n; i += 8) {      /* (k 2: vld2's last load stays in the run) */
         uint8x8_t a = k == 1 ? vld1_u8(ia + i) : vld2_u8(ia + 2 * i).val[0];
         uint16x8_t m = k == 1 ? vld1q_u16(pm + i) : vld2q_u16(pm + 2 * i).val[0];
@@ -3894,6 +4014,35 @@ void reelcore_blend_run(uint8_t *d, const uint16_t *pm, const uint8_t *ia, int n
 #endif
     for (; i < n; i++)
         d[i] = (uint8_t)DIV255(pm[k * i] + d[i] * ia[k * i]);
+}
+
+/* d[i] = (pm[lx[i]] + d[i] * ia[lx[i]]) / 255 for i < n: a layer scaled
+   onto a plane's row (DVD, Blu-ray and DVB subtitles' pictures). Not
+   static: blend_test checks it against the C. */
+void reelcore_blend_cols(uint8_t *d, const uint16_t *pm, const uint8_t *ia, const int *lx, int n);
+void reelcore_blend_cols(uint8_t *d, const uint16_t *pm, const uint8_t *ia, const int *lx, int n)
+{
+    int i = 0;
+#ifdef LAYER_NEON
+    for (; i + 8 <= n; i += 8) {
+        uint16x8_t m = vdupq_n_u16(0);
+        uint8x8_t a = vdup_n_u8(0);
+        /* (lanes of 16 bits from a uint16_t array: always 2-aligned) */
+        m = vld1q_lane_u16(pm + lx[i], m, 0);     a = vld1_lane_u8(ia + lx[i], a, 0);
+        m = vld1q_lane_u16(pm + lx[i + 1], m, 1); a = vld1_lane_u8(ia + lx[i + 1], a, 1);
+        m = vld1q_lane_u16(pm + lx[i + 2], m, 2); a = vld1_lane_u8(ia + lx[i + 2], a, 2);
+        m = vld1q_lane_u16(pm + lx[i + 3], m, 3); a = vld1_lane_u8(ia + lx[i + 3], a, 3);
+        m = vld1q_lane_u16(pm + lx[i + 4], m, 4); a = vld1_lane_u8(ia + lx[i + 4], a, 4);
+        m = vld1q_lane_u16(pm + lx[i + 5], m, 5); a = vld1_lane_u8(ia + lx[i + 5], a, 5);
+        m = vld1q_lane_u16(pm + lx[i + 6], m, 6); a = vld1_lane_u8(ia + lx[i + 6], a, 6);
+        m = vld1q_lane_u16(pm + lx[i + 7], m, 7); a = vld1_lane_u8(ia + lx[i + 7], a, 7);
+        m = vmlal_u8(m, vld1_u8(d + i), a);                  /* <= 65025 */
+        m = vsraq_n_u16(vaddq_u16(m, vdupq_n_u16(1)), m, 8); /* m + 1 + (m >> 8) */
+        vst1_u8(d + i, vshrn_n_u16(m, 8));
+    }
+#endif
+    for (; i < n; i++)
+        d[i] = (uint8_t)DIV255(pm[lx[i]] + d[i] * ia[lx[i]]);
 }
 
 /* Does the layer touch row y of plane p (0 Y, 1 Cb, 2 Cr) of a 4:2:0 picture? */
@@ -3924,15 +4073,14 @@ static void layer_blend_row(const Place *pl, uint8_t *row, int p, int y, int w)
             reelcore_blend_run(row + xa, pm + (size_t)ly * L->w + lx, L->ia + (size_t)ly * L->w + lx, n, sub);
         return;
     }
-    for (int x = xa; x < xb; x++) {
-        int lx = (int)(((int64_t)(x * sub - pl->x0) * ix) >> 16);
-        size_t s;
-        if (lx < 0)
-            continue;
-        if (lx >= L->w)
-            break;
-        s = (size_t)ly * L->w + lx;
-        row[x] = (uint8_t)DIV255(pm[s] + row[x] * L->ia[s]);   /* (a 0: row[x] as it was) */
+    {   /* scaled: the layer's columns for this placing, once */
+        const int *lx;
+        int n;
+        while (xa < xb && (int)(((int64_t)(xa * sub - pl->x0) * ix) >> 16) < 0)
+            xa++;                              /* (left of the layer) */
+        if (xa >= xb || (n = layer_columns(pl->x0, ix, sub, xa, xb, L->w, &lx)) <= 0)
+            return;
+        reelcore_blend_cols(row + xa, pm + (size_t)ly * L->w, L->ia + (size_t)ly * L->w, lx, n);
     }
 }
 

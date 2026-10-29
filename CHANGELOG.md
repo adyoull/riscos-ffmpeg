@@ -58,6 +58,24 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   2, 4 and 8 s; the sound's own input already was. net_test: a live
   playlist answered 503 three times (`httpserve.py`'s "failmid" files),
   mutation-checked.
+- **Reel: subtitles and the stats panel blended with NEON** (instruction
+  profiles: a 1080p H.264 film with subtitles and the panel, 100 pictures).
+  - Into 32bpp (Reel's sprite path and ReelEGL, and whenever the overlay
+    is hidden): 8 pixels at a time, the layer's columns gathered for a
+    scaled one. 543 M instructions to 76 M: about 4.7 M a picture, a tenth
+    of all Reel's work there.
+  - A scaled layer (DVD, Blu-ray and DVB subtitles' pictures) into the
+    overlay's planes: the columns worked out once a placing (they were, for
+    every pixel of every row, in 64-bit sums), gathered 8 at a time.
+    PGS subtitles over 1080p: 51 M fewer over 100 pictures.
+  - A new subtitle's colours for the overlay: clear pixels (most of the
+    layer) and runs of one colour (the text, its outline) skip the 64-bit
+    sums, half the work of each new subtitle (about 12 M fewer each).
+  - The same pixels, exactly: `blend_test` checks both runs against the C,
+    and draws 1575 pictures (text, ASS and Blu-ray subtitles, the panel on
+    and off, into 32bpp at three sizes and 4:2:0 three ways) the same as a
+    build with the plain C throughout (`-DREELCORE_PLAIN_LAYERS`), and as
+    before the change. Mutation-checked.
 - **Reel reads further ahead from the network:** 30 seconds (or 48MB),
   not 10 (or 32MB), so a connection that comes in bursts has more in hand.
 

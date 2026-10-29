@@ -158,6 +158,22 @@ mkdir -p "$O/nonum.d" && cp "$O/nonum.srt" "$O/nonum.d/srt"         # (named as 
 "$TOP/tests/qemu/aligntrap.sh" "$O/sub_test" "$O/subs.mkv" "$O/plain.mp4" "$O/subs.srt" "$O/turned.mp4" "$O/subs.ass" "$O/gop.mp4" \
   "$O/long21.mp4" "$O/pics.sup" "$O/greek.srt" "$O/cyr.srt" "$O/west.srt" "$O/turk.srt" "$O/nonum.srt" "$O/nonum1253.srt" "$O/nonum.d/srt" 2>&1 | grep -v "reelcore: " || bad=1
 
+# subtitles and the panel blended with NEON (and their columns and colours
+# worked out once): against the C, and every picture drawn the same as with
+# the plain C throughout (-DREELCORE_PLAIN_LAYERS)
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/blend_test.c" -o "$O/blend_test.o"
+$CC -DREELCORE_PLAIN_LAYERS -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -c "$TOP/reelcore/reelcore.c" -o "$O/reelcore_plain.o" 2>/dev/null
+for k in "" _plain; do
+  arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/blend_test$k" "$O/reelcore$k.o" \
+    "$O/fake_sdl_gl.o" "$O/fake_riscos.o" "$O/blend_test.o" $LIBS -lm 2>/dev/null
+done
+echo "== blend_test (subtitles and the panel blended: NEON against the C, and every picture as with the plain C)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/blend_test" || bad=1
+b1=$("$TOP/tests/qemu/aligntrap.sh" "$O/blend_test" --frames "$O/long21.mp4" "$O/subs.srt" "$O/pics.sup" "$O/subs.ass" 2>/dev/null | grep MD5)
+b2=$("$TOP/tests/qemu/aligntrap.sh" "$O/blend_test_plain" --frames "$O/long21.mp4" "$O/subs.srt" "$O/pics.sup" "$O/subs.ass" 2>/dev/null | grep MD5)
+echo "$b1"
+[ -n "$b1" ] && [ "$b1" = "$b2" ] || { echo "FAIL: blend_test: the pictures differ from the plain C's ($b2)"; bad=1; }
+
 # RISC OS names typed relative to the current directory (FFmpeg patch 0019): holiday/mp4
 # (the hardware decoding test tools and the HEVCHW module moved to
 #  riscos-reelhwaccel, with their host tests)
