@@ -50,6 +50,14 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
     later (the first picture where the sound starts); 40 s of every
     picture thrown away (the reader counts from the clock). Both
     mutation-checked.
+- **Reel: a live stream whose playlist can't be reloaded is opened again**
+  rather than taken for its end (the owner's log: AcornSSL's connections
+  failing after 28 minutes of YouTube's Heathrow live stream). The picture's
+  input (or the one input with both) is joined again where its playlist
+  now starts, from a keyframe after what was read, up to 5 tries waiting 1,
+  2, 4 and 8 s; the sound's own input already was. net_test: a live
+  playlist answered 503 three times (`httpserve.py`'s "failmid" files),
+  mutation-checked.
 - **Reel reads further ahead from the network:** 30 seconds (or 48MB),
   not 10 (or 32MB), so a connection that comes in bursts has more in hand.
 

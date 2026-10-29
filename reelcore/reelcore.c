@@ -966,13 +966,13 @@ struct Net {
     double play_pos;                   /* the picture shown now (from the caller) */
     int64_t bytes_read;
     char read_error[160];              /* the connection failed while reading */
-    /* the sound's own address opened again after it stopped early (an
-       error, or its end long before the picture's); the inputs it
-       replaced, kept until the close (the caller may still be using their
-       streams) */
-    AVFormatContext *old_afmt[NET_REOPENS];
-    int reopens;
-    double skip_sound_to;              /* after reopening: sound already read, dropped */
+    /* an input opened again after it stopped early (net_reopen); the
+       inputs replaced, kept until the close (the caller may still be using
+       their streams) */
+    AVFormatContext *old_fmt[2][NET_REOPENS];   /* [0] the picture's input, [1] the sound's */
+    int reopens[2];
+    AVFormatContext *vread;            /* the picture's input being read (v->fmt, or one opened again) */
+    double skip_sound_to, skip_video_to;   /* after reopening: what was already read, dropped */
     /* a live stream's picture and sound from two inputs that start at
        different points: the one that starts earlier dropped up to where
        the other starts (the picture up to a keyframe there) */
@@ -1216,6 +1216,21 @@ static int pkt_kind(const ReelCore *v, AVFormatContext *fc, const AVPacket *p)
     return -1;
 }
 
+/* The kind of a packet the reader read from input K (0 the picture's, 1
+   the sound's), by its stream: the same in an input opened again */
+static int net_kind(const ReelCore *v, int k, const AVPacket *p)
+{
+    if (k)
+        return p->stream_index == v->as ? 1 : -1;
+    if (p->stream_index == v->vs)
+        return 0;
+    if (!v->afmt && p->stream_index == v->as)
+        return 1;
+    if (v->sub_stream >= 0 && p->stream_index == v->sub_stream)
+        return 2;
+    return -1;
+}
+
 static void seek_input(AVFormatContext *fc, double seconds);
 
 /* Seeks the sound's own input to SECONDS from the start of the video's
@@ -1235,39 +1250,52 @@ static void seek_input(AVFormatContext *fc, double seconds)
     avformat_seek_file(fc, -1, INT64_MIN, ts, ts, 0);
 }
 
-/* The sound, from an address of its own, stopped while the picture goes
-   on (TubeSearch's YouTube videos: the picture and the sound are two HLS
-   playlists, or two DASH addresses): its connection failed, or it ended
-   long before its length. Opens it again and goes on from where it got to,
-   rather than playing the rest without sound: 1, opened again; 2, it
+/* An input stopped early: opened again, to go on from where it got to,
+   rather than playing the rest without sound or ending.
+   - The sound from an address of its own (TubeSearch's YouTube videos: the
+     picture and the sound as two HLS playlists, or two DASH addresses):
+     its connection failed, or it ended long before its length, while the
+     picture goes on.
+   - A live stream's picture (or the one input of a live stream with both):
+     its playlist couldn't be reloaded (AcornSSL's connection dropped, as on
+     a CM4 after 28 minutes of YouTube's Heathrow live stream); a live
+     stream has no end to reach. It's joined again where its playlist now
+     starts, from a keyframe, after what was read.
+   K: 0 the picture's input, 1 the sound's. Returns 1, opened again; 2, it
    couldn't be yet, try again (after a wait that grows with each try: a
    server away for a while); 0, give up. Lock held, and dropped while
    opening. */
-static int net_reopen_sound(ReelCore *v, const ReelCoreSource *src, int err)
+static int net_reopen(ReelCore *v, const ReelCoreSource *src, int err, int k)
 {
     struct Net *n = v->net;
-    AVFormatContext *nf = NULL, *old = v->afmt;
-    double at = n->last[1] > 0 ? n->last[1] : n->play_pos;
+    AVFormatContext *nf = NULL, *old = k ? v->afmt : n->vread;
+    const char *url = k ? n->audio_url : n->url, *what = k ? "the sound" : "the picture";
+    double at = n->last[k] > 0 ? n->last[k] : n->play_pos;
     double len = old->duration > 0 ? old->duration / (double)AV_TIME_BASE : 0;
-    int serial = n->serial, ret;
+    int serial = n->serial, ret, st = k ? v->as : v->vs, tries = n->reopens[k];
     char e[AV_ERROR_MAX_STRING_SIZE] = "the end";
-    if (!n->audio_url || n->eof[0] || n->quit || n->reopens >= NET_REOPENS || v->as < 0 ||
-        (err == AVERROR_EOF && (len <= 0 ? 0 : at >= len - 2)))   /* (the real end; live: may be either) */
+    if (!url || n->quit || tries >= NET_REOPENS || st < 0 ||
+        (k ? n->eof[0] || (err == AVERROR_EOF && len > 0 && at >= len - 2)   /* (the real end; live: may be either) */
+           : len > 0))                     /* (the picture: only a live stream's) */
         return 0;
     if (err != AVERROR_EOF)
         av_strerror(err, e, sizeof(e));
-    av_log(NULL, AV_LOG_WARNING, "reelcore: the sound stopped at %.2f s (%s): opening it again (%d of %d)\n",
-           at, e, n->reopens + 1, NET_REOPENS);
+    av_log(NULL, AV_LOG_WARNING, "reelcore: %s stopped at %.2f s (%s): opening it again (%d of %d)\n",
+           what, at, e, tries + 1, NET_REOPENS);
     pthread_mutex_unlock(&n->lock);
-    ret = open_input(v, &nf, n->audio_url, src);
-    if (ret >= 0 && ((int)nf->nb_streams <= v->as ||
-                     nf->streams[v->as]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO ||
-                     av_cmp_q(nf->streams[v->as]->time_base, old->streams[v->as]->time_base)))
-        ret = AVERROR_STREAM_NOT_FOUND;    /* (not the stream it had: its packets' times would be wrong) */
+    ret = open_input(v, &nf, url, src);
+    /* the stream it had, with the same time base (its packets' times would
+       be wrong otherwise); and the sound too, if it's in this input */
+    if (ret >= 0 && ((int)nf->nb_streams <= st ||
+                     nf->streams[st]->codecpar->codec_type != old->streams[st]->codecpar->codec_type ||
+                     av_cmp_q(nf->streams[st]->time_base, old->streams[st]->time_base) ||
+                     (!k && !v->afmt && v->as >= 0 && ((int)nf->nb_streams <= v->as ||
+                      av_cmp_q(nf->streams[v->as]->time_base, old->streams[v->as]->time_base)))))
+        ret = AVERROR_STREAM_NOT_FOUND;
     if (ret >= 0) {
         for (unsigned i = 0; i < nf->nb_streams; i++)
-            nf->streams[i]->discard = (int)i == v->as ? AVDISCARD_DEFAULT : AVDISCARD_ALL;
-        if (len > 0)
+            nf->streams[i]->discard = old->streams[i < old->nb_streams ? i : 0]->discard;
+        if (k && len > 0)
             seek_sound(v, nf, at);
     }
     pthread_mutex_lock(&n->lock);
@@ -1276,20 +1304,31 @@ static int net_reopen_sound(ReelCore *v, const ReelCoreSource *src, int err)
         if (serial != n->serial || n->quit)
             return !n->quit;               /* (a seek meanwhile: go on with the old one) */
         av_strerror(ret, e, sizeof(e));
-        av_log(NULL, AV_LOG_WARNING, "reelcore: can't open the sound again: %s\n", e);
-        if (++n->reopens >= NET_REOPENS)
+        av_log(NULL, AV_LOG_WARNING, "reelcore: can't open %s again: %s\n", what, e);
+        if (++n->reopens[k] >= NET_REOPENS)
             return 0;
         {   /* 1, 2, 4, 8 s (or until a seek, or the close); the caller
                signals the condition for every packet taken, so time it */
-            int64_t end = av_gettime_relative() + (1000000LL << (n->reopens - 1 < 3 ? n->reopens - 1 : 3));
+            int64_t end = av_gettime_relative() + (1000000LL << (n->reopens[k] - 1 < 3 ? n->reopens[k] - 1 : 3));
             while (!n->quit && serial == n->serial && !n->seek_req && av_gettime_relative() < end)
                 net_wait(n, 100);
         }
         return 2;
     }
-    n->old_afmt[n->reopens++] = old;
-    n->skip_sound_to = at;
-    v->afmt = nf;                          /* (the caller reads it only for Media info) */
+    n->old_fmt[k][n->reopens[k]++] = old;
+    if (k) {
+        n->skip_sound_to = at;
+        v->afmt = nf;                      /* (the caller reads it only for Media info) */
+    } else {
+        /* the picture again from a keyframe after what was read (and the
+           sound, if it's in this input); v->fmt stays (the timeline) */
+        n->skip_video_to = at;
+        n->align_video = 1;
+        n->align_to = at;
+        if (!v->afmt)
+            n->skip_sound_to = n->last[1];
+        n->vread = nf;
+    }
     return 1;
 }
 
@@ -1309,6 +1348,7 @@ static void *net_thread(void *arg)
     else if (select_streams(v) < 0)
         ret = -1;
     pthread_mutex_lock(&n->lock);
+    n->vread = v->fmt;
     if (ret >= 0 && v->afmt && v->fmt->start_time != AV_NOPTS_VALUE && v->afmt->start_time != AV_NOPTS_VALUE) {
         double d = (v->afmt->start_time - v->fmt->start_time) / (double)AV_TIME_BASE;   /* the sound starts later by */
         if (d > 0.2 || d < -0.2) {
@@ -1337,14 +1377,14 @@ static void *net_thread(void *arg)
             serial = n->serial;
             n->seek_req = 0;
             pthread_mutex_unlock(&n->lock);
-            seek_input(v->fmt, to);
+            seek_input(n->vread, to);
             if (v->afmt)
                 seek_sound(v, v->afmt, to);
             pthread_mutex_lock(&n->lock);
             if (serial == n->serial) {
                 net_flush(n);
                 n->eof[0] = n->eof[1] = n->eof_all = 0;
-                n->skip_sound_to = -1e9;
+                n->skip_sound_to = n->skip_video_to = -1e9;
                 n->align_video = n->align_sound = 0;
             }
             continue;
@@ -1356,7 +1396,7 @@ static void *net_thread(void *arg)
         }
         /* from the input that's behind */
         k = v->afmt && !n->eof[1] && (n->eof[0] || n->last[1] < n->last[0]) ? 1 : 0;
-        fc = k ? v->afmt : v->fmt;
+        fc = k ? v->afmt : n->vread;
         serial = n->serial;
         pthread_mutex_unlock(&n->lock);
         ret = av_read_frame(fc, pkt);
@@ -1376,7 +1416,7 @@ static void *net_thread(void *arg)
                 snprintf(n->read_error, sizeof(n->read_error), "reading stopped: %s", e);
                 av_log(NULL, AV_LOG_WARNING, "reelcore: %s\n", n->read_error);
             }
-            if (k == 1 && ret != AVERROR_EXIT && net_reopen_sound(v, &src, ret)) {
+            if (ret != AVERROR_EXIT && net_reopen(v, &src, ret, k)) {
                 n->read_error[0] = 0;
                 continue;
             }
@@ -1386,10 +1426,10 @@ static void *net_thread(void *arg)
         }
         n->bytes_read += pkt->size;
         {
-            int kind = pkt_kind(v, fc, pkt);
+            int kind = net_kind(v, k, pkt);
             double t = pkt_time(v, fc, pkt);
-            if (kind == 1 && t != AV_NOPTS_VALUE && t <= n->skip_sound_to)
-                kind = -1;                 /* (read before the sound was opened again) */
+            if (t != AV_NOPTS_VALUE && ((kind == 1 && t <= n->skip_sound_to) || (kind == 0 && t <= n->skip_video_to)))
+                kind = -1;                 /* (read before its input was opened again) */
             if (kind == 0 && n->align_video) {  /* (up to a second before the sound: late, decoded and passed over) */
                 if (t != AV_NOPTS_VALUE && t >= n->align_to - 1.0 && (pkt->flags & AV_PKT_FLAG_KEY))
                     n->align_video = 0;
@@ -1474,7 +1514,7 @@ ReelCore *reelcore_open_source(const ReelCoreSource *src, int flags)
         pthread_mutex_init(&n->lock, NULL);
         pthread_cond_init(&n->cond, NULL);
         n->last[0] = n->last[1] = n->last[2] = -1e9;
-        n->skip_sound_to = -1e9;
+        n->skip_sound_to = n->skip_video_to = -1e9;
         n->url = av_strdup(src->url);
         n->audio_url = src->audio_url ? av_strdup(src->audio_url) : NULL;
         n->headers = src->headers ? av_strdup(src->headers) : NULL;
@@ -1669,8 +1709,12 @@ void reelcore_close(ReelCore *v)
             pthread_join(n->th, NULL);
         }
         net_flush(n);
-        for (int i = 0; i < n->reopens && i < NET_REOPENS; i++)
-            avformat_close_input(&n->old_afmt[i]);
+        for (int k = 0; k < 2; k++)
+            for (int i = 0; i < NET_REOPENS; i++)
+                if (n->old_fmt[k][i] != v->fmt)
+                    avformat_close_input(&n->old_fmt[k][i]);
+        if (n->vread != v->fmt)
+            avformat_close_input(&n->vread);
         av_free(n->q);
         av_free(n->url);
         av_free(n->audio_url);

@@ -7,7 +7,9 @@ answered 0.3 s late (a live stream's segments from a slow server). One with
 "cutonce" in it: the first request from its start sends half and closes the
 connection, and the next 6 requests for it get 503 (a server that goes away
 for a while, longer than FFmpeg's own reconnecting tries); after that it's
-answered whole.
+answered whole. One with "failmid": its first 2 requests are answered, the
+next 3 get 503 (a live playlist that can't be reloaded for a while), then
+it's answered again.
 
   httpserve.py PORT ROOT [LOG]     serve
   httpserve.py PORT --silent       accept connections, never answer
@@ -41,9 +43,13 @@ class H(http.server.BaseHTTPRequestHandler):
             return
         name = os.path.basename(path)
         with cut_lock:
-            down = cut.get(name, 0) > 0
-            if down:
-                cut[name] -= 1
+            if "failmid" in name:
+                cut[name] = cut.get(name, 0) + 1
+                down = 3 <= cut[name] <= 5
+            else:
+                down = cut.get(name, 0) > 0
+                if down:
+                    cut[name] -= 1
         if down:
             self.send_error(503)
             return

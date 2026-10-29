@@ -185,6 +185,7 @@ ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=12 -f lavfi
   -c:v libx264 -preset ultrafast -g 25 -c:a aac -f hls -hls_time 1 -hls_list_size 0 \
   -hls_segment_filename "$NS/live_slow%03d.ts" "$NS/live.m3u8"
 sed -i '/#EXT-X-ENDLIST/d;/#EXT-X-PLAYLIST-TYPE/d' "$NS/live.m3u8"
+cp "$NS/live.m3u8" "$NS/live_failmid.m3u8"   # (the same live stream; its playlist can't be reloaded for a while)
 # a live stream as two playlists: the picture in 2 s segments, the sound in
 # 1 s ones (6 back: the picture from 0 s, the sound from 6 s)
 ffmpeg -v error -y -f lavfi -i testsrc2=size=160x90:rate=25:duration=12 -c:v libx264 -preset ultrafast -g 25 \

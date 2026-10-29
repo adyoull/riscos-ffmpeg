@@ -18,7 +18,9 @@
  *      picture's: the picture starts where the sound does;
  *  11. the sound and picture apart with every picture thrown away for 40 s
  *      (as when all are late): the reader keeps reading by the clock, so
- *      the sound doesn't run dry.
+ *      the sound doesn't run dry;
+ *  12. a live stream whose playlist can't be reloaded for a while: opened
+ *      again, rather than its end.
  *
  *   net_test BASE_URL SILENT_URL SAMPLES_DIR HEADER_LOG
  *   (BASE_URL serves SAMPLES_DIR, which has long_h264_aac_322_184.mp4 and
@@ -451,6 +453,33 @@ int main(int argc, char **argv)
               "no pictures for 40 s: the clock %.1f s on, the sound dry for %.1f s", st.clock - p0, dry);
         CHECK(from - pos0 > 19 && from - pos0 < 21, "no pictures for 40 s: 20 s in, the reader counted from %.1f s "
               "(want the clock's 20 s, not the picture's %.1f s)", from - pos0, st.position - pos0);
+        reelcore_close(v);
+    }
+
+    /* 12. a live stream (picture and sound in one playlist) whose playlist
+       can't be reloaded for a while (AcornSSL's connection dropping, a CM4
+       after 28 minutes of a YouTube live stream): opened again, waiting
+       longer each try, rather than taken for the end */
+    snprintf(url, sizeof(url), "%s/live_failmid.m3u8", base);
+    memset(&src, 0, sizeof(src));
+    src.url = url;
+    v = reelcore_open_source(&src, REELCORE_ASYNC);
+    CHECK(v != NULL, "live, reload failing: open");
+    if (v) {
+        int pics = 0;
+        r = pump(v, REELCORE_READY, 20, NULL);
+        CHECK(r == REELCORE_READY, "live, reload failing: %d (want READY), %s", r, reelcore_last_error());
+        for (double end = real_now() + 25; real_now() < end; ) {
+            if (reelcore_update(v) == REELCORE_NEW_FRAME)
+                pics++;
+            fake_time += 0.01;
+            usleep(1500);
+        }
+        reelcore_net(v, &ns);
+        printf("  live, its playlist failing for a while: %d pictures, %s%s%s\n", pics,
+               ns.ended ? "taken for the end" : "still open", ns.error[0] ? ", " : "", ns.error);
+        CHECK(!ns.ended && !ns.error[0] && pics >= 100, "live, reload failing: ended %d, '%s', %d pictures", ns.ended,
+              ns.error, pics);
         reelcore_close(v);
     }
 
