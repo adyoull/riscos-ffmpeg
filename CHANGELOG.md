@@ -3,7 +3,7 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Not yet released
+## Reel 0.1.31 (2026-10-30): far seeks in an MKV without an index
 
 - **Reel: seeking far in an MKV without an index no longer reads the whole
   file** (Ralph's GitHub issue, by way of Reel Edit's handoff: a DVD rip
