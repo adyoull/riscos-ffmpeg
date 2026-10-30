@@ -3,11 +3,12 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Not yet released
+## 5.1.10-riscos24 and Reel 0.1.30 (2026-10-30): live streams that keep going, the sound back after buffering, devkit 0.2.21, NEON subtitles
 
-- **riscos-reelhwaccel devkit 0.2.21** (0.2.19 and 0.2.20 too): an
-  h264_vchiq video starts without the 2 s wait some clips had (the first
-  picture 1-5 cs after the first packet on a Pi 4); a seek starts a new
+- **riscos-reelhwaccel devkit 0.2.21** (0.2.19 and 0.2.20 too;
+  `.riscos-deps` moved to v0.2.21): an h264_vchiq video starts without
+  the 2 s wait some clips had (the first picture 1-5 cs after the first
+  packet on a Pi 4); a seek starts a new
   VideoCore decoder, so no picture from before the seek can turn up after
   it; a decoder that stops answering holds a close up 3 s rather than 9.
   Patches and code unchanged; vcdec.h and the libraries replaced.

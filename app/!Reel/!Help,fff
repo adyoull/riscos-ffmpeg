@@ -1,4 +1,4 @@
-!Reel - a video player for RISC OS                        0.1.29
+!Reel - a video player for RISC OS                        0.1.30
 ===================================================================
 
 Reel plays video files in a desktop window, with sound. It uses FFmpeg
