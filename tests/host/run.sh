@@ -406,6 +406,15 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=av_rea
   "$O/sound_gap_test.o" "$O/reelcore_ssb.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
 echo "== sound_gap_test (SharedSoundBuffer: the sound from its own input late for 3 s)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/sound_gap_test" "$O/gap_video.mp4" "$O/gap_sound.mka" 8 2>&1 | grep -v "reelcore: " || bad=1
+# seeking far in an MKV without an index (no Cues): a few seconds read, not the file
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=300 -f lavfi -i sine=d=300:sample_rate=48000 \
+  -c:v mpeg2video -g 12 -b:v 800k -c:a ac3 -b:a 96k "$O/mkv_cues.mkv"
+python3 -I "$HERE/mkv_nocues.py" "$O/mkv_cues.mkv" "$O/mkv_nocues.mkv"
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/mkv_seek_test.c" -o "$O/mkv_seek_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=read -o "$O/mkv_seek_test" "$O/mkv_seek_test.o" \
+  "$O/reelcore.o" "$O/fake_sdl_only.o" "$O/fake_riscos.o" $LIBS 2>/dev/null
+echo "== mkv_seek_test (an MKV without Cues: far seeks find their place by the bytes)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/mkv_seek_test" "$O/mkv_nocues.mkv" "$O/mkv_cues.mkv" 300 2>&1 | grep -v "swscaler\|reelcore: " || bad=1
 $CC -DFAKE_SSB -I$S/include -I$DEVKIT/include -I$TOP/reelcore -I$TOP/ffegl -I$HERE -c "$HERE/reel_test.c" -o "$O/reel_ssb_test.o"
 arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=fflush -o "$O/reel_ssb_test" "$O/reel_ssb_test.o" "$O/reel.o" "$O/sources.o" \
   "$O/reelcore_ssb.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null

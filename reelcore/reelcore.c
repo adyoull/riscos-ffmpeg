@@ -1239,6 +1239,7 @@ static int net_kind(const ReelCore *v, int k, const AVPacket *p)
 }
 
 static void seek_input(AVFormatContext *fc, double seconds);
+static void index_note(ReelCore *v);
 
 /* Seeks the sound's own input to SECONDS from the start of the video's
    (pkt_time's timeline) */
@@ -1566,6 +1567,7 @@ ReelCore *reelcore_open_source(const ReelCoreSource *src, int flags)
     }
     if (select_streams(v) < 0 || setup_decoders(v) < 0)
         goto fail;
+    index_note(v);
     return v;
 
 fail:
@@ -3489,6 +3491,187 @@ void reelcore_pause(ReelCore *v, int paused)
     }
 }
 
+/* ---------------------------------------------------------------- an MKV without an index
+
+   A Matroska file whose muxer wrote no Cues (ffmpeg writing to a pipe,
+   some rippers) has no index: to seek, FFmpeg's matroska demuxer reads
+   every cluster from the last one it knows (at first, the start) to the
+   place asked for. Ralph's 8042 s DVD rip on a LanMan98 share: a seek half
+   way would read some GBs, minutes with the desktop stopped.
+
+   So before a seek further than SEEK_INDEX_GAP past the nearest known
+   cluster, a cluster near the place is found by its bytes: a guess from
+   the file's size and length (then from the clusters found), looking for
+   the Cluster ID and reading its Timecode. Each one found goes into the
+   demuxer's own index, as it would have put it there reading that far, so
+   the ordinary seek starts from it (still from a keyframe: the demuxer
+   skips to one) and reads only a few seconds. Played as before, exactly. */
+
+#define SEEK_INDEX_GAP  20.0               /* s: a seek this much past the index reads its way */
+#define SEEK_AIM        4.0                /* s: a cluster this much before the place aimed for */
+#define SEEK_LOOKS      8                  /* guesses at most, each narrowing the range */
+#define SCAN_CHUNK      65536
+#define SCAN_MAX        (16 << 20)         /* bytes from a guess to its next cluster, at most */
+#define SCAN_KEEP       64                 /* a cluster's start to its Timecode, at most */
+
+/* An EBML number at b (n bytes): its length (0: not one); an ID keeps
+   its length marker, a size doesn't */
+static int ebml_num(const uint8_t *b, int n, int is_id, uint64_t *out)
+{
+    int len = 1;
+    uint64_t x;
+    if (n < 1 || !b[0])
+        return 0;
+    while (!(b[0] & (0x80 >> (len - 1))))
+        len++;
+    if (len > n || len > (is_id ? 4 : 8))
+        return 0;
+    x = is_id ? b[0] : b[0] & ((0x80 >> (len - 1)) - 1);
+    for (int i = 1; i < len; i++)
+        x = x << 8 | b[i];
+    *out = x;
+    return len;
+}
+
+/* A Cluster starting at b (n bytes): its Timecode, after any CRC-32,
+   Position or PrevSize; 0 if it isn't one */
+static int cluster_time(const uint8_t *b, int n, uint64_t *tc)
+{
+    uint64_t id, size;
+    int p = 4, k;
+    if (n < 8 || b[0] != 0x1F || b[1] != 0x43 || b[2] != 0xB6 || b[3] != 0x75 ||
+        !(k = ebml_num(b + p, n - p, 0, &size)))
+        return 0;
+    p += k;
+    for (int c = 0; c < 4; c++) {
+        if (!(k = ebml_num(b + p, n - p, 1, &id)))
+            return 0;
+        p += k;
+        if (!(k = ebml_num(b + p, n - p, 0, &size)) || size > 8)
+            return 0;
+        p += k;
+        if (p + (int)size > n)
+            return 0;
+        if (id == 0xE7) {                  /* Timecode */
+            *tc = 0;
+            for (int i = 0; i < (int)size; i++)
+                *tc = *tc << 8 | b[p + i];
+            return 1;
+        }
+        if (id != 0xBF && id != 0xA7 && id != 0xAB)   /* CRC-32, Position, PrevSize */
+            return 0;
+        p += size;
+    }
+    return 0;
+}
+
+/* The first cluster at or after byte POS: where it is, and its time in
+   seconds from the stream's start; -1 if none in SCAN_MAX bytes */
+static int cluster_after(AVIOContext *pb, int64_t pos, const AVStream *st, double most,
+                         int64_t *at, double *t)
+{
+    uint8_t *buf = av_malloc(SCAN_CHUNK + SCAN_KEEP);
+    int64_t base = pos, start = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
+    int keep = 0, n, found = -1;
+    if (!buf || avio_seek(pb, pos, SEEK_SET) < 0) {
+        av_free(buf);
+        return -1;
+    }
+    while (found < 0 && base - pos < SCAN_MAX && (n = avio_read(pb, buf + keep, SCAN_CHUNK)) > 0) {
+        n += keep;
+        for (int i = 0; i + SCAN_KEEP <= n; i++) {
+            uint64_t tc;
+            if (buf[i] == 0x1F && cluster_time(buf + i, SCAN_KEEP, &tc)) {
+                *t = ((int64_t)tc - start) * av_q2d(st->time_base);
+                if (*t >= -1 && *t <= most) {   /* (else data that looked like one) */
+                    *at = base + i;
+                    found = 0;
+                    break;
+                }
+            }
+        }
+        if (n < SCAN_KEEP)
+            break;                          /* (the end) */
+        memmove(buf, buf + n - SCAN_KEEP, SCAN_KEEP);
+        base += n - SCAN_KEEP;
+        keep = SCAN_KEEP;
+    }
+    av_free(buf);
+    return found;
+}
+
+/* Before a seek to SECONDS in a local Matroska file: clusters near it put
+   into the index if the index has nothing within SEEK_INDEX_GAP before it */
+static void mkv_seek_index(ReelCore *v, double seconds)
+{
+    AVIOContext *pb = v->fmt->pb;
+    AVStream *st = v->vst;
+    int si = av_find_default_stream_index(v->fmt), looks = 0, n;
+    int64_t start, p0 = 0, p1, size;
+    double tb, t0 = 0, t1 = v->duration, t;
+    if (strncmp(v->fmt->iformat->name, "matroska", 8) || si != v->vs || !pb ||
+        !(pb->seekable & AVIO_SEEKABLE_NORMAL) || v->duration <= 0 || (size = avio_size(pb)) <= 0)
+        return;
+    p1 = size;
+    tb = av_q2d(st->time_base);
+    start = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
+    n = avformat_index_get_entries_count(st);
+    for (int i = 0; i < n; i++) {          /* the known clusters either side */
+        const AVIndexEntry *e = avformat_index_get_entry(st, i);
+        double et = (e->timestamp - start) * tb;
+        if (et <= seconds && et >= t0) {
+            t0 = et;
+            p0 = e->pos;
+        } else if (et > seconds && et < t1) {
+            t1 = et;
+            p1 = e->pos;
+        }
+    }
+    while (seconds - t0 > SEEK_INDEX_GAP && looks < SEEK_LOOKS && t1 > t0 && p1 > p0) {
+        double want = FFMAX(seconds - SEEK_AIM, t0);   /* (a little before: the rest read forward) */
+        int64_t at, guess = p0 + (int64_t)((want - t0) / (t1 - t0) * (p1 - p0));
+        looks++;
+        if (guess <= p0 || cluster_after(pb, guess, st, v->duration + 60, &at, &t) < 0 ||
+            at <= p0 || at >= p1)
+            break;                          /* (nothing new: as before, it reads its way) */
+        av_add_index_entry(st, at, start + (int64_t)llrint(t / tb), 0, 0, AVINDEX_KEYFRAME);
+        if (t <= seconds) {
+            t0 = t;
+            p0 = at;
+        } else {
+            t1 = t;
+            p1 = at;
+        }
+    }
+    if (looks)
+        av_log(NULL, AV_LOG_INFO, "reelcore: no index near %.1f s: a cluster at %.1f s found by its bytes (%d %s)\n",
+               seconds, t0, looks, looks == 1 ? "look" : "looks");
+}
+
+/* When a local file opens: how much index it has, for the log. A
+   Matroska file's Cues (usually at the end) are read now, as its first
+   seek would, so it's known whether there are any. */
+static void index_note(ReelCore *v)
+{
+    AVStream *st = v->vst;
+    int n, mkv = !strncmp(v->fmt->iformat->name, "matroska", 8);
+    double last = 0;
+    if (mkv) {
+        int64_t ts = v->fmt->start_time != AV_NOPTS_VALUE ? v->fmt->start_time : 0;
+        avformat_seek_file(v->fmt, -1, INT64_MIN, ts, ts, 0);
+    }
+    n = avformat_index_get_entries_count(st);
+    if (n) {
+        const AVIndexEntry *e = avformat_index_get_entry(st, n - 1);
+        last = (e->timestamp - (st->start_time != AV_NOPTS_VALUE ? st->start_time : 0)) * av_q2d(st->time_base);
+    }
+    if (last > SEEK_INDEX_GAP || v->duration <= SEEK_INDEX_GAP)
+        av_log(NULL, AV_LOG_INFO, "reelcore: index: %d entries for the video, to %.0f s\n", n, last);
+    else
+        av_log(NULL, AV_LOG_INFO, "reelcore: no index for the video%s\n",
+               mkv ? " (no Cues: a long seek finds its place by the file's bytes; remuxing adds them)" : "");
+}
+
 int reelcore_seek(ReelCore *v, double seconds)
 {
     int64_t ts = (int64_t)(seconds * AV_TIME_BASE);
@@ -3510,6 +3693,7 @@ int reelcore_seek(ReelCore *v, double seconds)
         pthread_cond_signal(&v->net->cond);
         pthread_mutex_unlock(&v->net->lock);
     } else {
+        mkv_seek_index(v, seconds);
         ret = avformat_seek_file(v->fmt, -1, INT64_MIN, ts, ts, 0);
         if (ret < 0)
             return ret;

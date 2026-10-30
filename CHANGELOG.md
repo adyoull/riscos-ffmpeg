@@ -3,6 +3,29 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Not yet released
+
+- **Reel: seeking far in an MKV without an index no longer reads the whole
+  file** (Ralph's GitHub issue, by way of Reel Edit's handoff: a DVD rip
+  on a LanMan98 share, where the position bar or a chapter "locked up"
+  Reel while ±10 s worked). A Matroska file whose muxer wrote no Cues has
+  no index, so FFmpeg's matroska demuxer read every cluster from the
+  start to the place asked for, with the desktop stopped meanwhile. Now,
+  before a seek more than 20 s past anything in the index, reelcore finds
+  a cluster near the place by the file's bytes (a guess from the size and
+  the length, narrowed by the clusters found) and puts it in the
+  demuxer's index, so the seek reads only the last few seconds. The same
+  pictures as with an index. Reel's log says at the start whether a file
+  has an index ("no index for the video (no Cues ...)"), and each
+  such seek.
+  - `mkv_seek_test`: the same 5-minute MPEG-2/AC3 video with and without
+    Cues (`mkv_nocues.py` makes the Cues a Void element, keeping the
+    Duration), sought to 180, 90, 270 and 30 s. Without Cues each read
+    about 0.6 MB (it was 20 MB, 60% of the file, for the first), and each
+    first picture is at the place and the same as with Cues.
+    Mutation-checked: no seeking by bytes, and the Cluster's CRC-32 not
+    skipped.
+
 ## 5.1.10-riscos24 and Reel 0.1.30 (2026-10-30): live streams that keep going, the sound back after buffering, devkit 0.2.21, NEON subtitles
 
 - **riscos-reelhwaccel devkit 0.2.21** (0.2.19 and 0.2.20 too;
