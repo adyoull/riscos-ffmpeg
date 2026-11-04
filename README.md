@@ -107,7 +107,7 @@ From [Releases](../../releases):
 - `Reel-X.Y.Z.zip`: `!Reel` and `!ReelEGL`.
 
 They need SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan).
-They are linked with UnixLib 5.0.3.3 (github.com/adyoull/riscos-unixlib, an unofficial fork of GCCSDK's UnixLib: files over 2GB, up to 4GB-1, and threads that run in programs that poll often) and carry its PThreadTicker module (0.03)
+They are linked with UnixLib 5.0.3.6 (github.com/adyoull/riscos-unixlib, an unofficial fork of GCCSDK's UnixLib: files over 2GB, up to 4GB-1, and threads that run in programs that poll often) and carry its PThreadTicker module (0.03)
 (the thread timer's code; `third_party/pthreadticker`), which each `!Run`
 loads.
 For sound: SharedSoundBuffer and StreamManager, John Duffell's modules.
@@ -147,13 +147,13 @@ and the ARM assembly in FFmpeg, dav1d and x264 relies on that.
 ## Building
 
 The simplest way is riscos-crossdev's container image, which has the
-toolchain (GCCSDK GCC 10.2 with UnixLib 5.0.3.3); everything else is
+toolchain (GCCSDK GCC 10.2 with UnixLib 5.0.3.6); everything else is
 fetched by checksum (`check`, `test-build` and `test` are the checks
 and the Linux tests below; the image has the test rig's qemu, and the
 tests want the host's `ffmpeg` to make their clips):
 
 ```
-docker run --rm -v "$PWD":/src ghcr.io/adyoull/riscos-crossdev:1.8.2 \
+docker run --rm -v "$PWD":/src ghcr.io/adyoull/riscos-crossdev:1.10 \
   sh -c 'make sources deps ffmpeg apps package check test-build test'
 ```
 

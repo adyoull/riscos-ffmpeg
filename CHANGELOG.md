@@ -3,6 +3,26 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
+## Not yet released
+
+- **riscos-crossdev 1.10, UnixLib 5.0.3.6** (`.riscos-deps` moved to
+  v1.10; was 1.8.2's toolchain 1.4, UnixLib 5.0.3.3): everything rebuilt
+  from clean with it. For FFmpeg, Reel and the front end: threads on RISC
+  OS for Linux, sub-second interval timers, pthread scheduling attributes,
+  rename() of mistyped files, `///` paths (5.0.3.4, 5.0.3.5); semaphores
+  that wait (5.0.3.6): FFmpeg doesn't use them, but our SDL (ffplay's,
+  and Reel's fallback sound output), configured afresh, now finds
+  `sem_timedwait`, so `SDL_SemWaitTimeout` and SDL's timer thread sleep
+  instead of failing at once or spinning. `tools/check-unixlib.sh`
+  now wants 5.0.3.6's library (riscos-unixlib's release or toolchain
+  1.10's build of it).
+- **riscos-mesa 20.3.5-18** (`.riscos-deps`, `build/SOURCES` and
+  `build/SHA256SUMS` moved to it): ffplay's `-f egl` window, ReelEGL and
+  the EGL examples relinked; rendering is as in -17. Its SDL 2.32 isn't
+  taken: ffplay's SDL is built from our own copy of riscos-mesa's SDL 2.26
+  patches (`patches/sdl2`), which nothing here needs to move on from.
+- `.riscos-deps` loses the two blank lines the dependency update added.
+
 ## Reel 0.1.31 (2026-10-30): far seeks in an MKV without an index
 
 - **Reel: seeking far in an MKV without an index no longer reads the whole

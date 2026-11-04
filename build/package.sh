@@ -25,7 +25,7 @@ mkdir -p "$DIST"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# every program must be linked with UnixLib 5.0.3.3 (the thread timer !Run loads PThreadTicker
+# every program must be linked with UnixLib 5.0.3.6 (the thread timer !Run loads PThreadTicker
 # for, and files over 2GB)
 echo "UnixLib in the programs:"
 CROSS=$CROSS "$TOP/tools/check-unixlib.sh" "$FF/ffmpeg_g" "$FF/ffprobe_g" "$FF/ffplay_g" "$STAGE/bin/fffront" \

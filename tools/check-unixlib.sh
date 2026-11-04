@@ -1,5 +1,5 @@
 #!/bin/sh
-# check-unixlib.sh ELF... - the toolchain's library is UnixLib 5.0.3.3, and
+# check-unixlib.sh ELF... - the toolchain's library is UnixLib 5.0.3.6, and
 # each program was linked with UnixLib 5.0.1 or later (the thread timer that can run from the PThreadTicker module), and
 # a program with FFmpeg's file protocol with UnixLib 5.0.2's files over
 # 2GB: its libavformat built against 5.0.2's headers calls
@@ -15,21 +15,22 @@
 CROSS=${CROSS:-/root/gccsdk/env/bin/arm-riscos-gnueabihf-}
 EXPECTED=${EXPECTED:-640}
 bad=0
-# UnixLib 5.0.3.3 (5.0.3.1's heaps past 128MB, fork in EABI programs,
-# _exit(n) and threads in programs that poll often; 5.0.3.2's and 5.0.3.3's
-# fixes: threads waiting in read/write and stdio, fork with threads, eventfd,
-# getserv*_r, LLONG_MIN) can't be told from 5.0.3.1 by a program's symbols:
-# check the library the programs were just linked with is that release's
-# (v5.0.3.3; 5.0.3.1's was fa98152f...). Two builds of it: riscos-unixlib's
-# release (e24f16c3...), and riscos-crossdev toolchain 1.4's, built from the
-# same 5.0.3.3 diff (47cf6a2d...; the same symbols), which the container
-# image the GitHub workflows build in has.
-UNIXLIB_SHA256=${UNIXLIB_SHA256:-e24f16c3f4612aae3871ceff521ab86b0d3ac4cc689d734e0e4085d02c774adf 47cf6a2d35cc1b193d3f49ffe262025f6d78e3cb65d92651d3a002aba32983ec}
+# The fixes of UnixLib 5.0.3.3 to 5.0.3.6 can't be told from 5.0.3.1 by a
+# program's symbols (5.0.3.3: threads waiting in read/write and stdio, fork
+# with threads, eventfd, getserv*_r; 5.0.3.4-5.0.3.6: threads on RISC OS for
+# Linux, sub-second interval timers, pthread scheduling attributes, rename()
+# of mistyped files, /// paths, semaphores that wait): check the library
+# the programs were just linked with is 5.0.3.6's. Two builds of it:
+# riscos-unixlib's release (8b5339d7...), and riscos-crossdev toolchain
+# 1.10's, built from the same 5.0.3.6 diff (2c11fb2b...; the same code, only
+# build paths differ), which the container image the GitHub workflows build
+# in has.
+UNIXLIB_SHA256=${UNIXLIB_SHA256:-8b5339d73ee983ca92b017111ff5d01e7f43578492b573d9bd035d9423bab88c 2c11fb2bff4b30589c58e2b59559a3ca844fe569c69ec8e8b8e4677e4eda6987}
 LIB=$(${CROSS}gcc -print-file-name=libunixlib.a 2>/dev/null)
 if [ -f "$LIB" ] && ! echo " $UNIXLIB_SHA256 " | grep -q " $(sha256sum "$LIB" | cut -d' ' -f1) "; then
-  echo "$LIB: not UnixLib 5.0.3.3's libunixlib.a (sha256 e24f16c3... or 47cf6a2d...)" >&2; bad=1
+  echo "$LIB: not UnixLib 5.0.3.6's libunixlib.a (sha256 8b5339d7... or 2c11fb2b...)" >&2; bad=1
 elif [ -f "$LIB" ]; then
-  echo "  the toolchain's libunixlib.a: UnixLib 5.0.3.3"
+  echo "  the toolchain's libunixlib.a: UnixLib 5.0.3.6"
 fi
 for f in "$@"; do
   if ! ${CROSS}nm "$f" 2>/dev/null | grep -q ' __pthread_call_every_code$'; then
@@ -44,7 +45,7 @@ for f in "$@"; do
   if [ "$size" = "$EXPECTED" ]; then
     echo "  $(basename "$f"): UnixLib 5.0.3.x (the $EXPECTED-byte pthread block$(echo "$syms" | grep -q ' __unixlib_fstat64$' && echo ', files over 2GB'))"
   else
-    echo "$f: claims a ${size:-?}-byte pthread block, not $EXPECTED: relink with UnixLib 5.0.3.3" >&2; bad=1
+    echo "$f: claims a ${size:-?}-byte pthread block, not $EXPECTED: relink with UnixLib 5.0.3.6" >&2; bad=1
   fi
 done
 exit $bad
