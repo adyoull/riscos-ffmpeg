@@ -20,6 +20,11 @@
  *   1. StreamManager plays again once it has sound (as it should);
  *   2. StreamManager stops for good when it runs dry, so the stream must be
  *      started again.
+ * And the caller away for 1.2 s at 3 s (a web browser's task busy with a
+ * page: Strada's report), the sound arriving all along:
+ *   3. with the default lead (0.5 s queued), StreamManager runs dry for
+ *      about 0.7 s (the case for a longer one);
+ *   4. with reelcore_set_audio_lead(v, 2), it doesn't.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,12 +57,15 @@ int __wrap_av_read_frame(AVFormatContext *s, AVPacket *pkt)
 static int ssb_open, ssb_opens, ssb_playing, ssb_rate, stop_when_dry, ssb_dead;
 static unsigned ssb_added, ssb_played, ssb_limit;
 static double ssb_last, played_total;
+static double dry_time;                 /* seconds StreamManager had nothing to play (since a start) */
 
 static void ssb_advance(void)
 {
     if (ssb_open && ssb_playing && !ssb_dead && fake_time > ssb_last) {
         unsigned n = (unsigned)((fake_time - ssb_last) * ssb_rate * 4) & ~3u;
         if (n >= ssb_added - ssb_played) {
+            if (ssb_added)
+                dry_time += (fake_time - ssb_last) - (ssb_added - ssb_played) / (ssb_rate * 4.0);
             n = ssb_added - ssb_played;
             if (stop_when_dry && ssb_added)
                 ssb_dead = 1;
@@ -131,6 +139,43 @@ static void play(const char *video, const char *sound, double seconds, int dry_s
     reelcore_close(v);
 }
 
+/* The caller doesn't call reelcore_update for 1.2 s at 3 s: how long
+   StreamManager had nothing to play then (LEAD 0: the default) */
+static double away(const char *video, const char *sound, double lead, const char *what)
+{
+    ReelCoreSource src = { video, sound, NULL, NULL, NULL };
+    ReelCore *v;
+    double t0 = fake_time, dry = -1, d0 = 0;
+    int r = 0, gone = 0;
+    stop_when_dry = 0;
+    gap_from = gap_to = -1;                /* (the sound arrives all along) */
+    v = reelcore_open_source(&src, REELCORE_ASYNC);
+    CHECK(v != NULL, "%s: can't open %s + %s", what, video, sound);
+    if (!v)
+        return -1;
+    if (lead > 0)
+        CHECK(reelcore_set_audio_lead(v, lead) == lead, "%s: the lead asked for isn't the one used", what);
+    for (int i = 0; i < 20000 && r != REELCORE_END && r != REELCORE_FAILED; i++) {
+        r = reelcore_update(v);
+        if (!gone && fake_time - t0 >= 3) {
+            gone = 1;
+            CHECK(reelcore_audio_lead(v) == (lead > 0 ? lead : 0.5), "%s: %.2f s of sound kept queued", what,
+                  reelcore_audio_lead(v));
+            d0 = dry_time;
+            fake_time += 1.2;              /* (StreamManager plays on meanwhile) */
+            r = reelcore_update(v);        /* (its first call back: what played meanwhile) */
+            dry = dry_time - d0;
+        }
+        fake_time += 0.005;
+    }
+    printf("  %s: %.2f s of sound queued, %.2f s with nothing to play while the caller was away\n", what,
+           lead > 0 ? lead : 0.5, dry);
+    CHECK(gone, "%s: didn't play to 3 s", what);
+    CHECK(r == REELCORE_END, "%s: didn't reach the end", what);
+    reelcore_close(v);
+    return dry;
+}
+
 int main(int argc, char **argv)
 {
     double seconds;
@@ -141,6 +186,12 @@ int main(int argc, char **argv)
     seconds = atof(argv[3]);
     play(argv[1], argv[2], seconds, 0, "StreamManager plays again");
     play(argv[1], argv[2], seconds, 1, "StreamManager stops once dry");
+    {
+        double d1 = away(argv[1], argv[2], 0, "the caller away 1.2 s, the default lead");
+        double d2 = away(argv[1], argv[2], 2.0, "the caller away 1.2 s, a lead of 2 s");
+        CHECK(d1 > 0.5, "with the default lead StreamManager didn't run dry (%.2f s): the test shows nothing", d1);
+        CHECK(d2 >= 0 && d2 < 0.02, "with a lead of 2 s StreamManager ran dry for %.2f s", d2);
+    }
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;
 }

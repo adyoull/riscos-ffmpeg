@@ -5,6 +5,15 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Not yet released
 
+- **reelcore: how much sound is kept queued can be set**
+  (`reelcore_set_audio_lead`, `reelcore_audio_lead`; the Web Browser's
+  handoff: Strada's sound stuttered while its web task was busy with a
+  page). 0.5 s stays the default (0.25 with SDL); 0.1 to 3 s can be
+  asked for, before the sound starts or at any time. StreamManager's
+  buffer is now 4 s (the longest lead and a second; it was 2 s), 768 KB
+  at 48 kHz. `sound_gap_test`: the caller away for 1.2 s, with the default
+  lead StreamManager has nothing to play for 0.74 s, with 2 s queued
+  never. Mutation-checked.
 - **riscos-crossdev 1.10, UnixLib 5.0.3.6** (`.riscos-deps` moved to
   v1.10; was 1.8.2's toolchain 1.4, UnixLib 5.0.3.3): everything rebuilt
   from clean with it. For FFmpeg, Reel and the front end: threads on RISC

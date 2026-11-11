@@ -73,6 +73,7 @@ static void cur_changed(ReelCore *v);
                                 them back once let go) */
 #define AUDIO_AHEAD   0.25   /* seconds of sound kept queued (SDL) */
 #define SSB_AHEAD     0.5    /* and with SharedSoundBuffer: rides out a busy desktop */
+/* (reelcore_set_audio_lead: from REELCORE_LEAD_MIN to REELCORE_LEAD_MAX instead) */
 #define SSB_BLOCK     2048   /* sample frames per StreamManager block */
 #define READ_BUDGET   64     /* packets read per reelcore_update at most */
 #define DECODE_BUDGET 8      /* video packets decoded per reelcore_update at most */
@@ -287,6 +288,7 @@ struct ReelCore {
     unsigned n_interlaced, n_deint;
     int64_t t_deint;                   /* microseconds */
     double ahead;                      /* seconds of sound to keep queued */
+    double lead_asked;                 /* reelcore_set_audio_lead's, or 0: the default */
 #ifdef USE_SSB
     int ssb;                           /* 1: SharedSoundBuffer, not SDL (dev is then 1) */
     int ssb_handle, sm_stream;
@@ -437,8 +439,10 @@ static const char *ssb_start(ReelCore *v)
     v->sm_stream = r.r[0];
     av_log(NULL, AV_LOG_VERBOSE, "reelcore: SharedSoundBuffer stream %#x (StreamManager %#x), %d Hz, blocks of %d bytes\n",
            v->ssb_handle, v->sm_stream, v->rate, SSB_BLOCK_BYTES);
-    /* room for far more than we keep queued, so AddBlock doesn't refuse */
-    ssb_swi(StreamManager_SetBuffer, v->sm_stream, v->rate * 4 * 2 + SSB_BLOCK_BYTES * 4, 0, NULL);
+    /* room for more than we ever keep queued (the longest lead, and a
+       second), so AddBlock doesn't refuse: 768 KB at 48 kHz */
+    ssb_swi(StreamManager_SetBuffer, v->sm_stream,
+            (int)(v->rate * 4 * (REELCORE_LEAD_MAX + 1)) + SSB_BLOCK_BYTES * 4, 0, NULL);
     ssb_swi(SharedSoundBuffer_SampleRate, v->ssb_handle, v->rate * 1024, 0, NULL);
     ssb_swi(SharedSoundBuffer_Volume, v->ssb_handle, ssb_volume_word(v), 0, NULL);
     ssb_swi(SharedSoundBuffer_Pause, v->ssb_handle, 0, 0, NULL);     /* R1 bit 0 clear: paused */
@@ -535,7 +539,7 @@ static int aud_open(ReelCore *v, int freq)
         v->dev = 1;
         v->bytes_per_sec = freq * 4;
         v->latency = 0.02;                         /* SharedSound's own buffer, about */
-        v->ahead = SSB_AHEAD;
+        v->ahead = v->lead_asked > 0 ? v->lead_asked : SSB_AHEAD;
         v->ssb_user_paused = 1;                    /* until reelcore_open unpauses */
         return 0;
     }
@@ -565,7 +569,7 @@ static int aud_open(ReelCore *v, int freq)
     v->rate = have.freq;
     v->bytes_per_sec = have.freq * 4;
     v->latency = have.samples / (double)have.freq;
-    v->ahead = AUDIO_AHEAD;
+    v->ahead = v->lead_asked > 0 ? v->lead_asked : AUDIO_AHEAD;
     av_log(NULL, AV_LOG_VERBOSE, "reelcore: SDL audio driver %s, %d Hz, %d samples a buffer\n",
            SDL_GetCurrentAudioDriver() ? SDL_GetCurrentAudioDriver() : "?", have.freq, have.samples);
     return 0;
@@ -2173,6 +2177,32 @@ void reelcore_set_volume(ReelCore *v, double volume)
 }
 
 double reelcore_volume(const ReelCore *v) { return v->vol; }
+
+/* (A Wimp task that goes without the processor for longer than the sound
+   queued hears a gap: a web browser busy with a page, Strada's report.
+   reelcore_update tops the sound up to v->ahead; nothing else changes.) */
+static double default_lead(const ReelCore *v)
+{
+#ifdef USE_SSB
+    if (v->ssb || !v->dev)                 /* (not open yet: SharedSoundBuffer, as a rule) */
+        return SSB_AHEAD;
+#endif
+    (void)v;
+    return AUDIO_AHEAD;
+}
+
+double reelcore_set_audio_lead(ReelCore *v, double seconds)
+{
+    v->lead_asked = seconds > 0 ? av_clipd(seconds, REELCORE_LEAD_MIN, REELCORE_LEAD_MAX) : 0;
+    if (v->dev)                            /* (else open_audio takes it) */
+        v->ahead = v->lead_asked > 0 ? v->lead_asked : default_lead(v);
+    return reelcore_audio_lead(v);
+}
+
+double reelcore_audio_lead(const ReelCore *v)
+{
+    return v->dev ? v->ahead : v->lead_asked > 0 ? v->lead_asked : default_lead(v);
+}
 
 /* ---------------------------------------------------------------- decode */
 

@@ -246,6 +246,21 @@ void reelcore_set_loop(ReelCore *v, int on);
 void reelcore_set_volume(ReelCore *v, double volume);
 double reelcore_volume(const ReelCore *v);
 
+/* How much sound is kept queued ahead of what's playing, in seconds: by
+   default 0.5 with SharedSoundBuffer (0.25 with SDL). reelcore_update()
+   tops it up, so a caller whose task can go without the processor for
+   longer than that (a web browser busy with a page) hears gaps; 1.5 to 2
+   rides those out. From REELCORE_LEAD_MIN to REELCORE_LEAD_MAX; 0 = the
+   default. Call it at any time, before the sound starts too (straight
+   after reelcore_open_source() with REELCORE_ASYNC, say). Lip sync doesn't
+   change (the clock is the sound playing), nor do pausing and seeking;
+   with SharedSoundBuffer a volume change is heard at once too (with SDL,
+   after what's queued). Returns the lead now in use. */
+#define REELCORE_LEAD_MIN 0.1
+#define REELCORE_LEAD_MAX 3.0
+double reelcore_set_audio_lead(ReelCore *v, double seconds);
+double reelcore_audio_lead(const ReelCore *v);
+
 /* Playback speed, 0.5 to 2 (1 = normal). The sound keeps its pitch
    (FFmpeg's atempo filter). Changing it restarts the sound from the picture
    on screen (a short gap). */
