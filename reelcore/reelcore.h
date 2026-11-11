@@ -80,7 +80,7 @@ typedef struct ReelCoreSource {
 } ReelCoreSource;
 
 /* Opens a source. Network addresses (reelcore_is_network) are opened and
-   read by a thread of reelcore's own, reading up to 10 s ahead, so a slow
+   read by a thread of reelcore's own, reading up to 30 s ahead, so a slow
    connection doesn't hold up the caller; everything else is still called
    from the caller's thread. With REELCORE_ASYNC the call returns at once
    (NULL only if it couldn't even start) and reelcore_update() returns
@@ -90,6 +90,59 @@ typedef struct ReelCoreSource {
 ReelCore *reelcore_open_source(const ReelCoreSource *src, int flags);
 /* 1: an address (a "scheme://" other than file:), read over the network */
 int reelcore_is_network(const char *url);
+
+/* Reading through the caller's callbacks instead of from an address: for
+   a web browser's Media Source Extensions (YouTube and most video sites),
+   where the page's script fetches the media and hands the browser the
+   bytes in pieces. A stream is the initialisation segment (fMP4's
+   ftyp+moov, WebM's header and Tracks), then media segments in time
+   order (moof+mdat, Clusters).
+
+   read: like read(), into buf, at most size bytes: how many (> 0); 0, the
+   stream has ended for good; REELCORE_IO_AGAIN, none yet but more will
+   come (reelcore asks again every 10 ms until there are some, or the
+   close; meanwhile the player says it's buffering, as for an address);
+   any other negative number, it failed. Don't block for long in it: the
+   close waits for it to return.
+   seek: NULL if the stream can only be read forward. Otherwise as lseek
+   (SEEK_SET, SEEK_CUR, SEEK_END: the new position, or negative), and
+   whence REELCORE_SEEK_SIZE: the stream's size in bytes, or negative if
+   unknown.
+   format: FFmpeg's short name ("mp4", "webm", "matroska", "mpegts"), or
+   NULL to tell from the data.
+   name: for messages, or NULL.
+
+   The callbacks are called on reelcore's reader thread (as addresses are
+   read), so they must take care of their own locking. Use REELCORE_ASYNC:
+   without it reelcore_open_io waits for the stream to be open, and the
+   data to open it has to come from somewhere else meanwhile.
+
+   Video from one stream and the sound, optionally, from another (one
+   SourceBuffer each); AUDIO NULL: the sound, if any, is in VIDEO. The
+   strings are copied; the callbacks are used until reelcore_close.
+
+   Times: reelcore_position(), reelcore_seek() and reelcore_duration()
+   count from the first time in the stream, reelcore_start_time() (a
+   browser that opens a ReelCore at a segment 120 s in gets 0 there and
+   adds 120). Seeking: with no seek callback only forward (after
+   REELCORE_READY), by decoding up to the place and passing over the
+   pictures and sound before it; back gives AVERROR(ENOSYS), and the
+   browser opens a new ReelCore from the segment wanted, then seeks into
+   it. */
+#define REELCORE_IO_AGAIN  (-1000)
+#define REELCORE_SEEK_SIZE 0x10000      /* (FFmpeg's AVSEEK_SIZE) */
+typedef struct ReelCoreIO {
+    void *opaque;                      /* given to the callbacks */
+    int (*read)(void *opaque, uint8_t *buf, int size);
+    int64_t (*seek)(void *opaque, int64_t offset, int whence);
+    const char *format;
+    const char *name;
+} ReelCoreIO;
+ReelCore *reelcore_open_io(const ReelCoreIO *video, const ReelCoreIO *audio, int flags);
+/* Where the times reelcore gives count from: the first time in the
+   stream, in seconds (0 for most files; a stream that starts later, at a
+   media segment or a live stream's, more) */
+double reelcore_start_time(const ReelCore *v);
 /* 1 open, 0 still opening (REELCORE_ASYNC), -1 failed */
 int reelcore_ready(const ReelCore *v);
 

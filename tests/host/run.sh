@@ -406,6 +406,20 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=av_rea
   "$O/sound_gap_test.o" "$O/reelcore_ssb.o" "$O/fake_sdl_only.o" $LIBS 2>/dev/null
 echo "== sound_gap_test (SharedSoundBuffer: the sound from its own input late for 3 s)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/sound_gap_test" "$O/gap_video.mp4" "$O/gap_sound.mka" 8 2>&1 | grep -v "reelcore: " || bad=1
+# reelcore_open_io: a stream read through the caller's callbacks (a web
+# browser's Media Source Extensions), cut as MSE carries it by FFmpeg's DASH muxer
+ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=20 -f lavfi -i sine=d=20:sample_rate=48000 \
+  -c:v libx264 -preset ultrafast -g 25 -keyint_min 25 -c:a aac -ac 2 "$O/io_src.mp4"
+rm -rf "$O/io_dash" && mkdir -p "$O/io_dash"
+ffmpeg -v error -y -i "$O/io_src.mp4" -map 0:v -map 0:a -c copy -f dash -seg_duration 2 -use_template 1 -use_timeline 0 \
+  -init_seg_name 'init-$RepresentationID$.m4s' -media_seg_name 'chunk-$RepresentationID$-$Number%05d$.m4s' \
+  "$O/io_dash/manifest.mpd"
+$CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/io_test.c" -o "$O/io_test.o"
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/io_test" "$O/io_test.o" \
+  "$O/reelcore.o" "$O/fake_sdl_only.o" "$O/fake_riscos.o" $LIBS 2>/dev/null
+echo "== io_test (reelcore_open_io: MSE-style segments through callbacks, arriving, seeking, closing)"
+"$TOP/tests/qemu/aligntrap.sh" "$O/io_test" "$O/io_src.mp4" "$O/io_dash" 2>&1 | grep -v "swscaler\|reelcore: \|mov,mp4\|Consider increasing" || bad=1
+
 # seeking far in an MKV without an index (no Cues): a few seconds read, not the file
 ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=300 -f lavfi -i sine=d=300:sample_rate=48000 \
   -c:v mpeg2video -g 12 -b:v 800k -c:a ac3 -b:a 96k "$O/mkv_cues.mkv"

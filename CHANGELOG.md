@@ -5,6 +5,25 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Not yet released
 
+- **reelcore: streams read through the caller's callbacks**
+  (`reelcore_open_io`, `ReelCoreIO`, `reelcore_start_time`; the Web
+  Browser's handoff: Media Source Extensions, which YouTube and most video
+  sites use, hand the browser the media in pieces, with no address to
+  open). Video and, optionally, sound from separate streams; read on
+  reelcore's reader thread; "nothing yet" (`REELCORE_IO_AGAIN`) is waited
+  out until data, the end or the close, and shown as buffering. With a
+  seek callback seeking is as for a file; without one only forward, by
+  decoding up to the place (back: `AVERROR(ENOSYS)`, and the browser
+  opens the stream again from the segment wanted). Times count from the
+  stream's first (`reelcore_start_time`). Streams read this way don't wait
+  for 4 s in hand before the first picture, as a live address does: the
+  browser decides. `reelcore_seek` is now in two parts (what was read
+  from the old place, and the clock and output, shared with the forward
+  seek). `io_test`: 20 s of H.264 + AAC cut by FFmpeg's DASH muxer as MSE
+  carries it, two streams arriving a segment a second with a 2 s stall,
+  opened at the 10 s segment and sought forward (the same picture as the
+  file sought there), seekable both ways, a close while it waits, a read
+  that fails. Mutation-checked.
 - **reelcore: how much sound is kept queued can be set**
   (`reelcore_set_audio_lead`, `reelcore_audio_lead`; the Web Browser's
   handoff: Strada's sound stuttered while its web task was busy with a
