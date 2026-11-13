@@ -3339,6 +3339,35 @@ static int pics_wanted(const ReelCore *v)
     return n;
 }
 
+/* No more packets from the input. A local file that stops well before its
+   length says where, and why it may have: Ralph's 6.6 GB DVD rip on a NAS
+   through LanMan98 couldn't be read past 2 GB, so it "ended" 43 minutes
+   in (and a seek past that ended at once); RISC OS itself reads no file
+   past 4 GB. */
+#define EARLY_END 30.0                     /* s short of the length: not the end */
+static void demux_ended(ReelCore *v, int ret)
+{
+    v->eof_demux = 1;
+    if (!v->adec)
+        v->eof_audio = 1;
+    if (!v->net && v->duration > 0 && v->fmt->pb) {
+        double at = reelcore_position(v), start = reelcore_start_time(v);
+        int64_t byte = avio_tell(v->fmt->pb), size = avio_size(v->fmt->pb);
+        const char *why = "";
+        if (v->seek_target >= 0 && v->seek_target - start > at)
+            at = v->seek_target - start;   /* (a seek past where it stopped) */
+        if (at >= v->duration - EARLY_END)
+            return;
+        if (byte >= 2000000000LL && byte <= (1LL << 31))
+            why = ": nothing past 2 GB could be read (LanMan98 and some other filing systems stop there)";
+        else if (byte >= 4200000000LL && byte <= (1LL << 32))
+            why = ": nothing past 4 GB could be read (the most RISC OS reads of a file)";
+        av_log(NULL, AV_LOG_WARNING, "reelcore: the file ended at %.0f s of %.0f s (%s), after %lld bytes (%.2f GB) of %lld%s\n",
+               at, v->duration, ret == AVERROR_EOF ? "its end" : av_err2str(ret), (long long)byte, byte / 1e9,
+               (long long)size, why);
+    }
+}
+
 static void fill(ReelCore *v)
 {
     for (int budget = READ_BUDGET; budget > 0 && !v->eof_demux; budget--) {
@@ -3353,8 +3382,7 @@ static void fill(ReelCore *v)
         if (ret == AVERROR(EAGAIN))
             break;                         /* (the network: not here yet) */
         if (ret < 0) {                     /* the end: the sound decoder flushed after its */
-            v->eof_demux = 1;              /* packets, the video's once its packets are done */
-            if (!v->adec) v->eof_audio = 1;
+            demux_ended(v, ret);           /* packets, the video's once its packets are done */
             break;
         }
         if (kind == 0)
@@ -3374,8 +3402,7 @@ static void fill(ReelCore *v)
             /* more packets on the way to the seek point */
             int kind, ret = next_packet(v, v->pkt, &kind);
             if (ret < 0 && ret != AVERROR(EAGAIN)) {
-                v->eof_demux = 1;
-                if (!v->adec) v->eof_audio = 1;
+                demux_ended(v, ret);
                 audio_drain(v);
             } else if (ret >= 0) {
                 if (kind == 0)
@@ -3712,7 +3739,7 @@ void reelcore_pause(ReelCore *v, int paused)
 
 #define SEEK_INDEX_GAP  20.0               /* s: a seek this much past the index reads its way */
 #define SEEK_AIM        4.0                /* s: a cluster this much before the place aimed for */
-#define SEEK_LOOKS      8                  /* guesses at most, each narrowing the range */
+#define SEEK_LOOKS      12                 /* guesses at most, each narrowing the range */
 #define SCAN_CHUNK      65536
 #define SCAN_MAX        (16 << 20)         /* bytes from a guess to its next cluster, at most */
 #define SCAN_KEEP       64                 /* a cluster's start to its Timecode, at most */
@@ -3809,7 +3836,7 @@ static void mkv_seek_index(ReelCore *v, double seconds)
 {
     AVIOContext *pb = v->fmt->pb;
     AVStream *st = v->vst;
-    int si = av_find_default_stream_index(v->fmt), looks = 0, n;
+    int si = av_find_default_stream_index(v->fmt), looks = 0, n, top_known = 1;
     int64_t start, p0 = 0, p1, size;
     double tb, t0 = 0, t1 = v->duration, t;
     if (strncmp(v->fmt->iformat->name, "matroska", 8) || si != v->vs || !pb ||
@@ -3830,12 +3857,24 @@ static void mkv_seek_index(ReelCore *v, double seconds)
             p1 = e->pos;
         }
     }
-    while (seconds - t0 > SEEK_INDEX_GAP && looks < SEEK_LOOKS && t1 > t0 && p1 > p0) {
+    /* TOP_KNOWN 0: the top of the range is where a guess found nothing,
+       its time unknown (Ralph's 6.6 GB film through LanMan98: nothing past
+       2 GB, and a size that didn't say so); guessed from the rate so far,
+       or half way */
+    while (seconds - t0 > SEEK_INDEX_GAP && looks < SEEK_LOOKS && p1 > p0 && (!top_known || t1 > t0)) {
         double want = FFMAX(seconds - SEEK_AIM, t0);   /* (a little before: the rest read forward) */
-        int64_t at, guess = p0 + (int64_t)((want - t0) / (t1 - t0) * (p1 - p0));
+        double frac = top_known ? (want - t0) / (t1 - t0) :
+                      t0 > 0 && p0 > 0 ? (want - t0) * (p0 / t0) / (p1 - p0) : 0.5;
+        int64_t at, guess = p0 + (int64_t)(FFMIN(frac, 0.95) * (p1 - p0));   /* (never the top itself) */
         looks++;
-        if (guess <= p0 || cluster_after(pb, guess, st, v->duration + 60, &at, &t) < 0 ||
-            at <= p0 || at >= p1)
+        if (guess <= p0)
+            break;
+        if (cluster_after(pb, guess, st, v->duration + 60, &at, &t) < 0) {
+            p1 = guess;                    /* nothing there: past what can be read */
+            top_known = 0;
+            continue;
+        }
+        if (at <= p0 || at >= p1)
             break;                          /* (nothing new: as before, it reads its way) */
         av_add_index_entry(st, at, start + (int64_t)llrint(t / tb), 0, 0, AVINDEX_KEYFRAME);
         if (t <= seconds) {
@@ -3844,6 +3883,7 @@ static void mkv_seek_index(ReelCore *v, double seconds)
         } else {
             t1 = t;
             p1 = at;
+            top_known = 1;
         }
     }
     if (looks)

@@ -425,7 +425,7 @@ ffmpeg -v error -y -f lavfi -i testsrc2=size=320x180:rate=25:duration=300 -f lav
   -c:v mpeg2video -g 12 -b:v 800k -c:a ac3 -b:a 96k "$O/mkv_cues.mkv"
 python3 -I "$HERE/mkv_nocues.py" "$O/mkv_cues.mkv" "$O/mkv_nocues.mkv"
 $CC -I$S/include -I$DEVKIT/include/SDL2 -I$TOP/reelcore -I$HERE -c "$HERE/mkv_seek_test.c" -o "$O/mkv_seek_test.o"
-arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=read -o "$O/mkv_seek_test" "$O/mkv_seek_test.o" \
+arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -Wl,--wrap=read -Wl,--wrap=__fstat64_time64 -o "$O/mkv_seek_test" "$O/mkv_seek_test.o" \
   "$O/reelcore.o" "$O/fake_sdl_only.o" "$O/fake_riscos.o" $LIBS 2>/dev/null
 echo "== mkv_seek_test (an MKV without Cues: far seeks find their place by the bytes)"
 "$TOP/tests/qemu/aligntrap.sh" "$O/mkv_seek_test" "$O/mkv_nocues.mkv" "$O/mkv_cues.mkv" 300 2>&1 | grep -v "swscaler\|reelcore: " || bad=1

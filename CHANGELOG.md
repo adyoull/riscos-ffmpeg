@@ -5,6 +5,22 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
 
 ## Not yet released
 
+- **Reel: a file that can't be read to its end says so** (Ralph's GitHub
+  issue #3: his MKV, a 6.6 GB DVD rip on a NAS through LanMan98, stopped
+  at 43 minutes, and a seek past there "ended the film"). Nothing past
+  2 GB of the file could be read (LanMan98 stops there; RISC OS itself at
+  4 GB). Reel can't read further, but the log now says where a local file
+  stopped short of its length: "the file ended at 2600 s of 8043 s ...
+  after 2147483648 bytes (2.15 GB) ...: nothing past 2 GB could be read".
+  - The seek's search by bytes in an MKV without an index takes a guess
+    that finds nothing (past what can be read, with a size that didn't
+    say so) as the top of the range, and guesses again from the rate so
+    far, or half way. It gave up there before, and the seek read from
+    the last place known: Ralph's first seek to 42:30 took 18 s.
+  - `mkv_seek_test`: the file read only to half way, played from before
+    there and sought past it (it ends there, logged with the byte it
+    stopped at), and with its size given as twice that, a seek inside
+    what can be read (0.6 MB read, not 15 MB). Mutation-checked.
 - **reelcore: streams read through the caller's callbacks**
   (`reelcore_open_io`, `ReelCoreIO`, `reelcore_start_time`; the Web
   Browser's handoff: Media Source Extensions, which YouTube and most video
