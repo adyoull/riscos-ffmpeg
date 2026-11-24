@@ -15,6 +15,15 @@
  *     hevcdec_frame_to_i420(d, f, planes, strides)
  *   hevcdec_close(d);
  *
+ * 0.1.16: on RISC OS on Linux, cacheable frames when Linux's rpivid allows
+ * cache hints (ROL's kernel 6.6.78-18 on): converting them is as quick as
+ * on native RISC OS. stats.cached_frames says so.
+ * 0.1.15: on RISC OS on Linux (ROL), with Linux's rpivid driver (the
+ * kernel's own copy of the same block's driver, through V4L2's stateless
+ * decoder interface) when there's no block to drive directly: chosen at
+ * hevcdec_open, the same calls either way. hevcdec_frame_export gives a
+ * frame there as a Linux dmabuf, to be shown without a copy (rol-fb's
+ * overlay); stats.backend says which.
  * 0.1.12: the halved conversion row by row too (hevcdec_convert_benchmark
  * bits 0), to time against column by column into memory that isn't cached.
  * 0.1.11: a frame is cleaned and invalidated once after the block writes
@@ -49,7 +58,7 @@
 #include <stdint.h>
 #include "hevc_ctrls.h"
 
-#define HEVCDEC_VERSION "0.1.14"
+#define HEVCDEC_VERSION "0.1.16"
 
 #define HEVCDEC_OK           0
 #define HEVCDEC_ERROR       -1   /* hevcdec_error says why */
@@ -111,7 +120,27 @@ typedef struct {
        bytes, and frames hevcdec_frame_free has given back */
     unsigned frames, frames_freed;
     unsigned long long frames_bytes;
+    /* (0.1.15) HEVCDEC_BACKEND_BLOCK (the block, driven directly) or
+       HEVCDEC_BACKEND_LINUX (Linux's rpivid, on RISC OS on Linux) */
+    int backend;
 } hevcdec_stats;
+
+#define HEVCDEC_BACKEND_BLOCK 0
+#define HEVCDEC_BACKEND_LINUX 1
+
+/* (0.1.15) A frame as a Linux dmabuf (Linux's rpivid only), for showing it
+   without a copy: fd (hevcdec's, the same each time for the frame's
+   buffer, valid until the decoder closes: don't close it), the DRM
+   format ('NV12', or 'P030' for 10-bit), the modifier (DRM_FORMAT_MOD_BROADCOM_SAND128_COL_HEIGHT of col_height),
+   the frame's buffer size in samples (width x height: the picture is the
+   SPS's output window inside it), col_height (lines in each 128-byte
+   column: luma rows, then chroma from row height), and its bytes. */
+typedef struct {
+    int fd;
+    uint32_t drm_format;
+    uint64_t modifier;
+    unsigned width, height, col_height, size;
+} hevcdec_export;
 
 void hevcdec_config_init(hevcdec_config *c);
 int hevcdec_open(hevcdec **out, const hevcdec_config *c);
@@ -190,6 +219,11 @@ int hevcdec_frame_to_i420_half(hevcdec *d, const hevcdec_frame *f, uint8_t *cons
 #define HEVCDEC_CONVERT_WAYS 4
 int hevcdec_convert_benchmark(hevcdec *d, const hevcdec_frame *f, void *const planes[3], const int strides[3], int bits,
                               int x, int y, int w, int h, int way, int n, unsigned *cs);
+
+/* (0.1.15) Waits for f's picture, then fills *e: HEVCDEC_OK;
+   HEVCDEC_UNSUPPORTED with the block (its frames aren't Linux's);
+   HEVCDEC_ERROR (hevcdec_error). */
+int hevcdec_frame_export(hevcdec *d, const hevcdec_frame *f, hevcdec_export *e);
 
 const char *hevcdec_error(const hevcdec *d);
 void hevcdec_get_stats(const hevcdec *d, hevcdec_stats *s);

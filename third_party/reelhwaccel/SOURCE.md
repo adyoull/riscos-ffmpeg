@@ -14,6 +14,15 @@ the EGL examples with `-lvcdec`, and the devkit carries `libvcdec.a`.
   `lib/libvcdec.a`, `COPYING`, `README.md`. `Licence` is ours, packaged
   as docs.Licences.ReelHWAccel.
   Patch 0021 is the devkit's `ffmpeg/0001-avcodec-h264_vchiq.patch`.
+- Devkit 0.2.23, `riscos-reelhwaccel-devkit-0.2.23.tgz` (sha256
+  df70da47671d4986ce64bbcc4576d3b3a188c6232f0b8880df558326b115962a, from
+  the devkit's dist/r58, before its GitHub release; includes 0.2.22):
+  hevcdec 0.1.16 (vcdec 0.4.11 and vcenc as before). On RISC OS on Linux
+  hevcdec drives Linux's own rpivid driver (the block is Linux's there),
+  with cacheable frames from ROL's kernel 6.6.78-18; native RISC OS is
+  unchanged. The patches 0001-0003 are as in 0.2.21, so 0021, 0023 and
+  0027 are unchanged; hwhevcdec.h (hevcdec_stats has `backend`,
+  hevcdec_frame_export) and the libraries replaced.
 - Devkit 0.2.21, `riscos-reelhwaccel-devkit-0.2.21.tgz` (sha256
   9a5fcb89856056f20f0bc509cdcf4c41b0ff6d12884338a7a0168e3651bedf52, from
   the devkit's dist/r55, before its GitHub release; includes 0.2.19 and

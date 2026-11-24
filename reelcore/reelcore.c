@@ -2181,8 +2181,18 @@ int reelcore_media_info(const ReelCore *v, char *buf, int size)
             ADD("Frames\t%lld\n", (long long)st->nb_frames);
         if (v->vc)
             ADD("Decoder\tVideoCore (h264_vchiq)\n");
-        else if (v->hb)
-            ADD("Decoder\tHEVC block (hevc_hwdec)\n");
+        else if (v->hb) {
+            const char *via = "";
+#ifdef REELCORE_HEVCDEC
+            if (v->cur && hw_frame(v->cur)) { /* (RISC OS on Linux: the block is Linux's, devkit 0.2.22) */
+                hevcdec_stats hs;
+                hevcdec_get_stats(hevcdec_frame_decoder((const hevcdec_frame *)v->cur->data[3]), &hs);
+                if (hs.backend == HEVCDEC_BACKEND_LINUX)
+                    via = ", through Linux's rpivid";
+            }
+#endif
+            ADD("Decoder\tHEVC block (hevc_hwdec%s)\n", via);
+        }
         else
             ADD("Decoder\t%s, 1 thread%s\n", v->vdec && v->vdec->codec ? v->vdec->codec->name : "?",
                 v->vc_failed ? " (the VideoCore failed part way)" : v->hb_failed ? " (the HEVC block failed part way)" : "");
