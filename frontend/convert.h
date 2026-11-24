@@ -1,4 +1,4 @@
-/* convert.h - !FFmpeg's Convert window (convert.c). */
+/* convert.h - !FFmpeg5's Convert window (convert.c). */
 #ifndef CONVERT_H
 #define CONVERT_H
 #include <stddef.h>

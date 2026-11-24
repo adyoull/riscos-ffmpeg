@@ -508,7 +508,7 @@ instead, as before 0.1.9, to compare.
 Needs
 -----
 Files over 2GB (up to 4GB-1, the largest RISC OS allows) play: Reel is
-built with UnixLib 5.0.3.6 (an unofficial fork of GCCSDK's UnixLib).
+built with UnixLib 5.0.3.10 (an unofficial fork of GCCSDK's UnixLib).
 Included: PThreadTicker 0.03, a small module from UnixLib (the C
 library Reel is built with) for its thread timer; !Run loads it (a copy
 merged into !System first). Reel plays files on one thread; a web
@@ -548,4 +548,4 @@ Licence
 -------
 GNU GPL, version 2 or later: Reel includes FFmpeg built with x264. The
 docs directory has the licences and Reel's source; FFmpeg's source and
-the port's patches are in the riscos-ffmpeg package (!FFmpeg.docs.source).
+the port's patches are in the riscos-ffmpeg package (!FFmpeg5.docs.source).

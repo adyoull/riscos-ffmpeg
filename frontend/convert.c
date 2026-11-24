@@ -1,5 +1,5 @@
 /*
- * convert.c - !FFmpeg's Convert window.
+ * convert.c - !FFmpeg5's Convert window.
  *
  * Opened by clicking the FFmpeg icon (or Convert... on its menu). One
  * window, top to bottom in the order you use it:
@@ -31,7 +31,7 @@
  * to Obey files in <Wimp$ScrapDir>.ffmpeg, which keeps *TaskWindow's own
  * command line short.
  *
- * Part of riscos-ffmpeg. GPL v2 or later (as the rest of !FFmpeg).
+ * Part of riscos-ffmpeg. GPL v2 or later (as the rest of !FFmpeg5).
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -799,7 +799,7 @@ static int ask(const char *text, const char *buttons)
     r.r[0] = (intptr_t)&e;
     r.r[1] = 2 | (1 << 8) | (4 << 9);   /* Cancel, new style, a question */
     r.r[2] = (intptr_t)"Convert";
-    r.r[3] = (intptr_t)"!ffmpeg";
+    r.r[3] = (intptr_t)"!ffmpeg5";
     r.r[4] = 1;
     r.r[5] = (intptr_t)buttons;
     if (swi(Wimp_ReportError, &r))
@@ -997,7 +997,7 @@ static int run(const char *program, const char *args, int txt, const char *obey_
         report("Can't write to <Wimp$ScrapDir>.", 1);
         return -1;
     }
-    fprintf(f, "| Run by !FFmpeg's Convert window\n%s.%s %s\n", C.ffdir, program, args);
+    fprintf(f, "| Run by !FFmpeg5's Convert window\n%s.%s %s\n", C.ffdir, program, args);
     if (txt == TXT_CONVERT)                             /* how it ended (conv_succeeded) */
         fprintf(f, "Echo ffmpeg-exit=<Sys$ReturnCode>\n");
     fclose(f);

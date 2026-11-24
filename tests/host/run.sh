@@ -5,7 +5,7 @@
 # (tests/qemu/aligntrap.sh), so they also catch unaligned accesses.
 #   egl_outdev_test: libavdevice/riscos_egl.c (the -f egl output device)
 #   ffegl_test:      reelcore/reelcore.c (the player core) + ffegl/ffegl.c (its EGL layer)
-#   fffront_test:    frontend/fffront.c (!FFmpeg's icon bar front end), host gcc
+#   fffront_test:    frontend/fffront.c (!FFmpeg5's icon bar front end), host gcc
 #   mesa/run.sh:     ffegl_texture() with riscos-mesa's real libEGL/libOSMesa
 # Usage: QEMU=path/to/patched/qemu-arm tests/host/run.sh
 set -euo pipefail
@@ -509,7 +509,7 @@ echo "== fffront_test (the icon bar front end, on this host)"
 gcc -O1 -DFFFRONT_NO_MAIN -I"$HERE/fake" -I"$TOP/frontend" "$TOP/frontend/fffront.c" "$TOP/frontend/convert.c" \
   "$HERE/fffront_test.c" -o "$O/fffront_test" 2>/dev/null && "$O/fffront_test" || bad=1
 # the Convert window: 32-bit ARM like RISC OS (the Wimp's blocks hold pointers), under the trapping qemu
-echo "== convert_test (!FFmpeg's Convert window, scripted desktop)"
+echo "== convert_test (!FFmpeg5's Convert window, scripted desktop)"
 arm-linux-gnueabihf-gcc -O1 -g -marm -mno-unaligned-access -DFFFRONT_NO_MAIN -DCONV_HOST_PATHS -DCONV_TEST \
   -I"$HERE/fake" -I"$TOP/frontend" "$TOP/frontend/fffront.c" "$TOP/frontend/convert.c" "$HERE/convert_test.c" \
   -o "$O/convert_test" 2>/dev/null && "$TOP/tests/qemu/aligntrap.sh" "$O/convert_test" || bad=1

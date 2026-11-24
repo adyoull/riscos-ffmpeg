@@ -29,7 +29,7 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
 
 - **Programs:** `ffmpeg`, `ffprobe`, and `ffplay` (SDL2 from riscos-mesa:
   Wimp window, SharedSoundBuffer sound).
-- **Icon bar:** double-click `!FFmpeg` and drop video files on its icon to
+- **Icon bar:** double-click `!FFmpeg5` and drop video files on its icon to
   play them (`frontend/fffront.c`).
 - **!Reel:** a video player for the desktop (`player/reel.c`, its own zip),
   built on reelcore, the player core (no EGL), with **!ReelEGL**, the same
@@ -100,14 +100,17 @@ hand-written NEON code, made safe for RISC OS's alignment checking.
 
 From [Releases](../../releases):
 
-- `FFmpeg-5.1.10-riscosN.zip`: `!FFmpeg` with the programs.
+- `FFmpeg-5.1.10-riscosN.zip`: `!FFmpeg5` with the programs. Its commands
+  are `*ffmpeg5`, `*ffprobe` and `*ffplay`: RISC OS Open's allocations. Up
+  to riscos24 the application was `!FFmpeg` and the command `*ffmpeg`,
+  names allocated to someone else.
 - `FFmpeg-EGL-examples-5.1.10-riscosN.zip`: `videowin` and `videocube`.
 - `riscos-ffmpeg-devkit-5.1.10-riscosN.tgz`: headers and static libraries
   (FFmpeg, reelcore, ffegl, codecs) for GCCSDK.
 - `Reel-X.Y.Z.zip`: `!Reel` and `!ReelEGL`.
 
 They need SharedUnixLibrary 1.16 or later and ARMEABISupport (PackMan).
-They are linked with UnixLib 5.0.3.6 (github.com/adyoull/riscos-unixlib, an unofficial fork of GCCSDK's UnixLib: files over 2GB, up to 4GB-1, and threads that run in programs that poll often) and carry its PThreadTicker module (0.03)
+They are linked with UnixLib 5.0.3.10 (github.com/adyoull/riscos-unixlib, an unofficial fork of GCCSDK's UnixLib: files over 2GB, up to 4GB-1, and threads that run in programs that poll often) and carry its PThreadTicker module (0.03)
 (the thread timer's code; `third_party/pthreadticker`), which each `!Run`
 loads.
 For sound: SharedSoundBuffer and StreamManager, John Duffell's modules.
@@ -147,13 +150,13 @@ and the ARM assembly in FFmpeg, dav1d and x264 relies on that.
 ## Building
 
 The simplest way is riscos-crossdev's container image, which has the
-toolchain (GCCSDK GCC 10.2 with UnixLib 5.0.3.6); everything else is
+toolchain (GCCSDK GCC 10.2 with UnixLib 5.0.3.10); everything else is
 fetched by checksum (`check`, `test-build` and `test` are the checks
 and the Linux tests below; the image has the test rig's qemu, and the
 tests want the host's `ffmpeg` to make their clips):
 
 ```
-docker run --rm -v "$PWD":/src ghcr.io/adyoull/riscos-crossdev:1.10 \
+docker run --rm -v "$PWD":/src ghcr.io/adyoull/riscos-crossdev:1.13 \
   sh -c 'make sources deps ffmpeg apps package check test-build test'
 ```
 
@@ -204,9 +207,9 @@ patches/    ffmpeg/ (git format-patch series), dav1d/, x264/, lame/, sdl2/ (risc
 reelcore/   the player core (reelcore.h, reelcore.c): no EGL
 ffegl/      the EGL layer on reelcore (ffegl.h, ffegl.c) and the videowin/videocube examples
 player/     reel.c: !Reel and !ReelEGL; sources.c: addresses and yt-dlp output in text
-frontend/   fffront.c: !FFmpeg's icon bar front end
+frontend/   fffront.c: !FFmpeg5's icon bar front end
 tools/      neon-align.py (+ *.allow lists), mkrozip.py, mksprites.py, elf2aif/, check-stack-probes.py
-app/        !FFmpeg, !Reel, !ReelEGL (the parts that aren't built)
+app/        !FFmpeg5, !Reel, !ReelEGL (the parts that aren't built)
 tests/qemu/ the alignment rig: qemu patch, sample maker, runners
 tests/host/ reelcore, ffegl, Reel and front end tests with fake Wimp/SDL/EGL, under the trapping qemu
 docs/       ALIGNMENT.md, EGL.md, SOURCES.md

@@ -1,5 +1,5 @@
 /*
- * Host test of !FFmpeg's Convert window (frontend/convert.c, through
+ * Host test of !FFmpeg5's Convert window (frontend/convert.c, through
  * fffront.c's poll loop) with a scripted fake Wimp and fake task windows:
  * the window opens from the icon; a dropped file is read by ffprobe (its
  * output split across messages); the description, the suggested name and
@@ -109,7 +109,7 @@ static int script(int *b)
         CHECK(nstarted == 1 && strstr(started[0], "TaskWindow \"Obey ") && strstr(started[0], "-task &1234 -txt &50524f42 -quit") &&
               strstr(started[0], "-wimpslot 45056K"), "probe task: %s", started[0]);
         read_obey(started[0]);
-        CHECK(strstr(obey, "SDFS::Pi.$.Apps.!FFmpeg.ffprobe -v error -of compact=p=0 -show_entries format=duration:stream=") &&
+        CHECK(strstr(obey, "SDFS::Pi.$.Apps.!FFmpeg5.ffprobe -v error -of compact=p=0 -show_entries format=duration:stream=") &&
               strstr(obey, " SDFS::Pi.$.Films.trailer/mkv\n"), "probe Obey file: %s", obey);
         CHECK(!strcmp(conv_test_text(0), "Reading the file...") && shaded(I_CONVERT), "while reading: '%s'", conv_test_text(0));
         msg(b, 0x808C2, 0x999, 24); b[5] = 0x50524F42; return 17;                /* TaskWindow_Ego */
@@ -179,7 +179,7 @@ static int script(int *b)
     case 16:
         CHECK(nstarted == 2 && strstr(started[1], "-txt &434f4e56"), "convert task: %s", started[1]);
         read_obey(started[1]);
-        CHECK(!strcmp(obey, "| Run by !FFmpeg's Convert window\nSDFS::Pi.$.Apps.!FFmpeg.ffmpeg -nostdin -hide_banner -v error -y "
+        CHECK(!strcmp(obey, "| Run by !FFmpeg5's Convert window\nSDFS::Pi.$.Apps.!FFmpeg5.ffmpeg -nostdin -hide_banner -v error -y "
                       "-ss 10.000 -to 100.000 -i SDFS::Pi.$.Films.trailer/mkv -map 0:v:0 -map 0:a:0 "
                       "-vf yadif=deint=interlaced,scale=-2:480 -c:v libx264 -preset veryfast -crf 23 -tune fastdecode "
                       "-pix_fmt yuv420p -c:a aac -b:a 128k -ac 2 -movflags +faststart -metadata title=Trailer -progress pipe:1 -nostats "
@@ -385,7 +385,7 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     case 0x39:                                                                   /* OS_SWINumberFromString: a Pi */
         return !strcmp((const char *)(intptr_t)in->r[1], "VCHIQ_MsgQueue") ? NULL : &err;
     case 0x29:                                                                   /* OS_FSControl 37 */
-        strcpy((char *)(intptr_t)in->r[2], "SDFS::Pi.$.Apps.!FFmpeg");
+        strcpy((char *)(intptr_t)in->r[2], "SDFS::Pi.$.Apps.!FFmpeg5");
         out->r[5] = 100;
         return NULL;
     case 0x42681: out->r[0] = -1; return NULL;
@@ -472,7 +472,7 @@ int main(void)
     snprintf(scrap, sizeof(scrap), "/tmp/convtest%d", (int)getpid());
     mkdir(scrap, 0777);
     setenv("Wimp$ScrapDir", scrap, 1);
-    setenv("FFmpeg$Dir", "<Obey$Dir>", 1);
+    setenv("FFmpeg5$Dir", "<Obey$Dir>", 1);
     CHECK(fffront_main() == 0, "front end didn't end cleanly");
     CHECK(step == 79 && deleted == 7 && !strcmp(deleted_name, "SDFS::Pi.$.Out.trailer/mp3") && conv_test_state() == CONV_STOPPED,
           "quit while converting: step %d, deleted %d '%s', state %d (stopped, and the unfinished file deleted)", step,

@@ -8,7 +8,7 @@
 #   $STAGE/bin/reel      !Reel: reelcore only, no Mesa
 #   $STAGE/bin/reelegl   !ReelEGL: reelcore + ffegl (surfaces only)
 #   $STAGE/bin/videowin, videocube   the EGL examples: reelcore + ffegl
-#   $STAGE/bin/fffront   !FFmpeg's icon bar front end (!RunImage)
+#   $STAGE/bin/fffront   !FFmpeg5's icon bar front end (!RunImage)
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 O=$SRC/apps
@@ -47,6 +47,6 @@ $CC -o "$STAGE/bin/reel" "$TOP/player/reel.c" "$TOP/player/sources.c" "$O/reelco
 $CC -DREEL_EGL -o "$STAGE/bin/reelegl" "$TOP/player/reel.c" "$TOP/player/sources.c" "$O/ffegl_notex.o" "$O/reelcore.o" -static \
   -L$STAGE/lib $FF -lEGL -lOSMesa -lstdc++ -lm
 
-# !FFmpeg's icon bar front end (frontend/fffront.c)
+# !FFmpeg5's icon bar front end (frontend/fffront.c)
 $CC -o "$STAGE/bin/fffront" "$TOP/frontend/fffront.c" "$TOP/frontend/convert.c" -static
 ls -la "$STAGE/lib/libreelcore.a" "$STAGE/lib/libffegl.a" "$STAGE/bin/"

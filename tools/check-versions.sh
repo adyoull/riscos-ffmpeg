@@ -17,7 +17,7 @@ want "$TOP/Makefile" "VERSION ?= $V"
 want "$TOP/build/package.sh" "V=\${1:-$V}"
 want "$TOP/build/package.sh" "RV=\${REEL_VERSION:-$R}"
 want "$TOP/build/build-ffmpeg.sh" "--extra-version=$N"
-head -1 "$TOP/app/!FFmpeg/!Help,fff" | grep -q " $N\$" || { echo "  !FFmpeg's !Help header isn't $N"; bad=1; }
+head -1 "$TOP/app/!FFmpeg5/!Help,fff" | grep -q " $N\$" || { echo "  !FFmpeg5's !Help header isn't $N"; bad=1; }
 for a in Reel ReelEGL; do
   head -1 "$TOP/app/!$a/!Help,fff" | grep -q " $R\$" || { echo "  !$a's !Help header isn't $R"; bad=1; }
 done

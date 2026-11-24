@@ -5,7 +5,7 @@
  * change the number and date here and in the places listed below; the host
  * tests (tests/host/run.sh, "versions agree") check they all match:
  *   FFMPEG_APP_VERSION  Makefile VERSION (as 5.1.10-riscosN),
- *                       build/package.sh's default, !FFmpeg's !Help header
+ *                       build/package.sh's default, !FFmpeg5's !Help header
  *   REEL_VERSION        build/package.sh's REEL_VERSION default,
  *                       !Reel's and !ReelEGL's !Help headers
  * Dates are written the RISC OS way (dd-Mmm-yyyy), as other apps' Info

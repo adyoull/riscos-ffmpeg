@@ -1,5 +1,5 @@
 /* Host test of the icon bar front end (frontend/fffront.c) with a scripted
- * fake Wimp: a file dropped on the icon starts ffplay through !FFmpeg.Task
+ * fake Wimp: a file dropped on the icon starts ffplay through !FFmpeg5.Task
  * (acknowledged first), the menu toggles full screen, directories are
  * refused, Select on the icon opens the Convert window (convert_test.c
  * tests that), and Message_Quit ends it. Build: see tests/host/run.sh. */
@@ -12,7 +12,7 @@
 int fffront_main(void);
 int fffront_command(char *, size_t, const char *, const char *, int, const char *);
 
-static const char *canon = "SDFS::Pi.$.Apps.!FFmpeg";   /* what OS_FSControl 37 gives; NULL = fail */
+static const char *canon = "SDFS::Pi.$.Apps.!FFmpeg5";   /* what OS_FSControl 37 gives; NULL = fail */
 static int fails, step, icon_made, acks, reports, closed, windows, opened;
 static char started[4][1024]; static int nstarted;
 static char icon_name[13]; static int icon_flags;
@@ -33,11 +33,11 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
     switch (swi) {
     case 0x400C0: out->r[1] = 0x1234; return NULL;                 /* Wimp_Initialise */
     case 0x29:                                                     /* OS_FSControl 37 */
-        if (in->r[0] != 37 || !canon || strcmp((const char *)(intptr_t)in->r[1], "<FFmpeg$Dir>")) return &err;
+        if (in->r[0] != 37 || !canon || strcmp((const char *)(intptr_t)in->r[1], "<FFmpeg5$Dir>")) return &err;
         strcpy((char *)(intptr_t)in->r[2], canon);
         out->r[5] = in->r[5] - (long)strlen(canon) - 1;
         return NULL;
-    case 0x10: out->r[0] = (long)"SDFS::Pi.$.Other.!FFmpeg.!RunImage "; return NULL;   /* OS_GetEnv */
+    case 0x10: out->r[0] = (long)"SDFS::Pi.$.Other.!FFmpeg5.!RunImage "; return NULL;   /* OS_GetEnv */
     case 0x42681: out->r[0] = -1; return NULL;                     /* EnumerateTasks: none */
     case 0x400C2: {                                                /* Wimp_CreateIcon */
         int *b = (int *)(intptr_t)in->r[1];
@@ -92,16 +92,16 @@ _kernel_oserror *_kernel_swi(int swi, _kernel_swi_regs *in, _kernel_swi_regs *ou
 int main(void)
 {
     char cmd[1024];
-    /* FFmpeg$Dir as the boot sequence can leave it: canonicalised at start-up */
-    setenv("FFmpeg$Dir", "<Obey$Dir>", 1);
+    /* FFmpeg5$Dir as the boot sequence can leave it: canonicalised at start-up */
+    setenv("FFmpeg5$Dir", "<Obey$Dir>", 1);
     setenv("Wimp$ScrapDir", "SDFS::Pi.$.Scrap", 1);
     CHECK(fffront_main() == 0, "front end didn't end cleanly");
-    CHECK(icon_made == 1 && !strcmp(icon_name, "!ffmpeg") && (icon_flags & 0xF00A) == 0x300A,
+    CHECK(icon_made == 1 && !strcmp(icon_name, "!ffmpeg5") && (icon_flags & 0xF00A) == 0x300A,
           "icon bar icon: %d made, '%s', flags %x", icon_made, icon_name, icon_flags);
     CHECK(nstarted == 2, "%d tasks started (want 2)", nstarted);
-    CHECK(!strcmp(started[0], "Obey SDFS::Pi.$.Apps.!FFmpeg.Task ffplay -nostats -hide_banner -loglevel verbose "
+    CHECK(!strcmp(started[0], "Obey SDFS::Pi.$.Apps.!FFmpeg5.Task ffplay -nostats -hide_banner -loglevel verbose "
                   "SDFS::Pi.$.Films.clip/mp4 > SDFS::Pi.$.Scrap.ffplay/log 2>&1"), "command 1: %s", started[0]);
-    CHECK(!strcmp(started[1], "Obey SDFS::Pi.$.Apps.!FFmpeg.Task ffplay -nostats -hide_banner -loglevel verbose -fs "
+    CHECK(!strcmp(started[1], "Obey SDFS::Pi.$.Apps.!FFmpeg5.Task ffplay -nostats -hide_banner -loglevel verbose -fs "
                   "\"ADFS::HD4.$.My Films.b/mkv\" > SDFS::Pi.$.Scrap.ffplay/log 2>&1"), "command 2: %s", started[1]);
     CHECK(acks == 3, "%d DataLoadAcks (want 3)", acks);
     CHECK(reports == 1, "%d reports (want 1: the directory)", reports);
@@ -116,7 +116,7 @@ int main(void)
     proginfo_made = 0;
     canon = NULL; step = 0; nstarted = 0; closed = 0; acks = 0; reports = 0; icon_made = 0; windows = opened = 0;
     CHECK(fffront_main() == 0 && nstarted == 2 &&
-          !strncmp(started[0], "Obey SDFS::Pi.$.Other.!FFmpeg.Task ffplay ", 42), "OS_GetEnv fallback: %s", started[0]);
+          !strncmp(started[0], "Obey SDFS::Pi.$.Other.!FFmpeg5.Task ffplay ", 43), "OS_GetEnv fallback: %s", started[0]);
     printf("  started: %s\n", started[0]);
     printf(fails ? "%d FAILED\n" : "all passed\n", fails);
     return !!fails;

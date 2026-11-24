@@ -49,22 +49,42 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   at 48 kHz. `sound_gap_test`: the caller away for 1.2 s, with the default
   lead StreamManager has nothing to play for 0.74 s, with 2 s queued
   never. Mutation-checked.
-- **riscos-crossdev 1.10, UnixLib 5.0.3.6** (`.riscos-deps` moved to
-  v1.10; was 1.8.2's toolchain 1.4, UnixLib 5.0.3.3): everything rebuilt
+- **!FFmpeg is now !FFmpeg5, and \*ffmpeg \*ffmpeg5** (RISC OS Open's
+  allocations: the old names were already allocated to someone else, and
+  ROOL asked for the clash to be fixed). `FFmpeg5$Dir`, `Alias$ffmpeg5`,
+  the sprites `!ffmpeg5` and `sm!ffmpeg5`, and the !Help's examples
+  follow; \*ffprobe and \*ffplay stay. The zip and the PackMan package
+  are still called FFmpeg.
+- **riscos-crossdev 1.13, UnixLib 5.0.3.10** (`.riscos-deps` moved to
+  v1.13; was 1.8.2's toolchain 1.4, UnixLib 5.0.3.3): everything rebuilt
   from clean with it. For FFmpeg, Reel and the front end: threads on RISC
   OS for Linux, sub-second interval timers, pthread scheduling attributes,
   rename() of mistyped files, `///` paths (5.0.3.4, 5.0.3.5); semaphores
   that wait (5.0.3.6): FFmpeg doesn't use them, but our SDL (ffplay's,
   and Reel's fallback sound output), configured afresh, now finds
   `sem_timedwait`, so `SDL_SemWaitTimeout` and SDL's timer thread sleep
-  instead of failing at once or spinning. `tools/check-unixlib.sh`
-  now wants 5.0.3.6's library (riscos-unixlib's release or toolchain
-  1.10's build of it).
-- **riscos-mesa 20.3.5-18** (`.riscos-deps`, `build/SOURCES` and
+  instead of failing at once or spinning; UnixLib's later fixes (to
+  5.0.3.10), and crossdev 1.13's alignment of UnixLib's assembler data.
+  `tools/check-unixlib.sh` now wants crossdev 1.13's library.
+- **riscos-mesa 20.3.5-23** (`.riscos-deps`, `build/SOURCES` and
   `build/SHA256SUMS` moved to it): ffplay's `-f egl` window, ReelEGL and
-  the EGL examples relinked; rendering is as in -17. Its SDL 2.32 isn't
-  taken: ffplay's SDL is built from our own copy of riscos-mesa's SDL 2.26
+  the EGL examples relinked. From 20.3.5-20 EGL may give OpenGL contexts
+  to RISC3D (the GPU), which can't texture from RISC OS memory, so
+  `ffegl_texture` (videocube) now asks which renderer the context is on
+  (`EGL_RISCOS_renderer`) and copies each frame into the texture on a
+  GPU one, rather than texturing from the sprite each frame is
+  converted into (which the texture wouldn't follow there; riscos-mesa's
+  handoff). `ffegl_test` has a GPU context. Its SDL 2.32 isn't taken:
+  ffplay's SDL is built from our own copy of riscos-mesa's SDL 2.26
   patches (`patches/sdl2`), which nothing here needs to move on from.
+- **riscos-reelhwaccel devkit 0.2.23** (0.2.22 too; `.riscos-deps` stays
+  at v0.2.21 until it's a GitHub release): hevcdec 0.1.16. On RISC OS on
+  Linux (ROL kernel 6.6.78-17 on) HEVC goes through Linux's own rpivid
+  driver, as the block is Linux's there, and from 6.6.78-18 its frames
+  are cacheable, so converting them is as quick as natively. Native RISC
+  OS is unchanged. Patches unchanged; `hwhevcdec.h` (`hevcdec_stats`
+  is bigger: `backend`) and the libraries replaced. Media info says
+  "through Linux's rpivid" when that's the one decoding.
 - `.riscos-deps` loses the two blank lines the dependency update added.
 
 ## Reel 0.1.31 (2026-10-30): far seeks in an MKV without an index

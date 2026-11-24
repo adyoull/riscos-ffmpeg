@@ -7,7 +7,7 @@
  * submenu pointer is the window handle), so the Wimp opens and closes it
  * with the menu; the program does nothing else with it.
  *
- * Header only (static functions), for !FFmpeg's front end and for Reel /
+ * Header only (static functions), for !FFmpeg5's front end and for Reel /
  * ReelEGL, which have no Templates file: the window is built in code.
  *
  *   int w = proginfo_create("Reel", "Plays video", "Andrew Youll",

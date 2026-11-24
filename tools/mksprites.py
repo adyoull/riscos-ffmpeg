@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Write !Sprites for !FFmpeg: '!ffmpeg' (34x34) and 'sm!ffmpeg' (17x17),
-plus the 180 dpi versions ('!ffmpeg' in a 22 file is not needed: RISC OS 5
+"""Write !Sprites for !FFmpeg5: '!ffmpeg5' (34x34) and 'sm!ffmpeg5' (17x17),
+plus the 180 dpi versions ('!ffmpeg5' in a 22 file is not needed: RISC OS 5
 picks the 90 dpi sprite and scales it). 32 bpp (TBGR) new-format sprites
 with a 1 bpp mask. The picture is our own: a film frame with a play
 triangle, drawn from shapes here.
@@ -145,7 +145,7 @@ def main():
         sprites = [sprite("!reelegl", 34, draw_reel_egl), sprite("sm!reelegl", 17, draw_reel_egl),
                    sprite("reelgrip", 16, draw_grip)]
     else:
-        sprites = [sprite("!ffmpeg", 34), sprite("sm!ffmpeg", 17)]
+        sprites = [sprite("!ffmpeg5", 34), sprite("sm!ffmpeg5", 17)]
     body = b"".join(sprites)
     # file = sprite area without its first word: count, first, free
     area = struct.pack("<iii", len(sprites), 16, 16 + len(body)) + body

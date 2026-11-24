@@ -8,7 +8,7 @@
 #   2. in a bigger window (-x 800 -y 600): letterboxed, black bars;
 #   3. the audio waveform mode and FFPLAY_RENDERER=sdl still draw;
 #   4. in a (fake) TaskWindow it starts itself as a new Wimp task through
-#      !FFmpeg.Task, with its messages in a log, and exits.
+#      !FFmpeg5.Task, with its messages in a log, and exits.
 # Needs: libsdl2-dev, python3-pil, python3-numpy, a host ffmpeg (for the
 # reference frames). Builds a host FFmpeg in src-host/ the first time
 # (about 10 minutes).
@@ -47,7 +47,7 @@ ARGS=("$SMALL");                        run sdl FFPLAY_RENDERER=sdl
 # 4. a TaskWindow
 out=$(env FAKE_TASKWINDOW=1 FAKE_STARTTASK="$W/starttask" 'Wimp$ScrapDir=ADFS::HD4.$.Scrap' \
       SDL_VIDEODRIVER=dummy "$H/ffplay_g" -v error "$SMALL" 2>&1) || { echo "taskwindow: exit status $?"; exit 1; }
-want="Obey SDFS::Pi.\$.Apps.!FFmpeg.Task ffplay -nostats -hide_banner -v error $SMALL > ADFS::HD4.\$.Scrap.ffplay/log 2>&1"
+want="Obey SDFS::Pi.\$.Apps.!FFmpeg5.Task ffplay -nostats -hide_banner -v error $SMALL > ADFS::HD4.\$.Scrap.ffplay/log 2>&1"
 got=$(cat "$W/starttask" 2>/dev/null || true)
 if [ "$got" = "$want" ] && [[ $out == *"runs as its own"* ]]; then
   echo "taskwindow: started as a new task: $got"

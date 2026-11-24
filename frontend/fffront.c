@@ -1,9 +1,9 @@
 /*
- * fffront - !FFmpeg's icon bar front end.
+ * fffront - !FFmpeg5's icon bar front end.
  *
  * Puts the FFmpeg icon on the icon bar. Drop a video (or sound) file on it
  * and ffplay plays it in a desktop window of its own: each file starts a new
- * task, through the Obey file !FFmpeg.Task (which sets the WimpSlot), with
+ * task, through the Obey file !FFmpeg5.Task (which sets the WimpSlot), with
  * ffplay's messages in <Wimp$ScrapDir>.ffplay/log.
  *
  *   Menu on the icon: Info, Convert... (the Convert window, convert.c), Full
@@ -12,7 +12,7 @@
  *   Select on the icon: the Convert window.
  *
  * A small UnixLib program with no heap to speak of; the SWIs are called
- * directly. Part of riscos-ffmpeg. GPL v2 or later (as the rest of !FFmpeg).
+ * directly. Part of riscos-ffmpeg. GPL v2 or later (as the rest of !FFmpeg5).
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -169,7 +169,7 @@ static int quit_ok(void)
     r.r[0] = (intptr_t)&e;
     r.r[1] = 2 | (1 << 8) | (4 << 9);
     r.r[2] = (intptr_t)APP_NAME;
-    r.r[3] = (intptr_t)"!ffmpeg";
+    r.r[3] = (intptr_t)"!ffmpeg5";
     r.r[4] = 1;
     r.r[5] = (intptr_t)"Quit";
     return !swi(Wimp_ReportError, &r) && r.r[1] == 3;
@@ -216,7 +216,7 @@ static void menu_select(const int *sel)
 
 /* ---- set up -------------------------------------------------------- */
 
-/* Our directory, as a full path worked out now. FFmpeg$Dir can hold a
+/* Our directory, as a full path worked out now. FFmpeg5$Dir can hold a
    reference such as <Obey$Dir> that only means the right thing while !Run
    (or the boot sequence) is running, so canonicalise it at start-up
    (OS_FSControl 37); failing that, use the directory of this program, from
@@ -230,7 +230,7 @@ static void find_dir(void)
 
     ffdir[0] = 0;
     r.r[0] = 37;
-    r.r[1] = (intptr_t)"<FFmpeg$Dir>";
+    r.r[1] = (intptr_t)"<FFmpeg5$Dir>";
     r.r[2] = (intptr_t)ffdir;
     r.r[3] = 0;
     r.r[4] = 0;
@@ -281,7 +281,7 @@ static void iconbar_icon(void)
     b.w = -1;                                 /* right-hand side */
     b.x1 = 68; b.y1 = 68;
     b.flags = 0x301A;                         /* sprite, centred, click */
-    strcpy(b.name, "!ffmpeg");
+    strcpy(b.name, "!ffmpeg5");
     r.r[0] = 0;
     r.r[1] = (intptr_t)&b;
     swi(Wimp_CreateIcon, &r);
@@ -304,7 +304,7 @@ int fffront_main(void)
         return 1;
     task = r.r[1];
     if (!*ffdir) {
-        report("Can't find the !FFmpeg directory: start FFmpeg by double-clicking !FFmpeg.", 1);
+        report("Can't find the !FFmpeg5 directory: start FFmpeg by double-clicking !FFmpeg5.", 1);
         return 1;
     }
     if (already_running()) {

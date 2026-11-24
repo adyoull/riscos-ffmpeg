@@ -1,11 +1,11 @@
-| !Boot for !FFmpeg (FFmpeg 5.1.10 LTS for RISC OS)
+| !Boot for !FFmpeg5 (FFmpeg 5.1.10 LTS for RISC OS)
 | Seen by the Filer: sets up the commands so they work from any command
 | line or TaskWindow.
-If "<FFmpeg$Dir>"="" Then Set FFmpeg$Dir <Obey$Dir>
-IconSprites <FFmpeg$Dir>.!Sprites
+If "<FFmpeg5$Dir>"="" Then Set FFmpeg5$Dir <Obey$Dir>
+IconSprites <FFmpeg5$Dir>.!Sprites
 | Each program is about 31MB (code 31MB, zeroed data 8.5MB) and needs
 | about 43MB of application space (its heap is in a dynamic area,
 | "FFmpeg Heap").
-Set Alias$ffmpeg  WimpSlot -min 44032K|MRun <FFmpeg$Dir>.ffmpeg %%*0
-Set Alias$ffprobe WimpSlot -min 44032K|MRun <FFmpeg$Dir>.ffprobe %%*0
-Set Alias$ffplay  WimpSlot -min 44032K|MRun <FFmpeg$Dir>.ffplay %%*0
+Set Alias$ffmpeg5 WimpSlot -min 44032K|MRun <FFmpeg5$Dir>.ffmpeg %%*0
+Set Alias$ffprobe WimpSlot -min 44032K|MRun <FFmpeg5$Dir>.ffprobe %%*0
+Set Alias$ffplay  WimpSlot -min 44032K|MRun <FFmpeg5$Dir>.ffplay %%*0

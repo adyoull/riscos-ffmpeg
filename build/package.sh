@@ -1,6 +1,6 @@
 #!/bin/bash
 # Release files, from a finished build (build-deps.sh + build-ffmpeg.sh):
-#   dist/FFmpeg-VERSION.zip             !FFmpeg: ffmpeg, ffprobe, ffplay (AIF),
+#   dist/FFmpeg-VERSION.zip             !FFmpeg5: ffmpeg, ffprobe, ffplay (AIF),
 #                                       Bench, docs (licences, source)
 #   dist/FFmpeg-EGL-examples-VERSION.zip  videowin, videocube (reelcore + ffegl examples)
 #   dist/Reel-REEL_VERSION.zip          !Reel and !ReelEGL, the video player
@@ -25,15 +25,15 @@ mkdir -p "$DIST"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# every program must be linked with UnixLib 5.0.3.6 (the thread timer !Run loads PThreadTicker
+# every program must be linked with UnixLib 5.0.3.10 (the thread timer !Run loads PThreadTicker
 # for, and files over 2GB)
 echo "UnixLib in the programs:"
 CROSS=$CROSS "$TOP/tools/check-unixlib.sh" "$FF/ffmpeg_g" "$FF/ffprobe_g" "$FF/ffplay_g" "$STAGE/bin/fffront" \
   "$STAGE/bin/reel" "$STAGE/bin/reelegl" "$STAGE/bin/videowin" "$STAGE/bin/videocube" || exit 1
 
 # --- the application ---------------------------------------------------
-A=$TMP/'!FFmpeg'
-cp -r "$TOP/app/!FFmpeg" "$A"
+A=$TMP/'!FFmpeg5'
+cp -r "$TOP/app/!FFmpeg5" "$A"
 python3 "$TOP/tools/mksprites.py" "$A/!Sprites,ff9"
 for p in ffmpeg ffprobe ffplay; do
   ${CROSS}strip -o "$TMP/$p.elf" "$FF/${p}_g"
@@ -67,7 +67,7 @@ cp "$TOP/third_party/reelhwaccel/Licence" "$D/Licences/ReelHWAccel,fff"
 ( cd "$TOP" && tar cf - build patches tools app common third_party reelcore ffegl frontend player tests/qemu/*.sh tests/qemu/*.md tests/qemu/*.patch \
     README.md CHANGELOG.md docs Makefile 2>/dev/null ) | tar xf - -C "$D/source"
 rm -f "$DIST/FFmpeg-$V.zip"
-( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-$V.zip" '!FFmpeg' )
+( cd "$TMP" && python3 "$TOP/tools/mkrozip.py" "$DIST/FFmpeg-$V.zip" '!FFmpeg5' )
 
 # --- the ffegl examples ---------------------------------------------------
 E=$TMP/EGLExamples
@@ -161,7 +161,7 @@ web addresses and yt-dlp's output in text; ReelEGL is the same built with
 -DREEL_EGL), and the player core it runs on (reelcore; ReelEGL
 also has ffegl, which puts reelcore's pictures into EGL). It is part of riscos-ffmpeg ($V), whose full
 source (FFmpeg 5.1.10 plus the RISC OS patches and build scripts) is in
-the FFmpeg package (!FFmpeg.docs.source) and the riscos-ffmpeg git
+the FFmpeg package (!FFmpeg5.docs.source) and the riscos-ffmpeg git
 repository. Both are built by build/build-apps.sh.
 EOF
 done
@@ -193,7 +193,7 @@ riscos-ffmpeg devkit $V: FFmpeg 5.1.10 static libraries for GCCSDK GCC 10
 README). Also x264, dav1d, LAME, Opus, Ogg, Vorbis; reelcore
 (include/reelcore.h, lib/libreelcore.a: the player core, no EGL); and
 ffegl (include/ffegl.h, lib/libffegl.a: reelcore's pictures into EGL
-surfaces and GL textures; see the EGL document in !FFmpeg.docs).
+surfaces and GL textures; see the EGL document in !FFmpeg5.docs).
 SDL2, zlib, EGL and OpenGL are not here: take them from the riscos-mesa
 devkit, 20.3.5-7pre12 or later (EGLImage textures for ffegl; libavdevice's
 egl output device needs libEGL and libOSMesa).

@@ -8,8 +8,8 @@
 | Each prints "bench: ... rtime=N.NNNs" (wall-clock seconds; smaller is
 | better). The clip is 250 frames, so fps = 250 / rtime.
 | A copy of everything goes to <Wimp$ScrapDir>.FFbench.Log
-If "<FFmpeg$Dir>"="" Then Set FFmpeg$Dir <Obey$Dir>
-Run <FFmpeg$Dir>.!Boot
+If "<FFmpeg5$Dir>"="" Then Set FFmpeg5$Dir <Obey$Dir>
+Run <FFmpeg5$Dir>.!Boot
 CDir <Wimp$ScrapDir>.FFbench
 | "|<" keeps <Wimp$ScrapDir> unexpanded here; UnixLib expands it when the
 | log is opened.
