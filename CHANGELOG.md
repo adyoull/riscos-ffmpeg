@@ -54,7 +54,9 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   ROOL asked for the clash to be fixed). `FFmpeg5$Dir`, `Alias$ffmpeg5`,
   the sprites `!ffmpeg5` and `sm!ffmpeg5`, and the !Help's examples
   follow; \*ffprobe and \*ffplay stay. The zip and the PackMan package
-  are still called FFmpeg.
+  are still called FFmpeg. \*ffmpeg is still set as well, for scripts and
+  programs written for !FFmpeg, but only when `Alias$ffmpeg` is unset, so
+  the command's allocated owner keeps it when theirs is there.
 - **riscos-crossdev 1.13, UnixLib 5.0.3.10** (`.riscos-deps` moved to
   v1.13; was 1.8.2's toolchain 1.4, UnixLib 5.0.3.3): everything rebuilt
   from clean with it. For FFmpeg, Reel and the front end: threads on RISC

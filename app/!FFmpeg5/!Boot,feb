@@ -7,5 +7,9 @@ IconSprites <FFmpeg5$Dir>.!Sprites
 | about 43MB of application space (its heap is in a dynamic area,
 | "FFmpeg Heap").
 Set Alias$ffmpeg5 WimpSlot -min 44032K|MRun <FFmpeg5$Dir>.ffmpeg %%*0
+| *ffmpeg as well, for scripts and programs written for !FFmpeg (riscos24
+| and before), but only if nothing has claimed it: RISC OS Open has
+| allocated *ffmpeg to someone else, whose command it is when it's there.
+If "<Alias$ffmpeg>"="" Then Set Alias$ffmpeg WimpSlot -min 44032K|MRun <FFmpeg5$Dir>.ffmpeg %%*0
 Set Alias$ffprobe WimpSlot -min 44032K|MRun <FFmpeg5$Dir>.ffprobe %%*0
 Set Alias$ffplay  WimpSlot -min 44032K|MRun <FFmpeg5$Dir>.ffplay %%*0

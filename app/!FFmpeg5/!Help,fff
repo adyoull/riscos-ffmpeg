@@ -104,7 +104,11 @@ Let the Filer see !FFmpeg5 (open the directory it is in), or double-click
 it once. That sets up the commands (*ffmpeg5, *ffprobe, *ffplay: the
 names RISC OS Open has allocated; the application was !FFmpeg and the
 command *ffmpeg before riscos25, names already allocated to someone
-else). Then open a TaskWindow (Ctrl-F12):
+else). *ffmpeg still works as well, for older scripts and programs,
+unless something else has claimed it first (whoever holds the name);
+if an old !FFmpeg has been seen since the computer started, *ffmpeg is
+still its until a restart, so remove the old !FFmpeg. Then open a
+TaskWindow (Ctrl-F12):
 
   ffprobe SDFS::RISCOSpi.$.Videos.holiday/mp4
   ffplay  SDFS::RISCOSpi.$.Videos.holiday/mp4

@@ -103,7 +103,8 @@ From [Releases](../../releases):
 - `FFmpeg-5.1.10-riscosN.zip`: `!FFmpeg5` with the programs. Its commands
   are `*ffmpeg5`, `*ffprobe` and `*ffplay`: RISC OS Open's allocations. Up
   to riscos24 the application was `!FFmpeg` and the command `*ffmpeg`,
-  names allocated to someone else.
+  names allocated to someone else. `*ffmpeg` is still set too, for
+  compatibility, but only when nothing else has claimed it.
 - `FFmpeg-EGL-examples-5.1.10-riscosN.zip`: `videowin` and `videocube`.
 - `riscos-ffmpeg-devkit-5.1.10-riscosN.tgz`: headers and static libraries
   (FFmpeg, reelcore, ffegl, codecs) for GCCSDK.
