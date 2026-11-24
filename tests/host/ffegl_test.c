@@ -195,6 +195,23 @@ static void check_texture_image(const char *clip)
               fake_images, fake_tex_linked, fake_destroyed_linked);
     }
 
+    /* a context on the GPU (riscos-mesa's RISC3D): the texture wouldn't
+       follow the sprite, so copies instead */
+    {
+        extern int fake_gpu_context;
+        unsigned int tex = 0;
+        int im = fake_tex_images, sub = fake_tex_subimages;
+        ReelCore *v = reelcore_open(clip, REELCORE_NO_AUDIO);
+        fake_gpu_context = 1;
+        next_frame(v);
+        CHECK(ffegl_texture(v, 0, &tex) == 0 && fake_tex_images == im + 1 && !fake_images,
+              "GPU context: an EGLImage used (%d), not a copy", fake_images);
+        next_frame(v);
+        CHECK(ffegl_texture(v, tex, NULL) == 0 && fake_tex_subimages == sub + 1, "GPU context: no update");
+        printf("  a context on the GPU (RISC3D): each frame copied into the texture\n");
+        reelcore_close(v);
+        fake_gpu_context = 0;
+    }
     /* the image can't be made: copies instead */
     {
         unsigned int tex = 0;

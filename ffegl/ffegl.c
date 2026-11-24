@@ -9,6 +9,7 @@
 #define EGL_EGLEXT_PROTOTYPES 1
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <EGL/eglext_riscos.h>
 #ifndef FFEGL_NO_TEXTURE
 #include <GL/gl.h>
 #endif
@@ -104,7 +105,14 @@ static int has_word(const char *list, const char *word)
 
 /* Whether the current context can texture from EGLImages (GL_OES_EGL_image
    and EGL_KHR_image_pixmap); checked once per video (texture state). FFEGL_NO_EGLIMAGE=1 in
-   the environment turns it off (then every frame is copied). */
+   the environment turns it off (then every frame is copied).
+   Not on the GPU: from riscos-mesa 20.3.5-20, EGL may give the caller's
+   context to RISC3D, which can't texture from RISC OS memory, so its
+   glEGLImageTargetTexture2DOES copies the sprite once and later frames
+   converted into the sprite wouldn't show (riscos-mesa's handoff). The
+   context is the caller's (freeglut's, for videocube), so instead of
+   asking for a software one (EGL_CONTEXT_SOFTWARE_RISCOS), every frame is
+   copied into the texture there. */
 static int image_usable(FFEGLTex *t)
 {
     if (!t->img_state) {
@@ -116,6 +124,15 @@ static int image_usable(FFEGLTex *t)
         if (dpy == EGL_NO_DISPLAY || !has_word((const char *)glGetString(GL_EXTENSIONS), "GL_OES_EGL_image") ||
             !has_word(eglQueryString(dpy, EGL_EXTENSIONS), "EGL_KHR_image_pixmap"))
             return 0;
+#ifdef EGL_CONTEXT_SOFTWARE_RISCOS
+        if (has_word(eglQueryString(dpy, EGL_EXTENSIONS), "EGL_RISCOS_renderer")) {
+            EGLint sw = EGL_TRUE;
+            if (eglQueryContext(dpy, eglGetCurrentContext(), EGL_CONTEXT_SOFTWARE_RISCOS, &sw) && sw != EGL_TRUE) {
+                av_log(NULL, AV_LOG_INFO, "ffegl: the context is on the GPU (RISC3D): each frame copied into the texture\n");
+                return 0;
+            }
+        }
+#endif
         create_image   = (create_image_fn)eglGetProcAddress("eglCreateImageKHR");
         destroy_image  = (destroy_image_fn)eglGetProcAddress("eglDestroyImageKHR");
         target_texture = (target_texture_fn)eglGetProcAddress("glEGLImageTargetTexture2DOES");

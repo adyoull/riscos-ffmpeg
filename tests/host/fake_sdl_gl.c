@@ -107,10 +107,17 @@ const GLubyte *glGetString(GLenum n)
 }
 EGLDisplay eglGetCurrentDisplay(void) { return fake_gl_context ? (EGLDisplay)1 : EGL_NO_DISPLAY; }
 EGLContext eglGetCurrentContext(void) { return fake_gl_context ? (EGLContext)5 : EGL_NO_CONTEXT; }
-EGLBoolean eglQueryContext(EGLDisplay d, EGLContext c, EGLint a, EGLint *v) { *v = 3; return EGL_TRUE; }
+/* fake_gpu_context: riscos-mesa 20.3.5-20's EGL_RISCOS_renderer, the
+   context on the GPU (RISC3D) rather than OSMesa */
+int fake_gpu_context;
+EGLBoolean eglQueryContext(EGLDisplay d, EGLContext c, EGLint a, EGLint *v)
+{
+    *v = a == 0x3FFA ? (fake_gpu_context ? EGL_FALSE : EGL_TRUE) : 3;   /* (EGL_CONTEXT_SOFTWARE_RISCOS) */
+    return EGL_TRUE;
+}
 const char *eglQueryString(EGLDisplay d, EGLint n)
 {
-    return "EGL_KHR_image EGL_KHR_image_base EGL_KHR_image_pixmap EGL_KHR_lock_surface";
+    return "EGL_KHR_image EGL_KHR_image_base EGL_KHR_image_pixmap EGL_KHR_lock_surface EGL_RISCOS_renderer";
 }
 static int sprite_bgr(const int *spr)      /* 0 TBGR, 1 TRGB, -1 not a 32bpp sprite mode */
 {

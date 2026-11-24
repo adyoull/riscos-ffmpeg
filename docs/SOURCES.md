@@ -43,9 +43,13 @@ devkit 0.2.8 (sha256 111f82b5…; also `hwhevcdec.h`, `hevc_ctrls.h` and
 the full sha256.
 Without it, FFmpeg is built without h264_vchiq.
 
-**UnixLib 5.0.3.6**, in riscos-crossdev toolchain 1.10 (`libunixlib.a`
+**UnixLib 5.0.3.10**, in riscos-crossdev toolchain 1.13 (`libunixlib.a`
+sha256 d3437343…2ba3: riscos-unixlib v5.0.3.10's diff, with crossdev's
+`.balign 4` after each bare `.data` in UnixLib's assembler, which
+riscos-unixlib's own release lacks), from riscos25 and Reel 0.1.32.
+FFmpeg was rebuilt from clean with it. Before: **UnixLib 5.0.3.6**, in riscos-crossdev toolchain 1.10 (`libunixlib.a`
 sha256 2c11fb2b…6987, built from riscos-unixlib v5.0.3.6's diff; the
-release's own is 8b5339d7…b88c), from riscos25 and Reel 0.1.32: threads on
+release's own is 8b5339d7…b88c), in the tc110, io1 and mkv2 test builds: threads on
 RISC OS for Linux, sub-second interval timers, pthread scheduling
 attributes, rename() of mistyped files, /// paths, semaphores that wait.
 FFmpeg was rebuilt from clean with it. Before: **UnixLib 5.0.3.3** from github.com/adyoull/riscos-unixlib (an unofficial
