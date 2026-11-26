@@ -43,7 +43,15 @@ devkit 0.2.8 (sha256 111f82b5…; also `hwhevcdec.h`, `hevc_ctrls.h` and
 the full sha256.
 Without it, FFmpeg is built without h264_vchiq.
 
-**UnixLib 5.0.3.10**, in riscos-crossdev toolchain 1.13 (`libunixlib.a`
+**UnixLib 5.0.3.11**, from riscos-unixlib's v5.0.3.11 release
+(`libunixlib.a` sha256 4d1b3cc6…62a0, and its `pthread.h`, `stdlib.h`
+and `unistd.h`) put into a copy of riscos-crossdev toolchain 1.13 by
+`tools/unixlib-overlay.sh`, which aligns the `.data` of its four
+assembler objects that have data there (`_exist.o`, `_riscosify.o`,
+`_profile.o`, `_signal.o`; every word in them at a multiple of 4) to 4
+bytes, as crossdev's `.balign 4` does: `libunixlib.a` sha256
+77924c1f…7a95. PThreadTicker 0.04. FFmpeg was rebuilt from clean with it.
+Before: **UnixLib 5.0.3.10**, in riscos-crossdev toolchain 1.13 (`libunixlib.a`
 sha256 d3437343…2ba3: riscos-unixlib v5.0.3.10's diff, with crossdev's
 `.balign 4` after each bare `.data` in UnixLib's assembler, which
 riscos-unixlib's own release lacks), from riscos25 and Reel 0.1.32.
@@ -70,8 +78,8 @@ with `-D_FILE_OFFSET_BITS=64`, which FFmpeg's configure adds and
 build-apps.sh gives the apps; FFmpeg was rebuilt from clean against the
 new headers. riscos10 to riscos12 and Reel 0.1.16 to 0.1.19 used UnixLib
 5.0.1 (sha256 bf0e9709…a7a6; sched.h and unistd.h). `tools/check-unixlib.sh` (run by package.sh) checks every program
-was linked with it. Its module PThreadTicker (0.03 since riscos15 and Reel
-0.1.22; 0.01 at first) is in
+was linked with it. Its module PThreadTicker (0.04 from riscos25 and Reel
+0.1.32; 0.03 from riscos15 and Reel 0.1.22; 0.01 at first) is in
 `third_party/pthreadticker` and goes into each app. riscos3 to riscos9
 used the Warzone toolchain's own UnixLib (the ticker code copied to the
 RMA, a 248-byte block); riscos1 and riscos2 an earlier one without the

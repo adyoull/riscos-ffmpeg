@@ -7,6 +7,7 @@
 #   ffegl_test:      reelcore/reelcore.c (the player core) + ffegl/ffegl.c (its EGL layer)
 #   fffront_test:    frontend/fffront.c (!FFmpeg5's icon bar front end), host gcc
 #   mesa/run.sh:     ffegl_texture() with riscos-mesa's real libEGL/libOSMesa
+#   elf_align_test.sh: tools/elf-align-data.py (tools/unixlib-overlay.sh)
 # Usage: QEMU=path/to/patched/qemu-arm tests/host/run.sh
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -42,6 +43,8 @@ arm-linux-gnueabihf-gcc -no-pie -Wl,--wrap=av_gettime_relative -o "$O/ffegl_test
 bad=0
 echo "== versions agree (common/version.h, Makefile, package.sh, build-ffmpeg.sh, !Help)"
 "$TOP/tools/check-versions.sh" || bad=1
+echo "== elf_align_test (tools/elf-align-data.py: UnixLib's assembler .data aligned to 4)"
+bash "$HERE/elf_align_test.sh" || bad=1
 for clip in h264_aac_640_360.mp4 h264_aac_322_182.mp4 vp9_640_360.webm hevc_322_182.mkv; do
   echo "== egl_outdev_test $clip"
   "$TOP/tests/qemu/aligntrap.sh" "$O/egl_outdev_test" "$SAMPLES/$clip" 2>&1 | grep -v "swscaler\|egl @" || bad=1

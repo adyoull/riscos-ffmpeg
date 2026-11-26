@@ -1,5 +1,6 @@
 #!/bin/sh
-# check-unixlib.sh ELF... - the toolchain's library is UnixLib 5.0.3.10, and
+# check-unixlib.sh ELF... - the toolchain's library is UnixLib 5.0.3.11 (or
+# crossdev 1.13's 5.0.3.10), and
 # each program was linked with UnixLib 5.0.1 or later (the thread timer that can run from the PThreadTicker module), and
 # a program with FFmpeg's file protocol with UnixLib 5.0.2's files over
 # 2GB: its libavformat built against 5.0.2's headers calls
@@ -16,20 +17,26 @@ CROSS=${CROSS:-/root/gccsdk/env/bin/arm-riscos-gnueabihf-}
 EXPECTED=${EXPECTED:-640}
 bad=0
 # UnixLib's fixes can't be told from 5.0.3.1 by a program's symbols, so
-# check the library the programs were just linked with is the one wanted:
-# riscos-crossdev toolchain 1.13's, UnixLib 5.0.3.10 with crossdev's
-# alignment of UnixLib's assembler data (.balign 4 after each .data; not in
-# riscos-unixlib's own 5.0.3.10 release, whose library is refused). The
-# container image the GitHub workflows build in has it. 5.0.3.4-5.0.3.10
-# over 5.0.3.3: threads on RISC OS for Linux, sub-second interval timers,
-# pthread scheduling attributes, rename() of mistyped files, /// paths,
-# semaphores that wait, and later fixes.
-UNIXLIB_SHA256=${UNIXLIB_SHA256:-d343734348ec02ed260d2de506407f614bba5fa810043b0e3fa539ca01f72ba3}
+# check the library the programs were just linked with is one of these:
+# - UnixLib 5.0.3.11 over riscos-crossdev 1.13, made by
+#   tools/unixlib-overlay.sh (riscos-unixlib's 5.0.3.11 library with its
+#   assembler .data aligned to 4, as crossdev builds it): the one the
+#   packages are built with. 5.0.3.11: __thread one per thread, no deaths
+#   when memcpy or setjmp first touch a stack page, faster string functions,
+#   sysconf(_SC_NPROCESSORS_ONLN) 1 (or UnixLib$Processors).
+# - riscos-crossdev 1.13's own, UnixLib 5.0.3.10 with crossdev's alignment
+#   (the container image the GitHub workflows build in, until crossdev
+#   releases a toolchain with 5.0.3.11). Accepted, and said.
+# riscos-unixlib's own libraries, without the alignment, are refused.
+UNIXLIB_5_0_3_11=77924c1f6fd9447d397ce2782b619b17c97a9d9788513a3a5ff06342a0af7a95
+UNIXLIB_5_0_3_10=d343734348ec02ed260d2de506407f614bba5fa810043b0e3fa539ca01f72ba3
 LIB=$(${CROSS}gcc -print-file-name=libunixlib.a 2>/dev/null)
-if [ -f "$LIB" ] && ! echo " $UNIXLIB_SHA256 " | grep -q " $(sha256sum "$LIB" | cut -d' ' -f1) "; then
-  echo "$LIB: not riscos-crossdev 1.13's libunixlib.a, UnixLib 5.0.3.10 (sha256 d3437343...)" >&2; bad=1
-elif [ -f "$LIB" ]; then
-  echo "  the toolchain's libunixlib.a: UnixLib 5.0.3.10 (riscos-crossdev 1.13)"
+if [ -f "$LIB" ]; then
+  case $(sha256sum "$LIB" | cut -d' ' -f1) in
+    $UNIXLIB_5_0_3_11) echo "  the toolchain's libunixlib.a: UnixLib 5.0.3.11 (tools/unixlib-overlay.sh)" ;;
+    $UNIXLIB_5_0_3_10) echo "  the toolchain's libunixlib.a: UnixLib 5.0.3.10 (riscos-crossdev 1.13), not 5.0.3.11" ;;
+    *) echo "$LIB: neither UnixLib 5.0.3.11 from tools/unixlib-overlay.sh nor riscos-crossdev 1.13's 5.0.3.10" >&2; bad=1 ;;
+  esac
 fi
 for f in "$@"; do
   if ! ${CROSS}nm "$f" 2>/dev/null | grep -q ' __pthread_call_every_code$'; then
@@ -44,7 +51,7 @@ for f in "$@"; do
   if [ "$size" = "$EXPECTED" ]; then
     echo "  $(basename "$f"): UnixLib 5.0.3.x (the $EXPECTED-byte pthread block$(echo "$syms" | grep -q ' __unixlib_fstat64$' && echo ', files over 2GB'))"
   else
-    echo "$f: claims a ${size:-?}-byte pthread block, not $EXPECTED: relink with UnixLib 5.0.3.10" >&2; bad=1
+    echo "$f: claims a ${size:-?}-byte pthread block, not $EXPECTED: relink with UnixLib 5.0.3.11" >&2; bad=1
   fi
 done
 exit $bad
