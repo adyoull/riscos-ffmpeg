@@ -43,14 +43,14 @@ devkit 0.2.8 (sha256 111f82b5…; also `hwhevcdec.h`, `hevc_ctrls.h` and
 the full sha256.
 Without it, FFmpeg is built without h264_vchiq.
 
-**UnixLib 5.0.3.12**, riscos-unixlib's v5.0.3.12 release (`libunixlib.a`
-sha256 f8e76d36…c6f4, and `pthread.h`, `stdlib.h` and `unistd.h`, changed
-in 5.0.3.11) put into a copy of riscos-crossdev toolchain 1.13 by
-`tools/unixlib-overlay.sh` (crossdev 1.13's `crt0.o` kept). 5.0.3.12 is
-5.0.3.11 with its assembler `.data` word-aligned, as crossdev's builds
-make it; the test build ul11 used 5.0.3.11's release with those four
-alignments raised by hand (the same code and data). PThreadTicker 0.04.
-FFmpeg was rebuilt from clean with 5.0.3.11's headers.
+**UnixLib 5.0.3.12**, in riscos-crossdev toolchain 1.14 (`libunixlib.a`
+sha256 df399f04…5e07; the same code and data as riscos-unixlib's
+v5.0.3.12 release library, f8e76d36…c6f4, whose assembler `.data` is now
+word-aligned in UnixLib's own sources), from riscos25 and Reel 0.1.32.
+PThreadTicker 0.04. FFmpeg was rebuilt from clean with it. The test
+builds ul11 and ul12 used riscos-unixlib's 5.0.3.11 (its four `.data`
+alignments raised by hand) and 5.0.3.12 libraries in a copy of
+toolchain 1.13: the same code and data.
 Before: **UnixLib 5.0.3.10**, in riscos-crossdev toolchain 1.13 (`libunixlib.a`
 sha256 d3437343…2ba3: riscos-unixlib v5.0.3.10's diff, with crossdev's
 `.balign 4` after each bare `.data` in UnixLib's assembler, which

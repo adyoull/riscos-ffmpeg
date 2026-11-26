@@ -151,32 +151,18 @@ and the ARM assembly in FFmpeg, dav1d and x264 relies on that.
 ## Building
 
 The simplest way is riscos-crossdev's container image, which has the
-toolchain (GCCSDK GCC 10.2 with UnixLib 5.0.3.10; the packages are
-built with 5.0.3.12, see below); everything else is
+toolchain (GCCSDK GCC 10.2 with UnixLib 5.0.3.12); everything else is
 fetched by checksum (`check`, `test-build` and `test` are the checks
 and the Linux tests below; the image has the test rig's qemu, and the
 tests want the host's `ffmpeg` to make their clips):
 
 ```
-docker run --rm -v "$PWD":/src ghcr.io/adyoull/riscos-crossdev:1.13 \
+docker run --rm -v "$PWD":/src ghcr.io/adyoull/riscos-crossdev:1.14 \
   sh -c 'make sources deps ffmpeg apps package check test-build test'
 ```
 
 Or on an x86-64 Linux with a GCCSDK GCC 10.2 toolchain: riscos-crossdev's
 (`RISCOS_TOOLCHAIN`), or one in `~/gccsdk/env`:
-
-UnixLib 5.0.3.12 isn't in a riscos-crossdev toolchain yet, so the
-packages are built with a copy of toolchain 1.13 that has it, made from
-riscos-unixlib's `dist/` folder (`libunixlib.a` and `include/`):
-
-```
-tools/unixlib-overlay.sh $RISCOS_TOOLCHAIN UNIXLIB-DIST /opt/rcd/toolchain-1.13-ul12
-export RISCOS_TOOLCHAIN=/opt/rcd/toolchain-1.13-ul12
-```
-
-`tools/check-unixlib.sh` (run by `make package`) names the library a
-build used; crossdev 1.14's 5.0.3.11 and 1.13's 5.0.3.10 are accepted
-too.
 
 ```
 make sources      # fetches dl/ (build/SOURCES) and checks it against build/SHA256SUMS
