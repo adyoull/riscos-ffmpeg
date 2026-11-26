@@ -57,20 +57,22 @@ tags are `reel-0.1.1` … `reel-0.1.9`).
   are still called FFmpeg. \*ffmpeg is still set as well, for scripts and
   programs written for !FFmpeg, but only when `Alias$ffmpeg` is unset, so
   the command's allocated owner keeps it when theirs is there.
-- **UnixLib 5.0.3.11** (riscos-unixlib's release, put into a copy of
-  crossdev 1.13's toolchain by the new `tools/unixlib-overlay.sh`, with
-  its assembler data aligned as crossdev 1.13 does; no crossdev toolchain
-  has 5.0.3.11 yet): everything rebuilt from clean with it. Faster string
-  functions (`strstr` about 8 times, `memcmp` and `strcasecmp` 4 times),
-  thread-specific data, `strtol` and mutexes; no deaths when `memcpy` or
+- **UnixLib 5.0.3.12** (riscos-unixlib's release, put into a copy of
+  crossdev 1.13's toolchain by the new `tools/unixlib-overlay.sh`; no
+  crossdev toolchain has it yet. 5.0.3.12 is 5.0.3.11 with its assembler
+  data word-aligned, as crossdev's builds make it): everything rebuilt
+  from clean with it. Faster string functions (`strstr` about 8 times,
+  `memcmp` and `strcasecmp` 4 times), thread-specific data, `strtol` and
+  mutexes; no deaths when `memcpy` or
   `setjmp` first touch a stack page; `socketpair` can't hang; and thread
   fixes. With its headers `sysconf(_SC_NPROCESSORS_ONLN)` is 1 (it was
   2048), so \*ffmpeg5's decoders and encoders use one thread unless told
   otherwise (`-threads`) or `UnixLib$Processors` is set: FFmpeg's own
   started up to 16 before, and dav1d (AV1) 256, on one core. Reel
-  already used one; x264 is built without threads. PThreadTicker 0.04 (its "in use" error has ROOL's number).
-  `tools/check-unixlib.sh` wants this library, or crossdev 1.13's own
-  5.0.3.10 (CI's image), and says which.
+  already used one; x264 is built without threads. PThreadTicker 0.04
+  (its "in use" error has ROOL's number).
+  `tools/check-unixlib.sh` wants this library, or crossdev 1.14's
+  5.0.3.11 or 1.13's 5.0.3.10 (CI's image), and says which.
 - **riscos-crossdev 1.13, UnixLib 5.0.3.10** (`.riscos-deps` moved to
   v1.13; was 1.8.2's toolchain 1.4, UnixLib 5.0.3.3): everything rebuilt
   from clean with it. For FFmpeg, Reel and the front end: threads on RISC

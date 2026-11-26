@@ -256,7 +256,7 @@ Needs
 -----
 SharedUnixLibrary 1.16 or later and ARMEABISupport (both in PackMan).
 
-The programs are built with UnixLib 5.0.3.11 (the C library; an
+The programs are built with UnixLib 5.0.3.12 (the C library; an
 unofficial fork of GCCSDK's UnixLib), so they read
 and write files over 2GB, up to 4GB-1 (the largest RISC OS allows; the
 filing system must allow them too).
