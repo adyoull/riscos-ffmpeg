@@ -3,7 +3,7 @@
 Reel's versions were renumbered 0.1.1–0.1.9 (they were 0.1–0.9; the
 tags are `reel-0.1.1` … `reel-0.1.9`).
 
-## Not yet released
+## 5.1.10-riscos25 and Reel 0.1.32 (2026-11-26): !FFmpeg5, UnixLib 5.0.3.12 (crossdev 1.14), files that stop short, reelcore through callbacks, riscos-mesa 20.3.5-23, devkit 0.2.23
 
 - **Reel: a file that can't be read to its end says so** (Ralph's GitHub
   issue #3: his MKV, a 6.6 GB DVD rip on a NAS through LanMan98, stopped
